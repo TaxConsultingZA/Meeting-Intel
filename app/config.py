@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     webhook_base_url: str = "https://localhost:8000"
     # Random secret you generate; Graph echoes it back so you can verify notifications
     webhook_client_state: str = "change-me-to-a-random-string"
+    reconcile_secret: str = ""   # shared secret for the /reconcile endpoint
 
     # --- Azure Service Bus ---
     servicebus_connection_string: str = ""

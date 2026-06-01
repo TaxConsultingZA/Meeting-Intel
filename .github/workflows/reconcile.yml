@@ -1,0 +1,24 @@
+name: Reconcile Recordings
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 minutes
+  workflow_dispatch:           # allow manual trigger from GitHub UI
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger reconciliation
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            -H "x-reconcile-secret: ${{ secrets.RECONCILE_SECRET }}" \
+            "${{ secrets.RAILWAY_APP_URL }}/reconcile")
+          echo "Response: $response"
+          if [ "$response" != "200" ]; then
+            echo "Reconciliation trigger failed with status $response"
+            exit 1
+          fi
+          echo "Reconciliation started successfully"

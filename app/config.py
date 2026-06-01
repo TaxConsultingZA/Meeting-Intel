@@ -25,7 +25,17 @@ class Settings(BaseSettings):
     servicebus_queue_name: str = "meeting-jobs"
 
     # --- Database ---
+    # Accepts Railway's postgres:// or postgresql:// and normalises to asyncpg driver
     database_url: str = "postgresql+asyncpg://meeting:meeting@localhost:5432/meeting_intel"
+
+    @property
+    def asyncpg_url(self) -> str:
+        url = self.database_url
+        for prefix in ("postgres://", "postgresql://"):
+            if url.startswith(prefix):
+                url = "postgresql+asyncpg://" + url[len(prefix):]
+                break
+        return url
 
     # --- AI layer ---
     transcriber_impl: str = "assemblyai"    # mock | assemblyai

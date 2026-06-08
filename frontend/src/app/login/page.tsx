@@ -2,20 +2,32 @@
 import { useState } from "react";
 import { signIn } from "next-auth/react";
 
-const HAS_ENTRA = !!(
-  process.env.NEXT_PUBLIC_HAS_ENTRA === "true"
-);
+const HAS_RESEND = process.env.NEXT_PUBLIC_HAS_RESEND === "true";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState("");
 
-  async function handleDevLogin(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!email) return;
     setLoading(true);
-    await signIn("dev-login", { email, callbackUrl: "/" });
-    setLoading(false);
+    setError("");
+
+    if (HAS_RESEND) {
+      const result = await signIn("resend", { email, callbackUrl: "/", redirect: false });
+      setLoading(false);
+      if (result?.error) {
+        setError("Could not send the link. Please try again.");
+      } else {
+        setSent(true);
+      }
+    } else {
+      await signIn("dev-login", { email, callbackUrl: "/" });
+      setLoading(false);
+    }
   }
 
   return (
@@ -32,30 +44,33 @@ export default function LoginPage() {
           </div>
           <p className="text-white/60 text-sm mt-2">Meeting Intelligence</p>
         </div>
+
         <div className="px-8 py-8">
-          {HAS_ENTRA ? (
+          {sent ? (
             <div className="text-center">
-              <p className="text-[#6b7280] text-sm mb-6">
-                Sign in with your Taxconsulting SA Microsoft account to access meeting notes.
+              <div className="w-12 h-12 bg-[#003366]/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#003366" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+                  <polyline points="22,6 12,13 2,6" />
+                </svg>
+              </div>
+              <p className="text-[#111827] font-semibold text-sm mb-1">Check your inbox</p>
+              <p className="text-[#6b7280] text-sm">
+                We sent a sign-in link to <span className="font-medium text-[#003366]">{email}</span>.
+                Click the link to continue.
               </p>
               <button
                 type="button"
-                onClick={() => signIn("microsoft-entra-id", { callbackUrl: "/" })}
-                className="w-full bg-[#003366] hover:bg-[#0a4a8c] text-white font-semibold py-2.5 px-4 rounded-md text-sm transition-colors flex items-center justify-center gap-2"
+                onClick={() => { setSent(false); setEmail(""); }}
+                className="mt-5 text-xs text-[#6b7280] underline underline-offset-2 hover:text-[#003366]"
               >
-                <svg width="18" height="18" viewBox="0 0 21 21" fill="none">
-                  <rect x="1" y="1" width="9" height="9" fill="#F25022" />
-                  <rect x="11" y="1" width="9" height="9" fill="#7FBA00" />
-                  <rect x="1" y="11" width="9" height="9" fill="#00A4EF" />
-                  <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
-                </svg>
-                Sign in with Microsoft
+                Use a different email
               </button>
             </div>
           ) : (
-            <form onSubmit={handleDevLogin} className="flex flex-col gap-4">
+            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
               <p className="text-[#6b7280] text-sm text-center">
-                Enter your work email to continue.
+                Enter your work email and we&apos;ll send you a sign-in link.
               </p>
               <div>
                 <label htmlFor="email" className="block text-xs font-semibold text-[#374151] mb-1">
@@ -71,12 +86,15 @@ export default function LoginPage() {
                   className="w-full border border-[#dde1e8] rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#003366] focus:border-transparent"
                 />
               </div>
+              {error && (
+                <p className="text-red-500 text-xs">{error}</p>
+              )}
               <button
                 type="submit"
                 disabled={loading}
                 className="w-full bg-[#003366] hover:bg-[#0a4a8c] disabled:opacity-60 text-white font-semibold py-2.5 px-4 rounded-md text-sm transition-colors"
               >
-                {loading ? "Signing in…" : "Sign in"}
+                {loading ? "Sending…" : "Send sign-in link"}
               </button>
             </form>
           )}

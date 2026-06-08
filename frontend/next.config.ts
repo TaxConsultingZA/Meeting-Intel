@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ["jacket-oblivion-cyclist.ngrok-free.dev"],
   async headers() {
     return [
       {

@@ -1,15 +1,22 @@
 import NextAuth from "next-auth";
-import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
+import Resend from "next-auth/providers/resend";
 import Credentials from "next-auth/providers/credentials";
+import PostgresAdapter from "@auth/pg-adapter";
+import { Pool } from "pg";
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes("localhost")
+    ? false
+    : { rejectUnauthorized: false },
+});
 
 const providers = [];
 
-if (process.env.CLIENT_ID && process.env.CLIENT_SECRET && process.env.TENANT_ID) {
+if (process.env.AUTH_RESEND_KEY) {
   providers.push(
-    MicrosoftEntraID({
-      clientId: process.env.CLIENT_ID,
-      clientSecret: process.env.CLIENT_SECRET,
-      issuer: `https://login.microsoftonline.com/${process.env.TENANT_ID}/v2.0`,
+    Resend({
+      from: process.env.EMAIL_FROM ?? "Meeting Intelligence <onboarding@resend.dev>",
     })
   );
 }
@@ -30,14 +37,31 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
+  adapter: PostgresAdapter(pool),
   providers,
+  session: { strategy: "jwt" },
   callbacks: {
+    async signIn({ user, account }) {
+      if (account?.provider === "resend") {
+        return user.email?.toLowerCase().endsWith("@taxconsulting.co.za") ?? false;
+      }
+      return true;
+    },
+    async jwt({ token, user }) {
+      if (user?.email) token.email = user.email;
+      if (user?.name) token.name = user.name;
+      return token;
+    },
     async session({ session, token }) {
-      if (token.email) session.user.email = token.email;
-      return session;
+      return {
+        ...session,
+        user: {
+          ...session.user,
+          email: (token.email as string) ?? session.user?.email,
+          name: (token.name as string) ?? session.user?.name,
+        },
+      };
     },
   },
-  pages: {
-    signIn: "/login",
-  },
+  pages: { signIn: "/login" },
 });

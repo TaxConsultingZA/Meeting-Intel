@@ -1,8 +1,11 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import select, text
 from .api import webhooks, reviews, subscriptions, recordings, calendar, notifications, admin, users
 from .config import get_settings
@@ -92,7 +95,18 @@ async def _lifespan(app: FastAPI):
         task.cancel()
 
 
-app = FastAPI(title="Meeting Intelligence", lifespan=_lifespan)
+app = FastAPI(title="Meeting Intelligence", lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(status_code=422, content={"error": "Invalid request"})
+
 
 app.add_middleware(
     CORSMiddleware,

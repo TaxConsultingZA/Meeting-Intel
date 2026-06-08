@@ -6,3 +6,10 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+frontend/
+tests/
+mockup.html
+*.md
+alembic/
+docker-compose.yml
+Procfile

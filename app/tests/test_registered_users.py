@@ -21,10 +21,10 @@ class TestReconcileRegisteredFilter:
     async def test_reconcile_skips_unregistered_users(self):
         """reconcile() should only process users in registered_users."""
         with (
-            patch("workers.reconcile.graph.list_domain_users", new_callable=AsyncMock) as mock_users,
-            patch("workers.reconcile.graph.get_user_drive_id", new_callable=AsyncMock) as mock_drive,
-            patch("workers.reconcile.graph.list_recordings_folder", new_callable=AsyncMock) as mock_recs,
-            patch("workers.reconcile.SessionLocal") as mock_session_cls,
+            patch("app.workers.reconcile.graph.list_domain_users", new_callable=AsyncMock) as mock_users,
+            patch("app.workers.reconcile.graph.get_user_drive_id", new_callable=AsyncMock) as mock_drive,
+            patch("app.workers.reconcile.graph.list_recordings_folder", new_callable=AsyncMock) as mock_recs,
+            patch("app.workers.reconcile.SessionLocal") as mock_session_cls,
         ):
             mock_users.return_value = [
                 {"mail": "registered@taxconsulting.co.za"},
@@ -43,7 +43,7 @@ class TestReconcileRegisteredFilter:
             mock_drive.return_value = "drive-123"
             mock_recs.return_value = []  # no recordings — just checking which users are scanned
 
-            from workers.reconcile import reconcile
+            from app.workers.reconcile import reconcile
             await reconcile()
 
             # get_user_drive_id should only have been called for the registered user
@@ -53,7 +53,7 @@ class TestReconcileRegisteredFilter:
 
     async def test_reconcile_returns_zero_when_no_registered_users(self):
         with (
-            patch("workers.reconcile.SessionLocal") as mock_session_cls,
+            patch("app.workers.reconcile.SessionLocal") as mock_session_cls,
         ):
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -63,7 +63,7 @@ class TestReconcileRegisteredFilter:
             mock_session.scalars = AsyncMock(return_value=scalars_result)
             mock_session_cls.return_value = mock_session
 
-            from workers.reconcile import reconcile
+            from app.workers.reconcile import reconcile
             result = await reconcile()
             assert result == 0
 

@@ -41,15 +41,23 @@ Email sent from organiser's mailbox via Graph sendMail
 - **Row-level access** — a user sees a meeting only if they appear in `meeting_participants`.
 - `AUTO_SEND_EMAIL=true` sends immediately on approval; `false` holds for manual review.
 
-## Local setup
+## Environment Setup
 
-1. Python 3.12 venv: `py -3.12 -m venv .venv && .venv\Scripts\activate`
-2. `pip install -r requirements.txt`
-3. `cp .env.example .env` — fill in all values (see `.env.example` for required keys)
-4. `docker compose up -d db` — starts Postgres on port 5434
-5. `alembic upgrade head` — creates all tables
-6. API: `uvicorn app.main:app --reload`
-7. Reconciliation (manual): `python -m workers.reconcile`
+The project requires environment variables in two locations:
+
+### 1. Root `.env` (Backend & Shared)
+Copy `.env.example` to `.env` in the root directory. This file is used by:
+- **FastAPI Backend:** For DB connections and AI services.
+- **Next.js Frontend:** For shared variables (DB, Auth).
+
+### 2. Frontend `.env.local` (Optional Override)
+You can also create `frontend/.env.local` specifically for frontend-only variables. See `frontend/.env.example`.
+
+### Required Variables Checklist
+- [ ] **Microsoft Entra ID:** `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` (Get from Azure Portal)
+- [ ] **Auth Secret:** `AUTH_SECRET` (Generate with `npx auth secret`)
+- [ ] **Database:** `DATABASE_URL` (Ensure port 5434 matches Docker)
+- [ ] **AI Keys:** `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`
 
 ### Webhooks (optional — reconciliation covers this)
 
@@ -138,7 +146,7 @@ az containerapp job create \
   --trigger-type Schedule \
   --cron-expression "*/15 * * * *" \
   --replica-timeout 600 \
-  --command "python" --args "-m" "workers.reconcile" \
+  --command "python" --args "-m" "app.workers.reconcile" \
   --env-vars \
     TENANT_ID=<> CLIENT_ID=<> CLIENT_SECRET=<> \
     ALLOWED_DOMAIN=taxconsulting.co.za \

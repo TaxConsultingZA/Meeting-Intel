@@ -73,7 +73,7 @@ async def _reconcile_loop() -> None:
     await asyncio.sleep(30)  # let the app finish starting up first
     while True:
         try:
-            from workers.reconcile import reconcile
+            from app.workers.reconcile import reconcile
             found = await reconcile()
             if found:
                 log.info("Auto-reconcile: processed %d new recording(s)", found)
@@ -95,7 +95,7 @@ async def _lifespan(app: FastAPI):
         task.cancel()
 
 
-app = FastAPI(title="Meeting Intelligence", lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="Meeting Intelligence", lifespan=_lifespan)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -140,7 +140,7 @@ async def trigger_reconcile(x_reconcile_secret: str = Header(...)):
 
     # Run in background so the HTTP response returns immediately
     async def _run():
-        from workers.reconcile import reconcile
+        from app.workers.reconcile import reconcile
         await reconcile()
 
     asyncio.create_task(_run())

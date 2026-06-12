@@ -6,3 +6,8 @@ __pycache__/
 .pytest_cache/
 .claude_cache/
 .claude
+tasks.csv
+GEMINI.md
+Agents
+frontend\CLAUDE.md
+frontend\AGENTS.md

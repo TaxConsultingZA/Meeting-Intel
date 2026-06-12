@@ -13,3 +13,11 @@ mockup.html
 alembic/
 docker-compose.yml
 Procfile
+.vscode
+.claude_cache/
+.claude
+tasks.csv
+GEMINI.md
+Agents
+frontend\CLAUDE.md
+frontend\AGENTS.md

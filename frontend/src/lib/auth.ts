@@ -26,21 +26,14 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       name: "Microsoft Entra ID",
       type: "oauth", 
       clientId: process.env.AUTH_MICROSOFT_ENTRA_ID_ID,
-      // Public Client: No clientSecret provided.
       checks: ["pkce", "state"], 
       authorization: {
         url: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`,
         params: { 
           scope: "openid profile email User.Read",
-          redirect_uri: "http://localhost:3000/authentication/login-callback"
         },
       },
-      token: {
-        url: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
-        params: { 
-          redirect_uri: "http://localhost:3000/authentication/login-callback"
-        }
-      },
+      token: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
       userinfo: "https://graph.microsoft.com/oidc/userinfo",
       profile(profile: any) {
         return {

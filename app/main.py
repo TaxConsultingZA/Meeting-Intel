@@ -88,11 +88,19 @@ async def _lifespan(app: FastAPI):
     await _init_db()
     await _seed_business_units()
     await _seed_admin_users()
-    task = asyncio.create_task(_reconcile_loop())
+
+    if settings.enable_auto_reconcile:
+        log.info("Starting auto-reconcile background task...")
+        task = asyncio.create_task(_reconcile_loop())
+    else:
+        log.info("Auto-reconcile background task is disabled.")
+        task = None
+
     try:
         yield
     finally:
-        task.cancel()
+        if task:
+            task.cancel()
 
 
 app = FastAPI(title="Meeting Intelligence", lifespan=_lifespan)

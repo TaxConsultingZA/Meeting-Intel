@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     app_url: str = "http://localhost:3000"
 
     # --- Behaviour ---
+    enable_auto_reconcile: bool = False     # if true, start a background task at startup to scan OneDrives
     auto_send_email: bool = False           # v1: humans approve before send
     popia_notice_enabled: bool = True       # send AI-processing notice to organizer on job start
     emails_enabled: bool = True             # master switch — set to false to suppress all outbound mail

@@ -96,3 +96,45 @@ class TestGetEventAttendees:
             result = await get_event_attendees("drive-1", "item-1")
         assert "notanemail" not in result
         assert len(result) == 2
+
+
+class TestLocalMockGraph:
+    async def test_returns_demo_recording_without_http(self, monkeypatch):
+        from app.graph import client
+        monkeypatch.setattr(client.settings, "graph_impl", "mock")
+
+        rows = await client.list_recordings_folder("mock-drive")
+
+        assert rows[0]["id"] == "mock-recording-quarterly-planning"
+        assert rows[0]["name"].endswith(".mp4")
+
+    async def test_download_creates_local_marker_file(self, monkeypatch, tmp_path):
+        from app.graph import client
+        monkeypatch.setattr(client.settings, "graph_impl", "mock")
+        destination = tmp_path / "recording.mp4"
+
+        await client.download_drive_item("mock-drive", "mock-item", str(destination))
+
+        assert destination.read_bytes() == b"MEETING_INTEL_LOCAL_MOCK_RECORDING"
+
+    async def test_mock_calendar_is_future_teams_meeting(self, monkeypatch):
+        from app.graph import client
+        monkeypatch.setattr(client.settings, "graph_impl", "mock")
+
+        rows = await client.get_upcoming_calendar_events("demo.user@taxconsulting.co.za")
+
+        assert rows[0]["isOnlineMeeting"] is True
+        assert rows[0]["subject"] == "Quarterly Planning (Mock)"
+
+    async def test_mock_send_mail_is_noop(self, monkeypatch):
+        from app.graph import client
+        monkeypatch.setattr(client.settings, "graph_impl", "mock")
+
+        result = await client.send_mail(
+            "sender@taxconsulting.co.za",
+            ["recipient@taxconsulting.co.za"],
+            "Mock subject",
+            "<p>Mock body</p>",
+        )
+
+        assert result is None

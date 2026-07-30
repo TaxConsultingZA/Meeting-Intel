@@ -4,7 +4,7 @@ Table-based, inline-styled HTML for full Outlook compatibility.
 Brand colours: Navy #003366 | Gold #C9A52C | White | Light grey
 """
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -205,7 +205,7 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
 
     title      = (meeting.title or "Meeting Recording").replace(".mp4", "").strip()
     organizer  = meeting.organizer_upn or ""
-    today      = datetime.utcnow().strftime("%d %B %Y")
+    today      = datetime.now(timezone.utc).strftime("%d %B %Y")
     data       = meeting.extracted_json or {}
 
     # ── pull structured data ──────────────────────────────────────────────────

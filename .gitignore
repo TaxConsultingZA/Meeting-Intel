@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.pytest_tmp/
 .claude_cache/
 .claude
 tasks.csv

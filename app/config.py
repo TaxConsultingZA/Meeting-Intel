@@ -55,6 +55,7 @@ class Settings(BaseSettings):
         return url
 
     # --- AI layer ---
+    graph_impl: str = "microsoft"          # microsoft | mock
     transcriber_impl: str = "assemblyai"    # mock | assemblyai
     extractor_impl: str = "anthropic"       # mock | anthropic | azure_openai
 

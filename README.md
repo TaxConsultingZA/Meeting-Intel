@@ -59,6 +59,71 @@ You can also create `frontend/.env.local` specifically for frontend-only variabl
 - [ ] **Database:** `DATABASE_URL` (Ensure port 5434 matches Docker)
 - [ ] **AI Keys:** `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`
 
+## Safe local Mock mode
+
+Mock mode runs the complete UI and processing workflow with a fictional OneDrive
+recording. It does not call Microsoft Graph, AssemblyAI, Anthropic, or email.
+
+1. Copy `.env.example` to `.env` and set:
+
+   ```env
+   TENANT_ID=mock-tenant
+   CLIENT_ID=mock-client
+   CLIENT_SECRET=mock-secret
+   DATABASE_URL=postgresql+asyncpg://meeting:meeting@localhost:5434/meeting_intel
+   GRAPH_IMPL=mock
+   TRANSCRIBER_IMPL=mock
+   EXTRACTOR_IMPL=mock
+   EMAILS_ENABLED=false
+   POPIA_NOTICE_ENABLED=false
+   ENABLE_AUTO_RECONCILE=false
+   AUTO_SEND_EMAIL=false
+   ```
+
+2. Copy `frontend/.env.example` to `frontend/.env.local`.
+3. Create the Python environment and install backend/test dependencies:
+
+   ```powershell
+   py -3.12 -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+   ```
+
+4. Start and initialise PostgreSQL:
+
+   ```powershell
+   docker compose up -d db
+   .\.venv\Scripts\python.exe -m alembic upgrade head
+   docker cp frontend/auth-tables.sql meeting-intel-db-1:/tmp/auth-tables.sql
+   docker compose exec -T db psql -U meeting -d meeting_intel -f /tmp/auth-tables.sql
+   ```
+
+5. Install the frontend and run all automated checks:
+
+   ```powershell
+   cd frontend
+   npm ci
+   npm test
+   npm run build
+   cd ..
+   .\.venv\Scripts\python.exe -m pytest
+   ```
+
+6. Start the backend and frontend in two terminals:
+
+   ```powershell
+   # Terminal 1, repository root
+   .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+   # Terminal 2, frontend directory
+   npm run dev
+   ```
+
+7. Open `http://localhost:3000`, use `demo.user@taxconsulting.co.za`
+   with the development email login, then import `Quarterly Planning Demo.mp4`.
+
+Never enable Mock mode in production. Production must use verified Microsoft Entra
+authentication and real secret management.
+
 ### Webhooks (optional — reconciliation covers this)
 
 Graph must reach your machine over HTTPS. Use `ngrok http 8000`, set `WEBHOOK_BASE_URL`,

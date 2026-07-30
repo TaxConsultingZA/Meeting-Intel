@@ -54,7 +54,11 @@ export default function MeetingDetailClient({ meeting: initial, upn }: Props) {
       const res = await approveMeeting(meeting.id, upn);
       setMeeting((m) => ({ ...m, state: res.state as never }));
       setShowModal(false);
-      toast.success("Meeting notes approved and emailed to all participants.");
+      toast.success(
+        res.state === "sent"
+          ? "Meeting notes approved and emailed to all participants."
+          : "Meeting notes approved. Email delivery is disabled or pending.",
+      );
     } catch (e: unknown) {
       toast.error(`Approval failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -78,7 +82,9 @@ export default function MeetingDetailClient({ meeting: initial, upn }: Props) {
       {meeting.state === "approved" || meeting.state === "sent" ? (
         <div className="flex items-center gap-2.5 bg-green-50 border border-green-200 rounded-lg px-4 py-3 mb-5 text-green-800 text-[13.5px] font-medium">
           <CheckCircle2 size={16} className="text-green-600" />
-          Meeting notes approved and emailed to all participants.
+          {meeting.state === "sent"
+            ? "Meeting notes approved and emailed to all participants."
+            : "Meeting notes approved. Email delivery is disabled or pending."}
         </div>
       ) : null}
 
@@ -111,7 +117,7 @@ export default function MeetingDetailClient({ meeting: initial, upn }: Props) {
                 onClick={() => setShowModal(true)}
                 className="w-full bg-[#C9A52C] hover:bg-[#e8c84a] text-[#003366] font-bold py-2.5 rounded-md text-[13.5px] transition-colors"
               >
-                ✓ Approve &amp; Send Email
+                ✓ Approve Meeting Notes
               </button>
             )}
             <button type="button" className="w-full border border-[#dde1e8] hover:border-[#003366] text-[#003366] font-semibold py-2 rounded-md text-[12.5px] transition-colors">
@@ -242,13 +248,12 @@ export default function MeetingDetailClient({ meeting: initial, upn }: Props) {
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Approve &amp; Send Meeting Notes</DialogTitle>
+            <DialogTitle>Approve Meeting Notes</DialogTitle>
           </DialogHeader>
           <p className="text-[13.5px] text-[#1a1a2e] leading-6">
-            The formatted meeting notes for{" "}
-            <strong>{meeting.title}</strong> will be emailed to all{" "}
-            <strong>{(data.attendees?.length ?? 0) + 1} participants</strong>.
-            Please confirm you have reviewed the action items above.
+            Please confirm you have reviewed the action items for{" "}
+            <strong>{meeting.title}</strong>. If email delivery is enabled, the
+            formatted notes will then be sent to the meeting participants.
           </p>
           <DialogFooter>
             <button
@@ -264,7 +269,7 @@ export default function MeetingDetailClient({ meeting: initial, upn }: Props) {
               disabled={approving}
               className="bg-[#C9A52C] hover:bg-[#e8c84a] text-[#003366] px-5 py-2 rounded-md text-sm font-bold transition-colors disabled:opacity-60"
             >
-              {approving ? "Sending…" : "✓ Confirm & Send"}
+              {approving ? "Approving…" : "✓ Confirm Approval"}
             </button>
           </DialogFooter>
         </DialogContent>

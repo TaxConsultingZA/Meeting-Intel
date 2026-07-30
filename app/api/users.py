@@ -49,9 +49,9 @@ async def get_me(db: AsyncSession = Depends(get_db), upn: str = Depends(current_
                 )
                 await graph.send_mail(
                     sender=settings.mail_sender_upn or "stanley@taxconsulting.co.za",
-                    recipients=[upn],
+                    to_upns=[upn],
                     subject=subject,
-                    body=html,
+                    html_body=html,
                 )
             except Exception:
                 pass  # never let a failed welcome email block login

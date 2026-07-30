@@ -8,6 +8,7 @@ class TestClaimItem:
         from app.services.ledger import claim_item
 
         mock_db = AsyncMock()
+        mock_db.add = MagicMock()
         mock_db.scalar.return_value = None  # item not seen before
 
         result = await claim_item(mock_db, "drive-item-1", "drive-1", etag="abc", source="reconcile")
@@ -20,6 +21,7 @@ class TestClaimItem:
         from app.services.ledger import claim_item
 
         mock_db = AsyncMock()
+        mock_db.add = MagicMock()
         mock_db.scalar.return_value = MagicMock()  # already exists
 
         result = await claim_item(mock_db, "drive-item-1", "drive-1", etag="abc", source="reconcile")
@@ -32,6 +34,7 @@ class TestClaimItem:
         from app.services.ledger import claim_item
 
         mock_db = AsyncMock()
+        mock_db.add = MagicMock()
         mock_db.scalar.return_value = None
 
         result = await claim_item(mock_db, "item-2", "drive-2", etag=None, source="webhook")
@@ -41,6 +44,7 @@ class TestClaimItem:
         from app.services.ledger import claim_item
 
         mock_db = AsyncMock()
+        mock_db.add = MagicMock()
         mock_db.scalar.return_value = None
 
         result = await claim_item(mock_db, "item-3", None, etag=None, source="manual")

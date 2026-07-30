@@ -103,9 +103,9 @@ async def register_user(body: RegisterUserIn, db: AsyncSession = Depends(get_db)
             )
             await graph.send_mail(
                 sender=settings.mail_sender_upn or "stanley@taxconsulting.co.za",
-                recipients=[user.upn],
+                to_upns=[user.upn],
                 subject=subject,
-                body=html,
+                html_body=html,
             )
         except Exception:
             pass  # never let a failed welcome email roll back the registration

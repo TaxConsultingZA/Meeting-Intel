@@ -1,8 +1,14 @@
 import httpx
+from datetime import datetime, timedelta, timezone
 from .auth import get_token
 from ..config import get_settings
 
 settings = get_settings()
+
+
+def _mock_enabled() -> bool:
+    """Return True only for the explicitly selected, fully local demo backend."""
+    return settings.graph_impl == "mock"
 
 
 def _headers() -> dict:
@@ -13,6 +19,13 @@ def _headers() -> dict:
 async def list_domain_users() -> list[dict]:
     """Return all users whose mail is in the allowed domain.
     endswith filters require ConsistencyLevel: eventual + $count=true."""
+    if _mock_enabled():
+        return [{
+            "id": "mock-user-demo",
+            "mail": "demo.user@taxconsulting.co.za",
+            "displayName": "Demo User",
+        }]
+
     url = (
         f"{settings.graph_base}/users"
         f"?$filter=endswith(mail,'@{settings.allowed_domain}')"
@@ -32,6 +45,9 @@ async def list_domain_users() -> list[dict]:
 
 async def get_user_drive_id(user_upn: str) -> str:
     """Return the OneDrive drive-id for a given user UPN."""
+    if _mock_enabled():
+        return "mock-drive-demo-user"
+
     url = f"{settings.graph_base}/users/{user_upn}/drive"
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.get(url, headers=_headers())
@@ -42,6 +58,15 @@ async def get_user_drive_id(user_upn: str) -> str:
 async def list_recordings_folder(drive_id: str) -> list[dict]:
     """List mp4 files in the Recordings folder of the given drive.
     Returns [] if the folder doesn't exist yet (new user with no recordings)."""
+    if _mock_enabled():
+        return [{
+            "id": "mock-recording-quarterly-planning",
+            "name": "Quarterly Planning Demo.mp4",
+            "size": 12_582_912,
+            "createdDateTime": "2026-07-30T08:00:00Z",
+            "eTag": '"mock-etag-1"',
+        }]
+
     url = f"{settings.graph_base}/drives/{drive_id}/root:/Recordings:/children"
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.get(url, headers=_headers())
@@ -53,6 +78,19 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
 
 async def get_drive_item(drive_id: str, item_id: str) -> dict:
     """Fetch a single OneDrive item's metadata (name, size, createdBy, etc.)."""
+    if _mock_enabled():
+        return {
+            "id": item_id,
+            "name": "Quarterly Planning Demo.mp4",
+            "size": 12_582_912,
+            "createdDateTime": "2026-07-30T08:00:00Z",
+            "createdBy": {"user": {
+                "displayName": "Demo User",
+                "userPrincipalName": "demo.user@taxconsulting.co.za",
+                "email": "demo.user@taxconsulting.co.za",
+            }},
+        }
+
     url = f"{settings.graph_base}/drives/{drive_id}/items/{item_id}"
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.get(url, headers=_headers())
@@ -62,6 +100,13 @@ async def get_drive_item(drive_id: str, item_id: str) -> dict:
 
 async def download_drive_item(drive_id: str, item_id: str, dest_path: str) -> str:
     """Stream the recording to disk (don't load a 2h video into memory)."""
+    if _mock_enabled():
+        # The mock transcriber does not inspect media bytes. A small local marker
+        # file proves the download step ran without touching OneDrive.
+        with open(dest_path, "wb") as f:
+            f.write(b"MEETING_INTEL_LOCAL_MOCK_RECORDING")
+        return dest_path
+
     url = f"{settings.graph_base}/drives/{drive_id}/items/{item_id}/content"
     async with httpx.AsyncClient(timeout=None, follow_redirects=True) as c:
         async with c.stream("GET", url, headers=_headers()) as r:
@@ -78,6 +123,9 @@ async def send_mail(sender: str, to_upns: list[str], subject: str, html_body: st
     Requires the app to have the ``Mail.Send`` application permission in Entra ID.
     The message is saved to the sender's Sent Items folder.
     """
+    if _mock_enabled():
+        return
+
     url = f"{settings.graph_base}/users/{sender}/sendMail"
     payload = {
         "message": {
@@ -94,7 +142,27 @@ async def send_mail(sender: str, to_upns: list[str], subject: str, html_body: st
 
 async def get_upcoming_calendar_events(upn: str, days: int = 7) -> list[dict]:
     """Return the user's online meetings (Teams) for the next `days` days."""
-    from datetime import datetime, timezone, timedelta
+    if _mock_enabled():
+        start = datetime.now(timezone.utc) + timedelta(hours=2)
+        end = start + timedelta(minutes=45)
+        return [{
+            "id": "mock-calendar-quarterly-planning",
+            "subject": "Quarterly Planning (Mock)",
+            "start": {"dateTime": start.isoformat(), "timeZone": "UTC"},
+            "end": {"dateTime": end.isoformat(), "timeZone": "UTC"},
+            "organizer": {"emailAddress": {
+                "name": "Demo User",
+                "address": "demo.user@taxconsulting.co.za",
+            }},
+            "attendees": [{"emailAddress": {
+                "name": "Demo Colleague",
+                "address": "demo.colleague@taxconsulting.co.za",
+            }}],
+            "isOnlineMeeting": True,
+            "onlineMeetingProvider": "teamsForBusiness",
+            "location": {"displayName": "Microsoft Teams Meeting"},
+        }]
+
     now = datetime.now(timezone.utc)
     end = now + timedelta(days=days)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
@@ -118,6 +186,12 @@ async def get_upcoming_calendar_events(upn: str, days: int = 7) -> list[dict]:
 async def get_event_attendees(drive_id: str, drive_item_id: str) -> list[str]:
     """Best-effort: Teams recordings carry attendee metadata in SharePoint list-item fields.
     Falls back to empty list if the metadata isn't present."""
+    if _mock_enabled():
+        return [
+            "demo.user@taxconsulting.co.za",
+            "demo.colleague@taxconsulting.co.za",
+        ]
+
     try:
         url = (
             f"{settings.graph_base}/drives/{drive_id}"

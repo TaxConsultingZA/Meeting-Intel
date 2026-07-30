@@ -233,18 +233,22 @@ class TestGetMe:
         assert data["upn"] == "member@taxconsulting.co.za"
         assert data["is_admin"] is False
 
-    def test_unregistered_user_returns_404(self):
+    def test_unregistered_user_is_auto_registered(self):
         app, get_db = _make_app()
+        created = _member_user("unknown@taxconsulting.co.za")
 
         async def override_db():
             mock_db = AsyncMock()
-            mock_db.scalar = AsyncMock(return_value=None)
+            mock_db.add = MagicMock()
+            mock_db.scalar = AsyncMock(side_effect=[None, created])
             yield mock_db
 
         app.dependency_overrides[get_db] = override_db
-        client = TestClient(app, raise_server_exceptions=False)
+        client = TestClient(app)
         resp = client.get("/users/me", headers={"x-user-upn": "unknown@taxconsulting.co.za"})
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert resp.json()["upn"] == "unknown@taxconsulting.co.za"
+        assert resp.json()["is_admin"] is False
 
     def test_admin_flag_reflected(self):
         app, get_db = _make_app()

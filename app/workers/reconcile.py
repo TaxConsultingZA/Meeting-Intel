@@ -1,4 +1,4 @@
-"""Scheduled job — walks the Recordings folder of every *registered* domain user,
+"""Scheduled job — walks the Recordings folder of every *subscribed* domain user,
 finds new recordings, and processes them inline (transcribe + extract + email).
 Run on a schedule (e.g. every 15 minutes) or manually."""
 import asyncio
@@ -18,10 +18,12 @@ from app.services.ledger import claim_item
 from app.pipeline.steps import process_recording
 
 
-async def _get_registered_upns() -> set[str]:
-    """Return the set of UPNs that have been registered on the platform."""
+async def _get_subscribed_upns() -> set[str]:
+    """Return only users who explicitly enabled automatic processing."""
     async with SessionLocal() as db:
-        upns = await db.scalars(select(RegisteredUser.upn))
+        upns = await db.scalars(
+            select(RegisteredUser.upn).where(RegisteredUser.is_subscribed.is_(True))
+        )
         return set(upns.all())
 
 
@@ -37,20 +39,29 @@ async def reconcile() -> int:
     returns the count of newly processed recordings so callers can log progress.
     """
     found = 0
-    registered_upns = await _get_registered_upns()
-    if not registered_upns:
-        print("No registered users — skipping reconcile.")
+    subscribed_upns = await _get_subscribed_upns()
+    if not subscribed_upns:
+        print("No subscribed users — skipping OneDrive sync.")
         return 0
 
-    all_users = await graph.list_domain_users()
-    # Only process users who are registered on the platform
-    users = [u for u in all_users if (u.get("mail") or "").lower() in registered_upns]
-    print(f"Reconciling {len(users)} registered user(s) (of {len(all_users)} domain users)...")
+    # We already know the opted-in UPNs, so a tenant-wide directory listing is
+    # unnecessary. This removes an avoidable Directory.Read.All dependency.
+    print(f"Reconciling {len(subscribed_upns)} subscribed user(s)...")
 
-    for user in users:
-        upn = (user.get("mail") or user.get("id", "")).lower()
+    for upn in subscribed_upns:
         try:
             drive_id = await graph.get_user_drive_id(upn)
+            async with SessionLocal() as db:
+                subscriber = await db.scalar(
+                    select(RegisteredUser).where(
+                        RegisteredUser.upn == upn,
+                        RegisteredUser.is_subscribed.is_(True),
+                    )
+                )
+                if not subscriber:
+                    continue
+                subscriber.graph_drive_id = drive_id
+                await db.commit()
             recordings = await graph.list_recordings_folder(drive_id)
         except Exception as e:
             print(f"  Skipping {upn}: {e}")

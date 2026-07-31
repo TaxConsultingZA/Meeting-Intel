@@ -1,18 +1,27 @@
 # Meeting Intelligence
 
-Event-driven pipeline: Teams recording lands in OneDrive → reconciliation worker
-detects it → downloads via Graph API → transcribes with AssemblyAI (diarized) →
-extracts structured meeting notes with Anthropic Claude → emails branded summary
-to organiser and participants.
+Opt-in meeting pipeline: a company user signs in with Microsoft Entra, subscribes
+once, and the background worker syncs that user's Outlook calendar and OneDrive
+Recordings folder. New recordings are transcribed and converted to structured
+notes. The meeting organiser reviews the result, chooses the exact email
+recipients, and approves before any notes are sent.
 
 ## Architecture
 
 ```
-OneDrive (any domain user)
+Microsoft Entra access token
+        │  signature + tenant + audience + scope validation
+        ▼
+Explicit user opt-in (is_subscribed)
+        │
+        ├────────► Outlook Calendar cache
         │
         ▼
-Reconciliation worker (runs every 15 min)
-        │  walks all @taxconsulting.co.za users' Recordings/ folders
+OneDrive Recordings (subscribed users only)
+        │
+        ▼
+Microsoft sync worker (runs every 10 min)
+        │  walks only opted-in users' Recordings/ folders
         │  deduplication ledger prevents re-processing
         ▼
 Download MP4 ─► AssemblyAI transcription (diarized, speaker-labelled)
@@ -26,20 +35,74 @@ Anthropic Claude extraction (two-pass)
 Postgres (meetings · action_items · participants · processed_items)
         │
         ▼
-Email sent from organiser's mailbox via Graph sendMail
-  → organiser + all meeting participants
+Organiser-only approval gate
+        │  organiser selects recipients with checkboxes
+        ▼
+Email sent via Graph sendMail
+  → only the explicitly selected meeting attendees
   → Tax Consulting branded HTML template
 ```
 
 ## Key design decisions
 
-- **No fixed user** — reconciliation walks every domain user's OneDrive dynamically.
+- **Verified identity** — the API rejects the old `x-user-upn` header and accepts
+  only an Entra bearer token issued for this API.
+- **Stable authorization identity** — the verified Entra `oid` is bound to the
+  user record; mutable email/username claims are not the permanent identity key.
+- **Explicit opt-in** — sign-in alone does not grant processing consent.
+- **Least data access** — reconciliation and webhooks ignore non-subscribed users.
 - **AssemblyAI** for diarized transcription (speaker labels, no ffmpeg needed — accepts MP4 directly).
 - **Anthropic Claude** (two-pass) for structured extraction — avoids token-limit truncation on long meetings.
 - **organizer_upn fallback** — uses drive-owner UPN when SharePoint App is listed as creator.
 - **POPIA notice** fires before any AI processing (Section 18 compliance).
 - **Row-level access** — a user sees a meeting only if they appear in `meeting_participants`.
-- `AUTO_SEND_EMAIL=true` sends immediately on approval; `false` holds for manual review.
+- **Organiser approval** — participants may view meetings they can access, but only
+  the organiser can edit action items and approve.
+- **Custom distribution** — approval records the exact selected recipient list,
+  approving user, and timestamp.
+
+## Microsoft Entra production setup
+
+Use two app registrations:
+
+1. **Meeting Intelligence API**
+   - Expose `api://<API-CLIENT-ID>/access_as_user`.
+   - Add Microsoft Graph **application** permissions required by the background
+     worker: `Calendars.ReadBasic` (or `Calendars.Read` if more event fields are
+     required), `Files.Read.All`, and `Mail.Send` only when email delivery is enabled.
+   - Grant tenant admin consent.
+   - Prefer Exchange/SharePoint application access controls so the service can
+     reach only the intended mailboxes and sites.
+2. **Meeting Intelligence Web**
+   - Configure the NextAuth callback URL:
+     `https://<your-host>/api/auth/callback/microsoft-entra-id`.
+   - Add delegated access to the API's `access_as_user` scope.
+
+Backend:
+
+```env
+AUTH_MODE=entra
+TENANT_ID=<tenant-guid>
+CLIENT_ID=<api-client-id>
+CLIENT_SECRET=<api-client-secret>
+ENTRA_API_AUDIENCE=<api-client-id>
+ENTRA_REQUIRED_SCOPE=access_as_user
+GRAPH_IMPL=microsoft
+```
+
+Frontend:
+
+```env
+AUTH_MICROSOFT_ENTRA_ID_ID=<web-client-id>
+AUTH_MICROSOFT_ENTRA_ID_SECRET=<web-client-secret>
+AUTH_MICROSOFT_ENTRA_ID_TENANT_ID=<tenant-guid>
+AUTH_MICROSOFT_ENTRA_ID_API_ID=<api-client-id>
+NEXT_PUBLIC_AUTH_MODE=entra
+```
+
+The frontend requests a token specifically for the Meeting Intelligence API.
+A Microsoft Graph token must not be accepted by this API because its `aud`
+claim names a different resource.
 
 ## Environment Setup
 
@@ -70,6 +133,7 @@ recording. It does not call Microsoft Graph, AssemblyAI, Anthropic, or email.
    TENANT_ID=mock-tenant
    CLIENT_ID=mock-client
    CLIENT_SECRET=mock-secret
+   AUTH_MODE=mock
    DATABASE_URL=postgresql+asyncpg://meeting:meeting@localhost:5434/meeting_intel
    GRAPH_IMPL=mock
    TRANSCRIBER_IMPL=mock
@@ -119,7 +183,8 @@ recording. It does not call Microsoft Graph, AssemblyAI, Anthropic, or email.
    ```
 
 7. Open `http://localhost:3000`, use `demo.user@taxconsulting.co.za`
-   with the development email login, then import `Quarterly Planning Demo.mp4`.
+   with the Local Mock login, click the one-time subscription button, then
+   import `Quarterly Planning Demo.mp4`.
 
 Never enable Mock mode in production. Production must use verified Microsoft Entra
 authentication and real secret management.
@@ -127,7 +192,7 @@ authentication and real secret management.
 ### Webhooks (optional — reconciliation covers this)
 
 Graph must reach your machine over HTTPS. Use `ngrok http 8000`, set `WEBHOOK_BASE_URL`,
-then `POST /subscriptions/ensure` to register a subscription per domain user.
+then `POST /subscriptions/ensure` to register subscriptions for opted-in users only.
 
 ## Azure production deployment
 
@@ -190,13 +255,14 @@ az containerapp create \
   --target-port 8000 --ingress external \
   --min-replicas 1 --max-replicas 2 \
   --env-vars \
-    TENANT_ID=<> CLIENT_ID=<> CLIENT_SECRET=<> \
+    AUTH_MODE=entra TENANT_ID=<> CLIENT_ID=<> CLIENT_SECRET=<> \
+    ENTRA_API_AUDIENCE=<> ENTRA_REQUIRED_SCOPE=access_as_user \
     ALLOWED_DOMAIN=taxconsulting.co.za \
     DATABASE_URL=postgresql+asyncpg://$PG_USER:$PG_PASS@$PG_SERVER.postgres.database.azure.com/$PG_DB \
     ANTHROPIC_API_KEY=<> ASSEMBLYAI_API_KEY=<> \
     ANTHROPIC_MODEL=claude-sonnet-4-6 \
     TRANSCRIBER_IMPL=assemblyai EXTRACTOR_IMPL=anthropic \
-    AUTO_SEND_EMAIL=true POPIA_NOTICE_ENABLED=true \
+    EMAILS_ENABLED=true POPIA_NOTICE_ENABLED=true ENABLE_AUTO_RECONCILE=true \
     MAIL_SENDER_UPN=<> WEBHOOK_CLIENT_STATE=<>
 ```
 
@@ -213,12 +279,12 @@ az containerapp job create \
   --replica-timeout 600 \
   --command "python" --args "-m" "app.workers.reconcile" \
   --env-vars \
-    TENANT_ID=<> CLIENT_ID=<> CLIENT_SECRET=<> \
+    AUTH_MODE=entra TENANT_ID=<> CLIENT_ID=<> CLIENT_SECRET=<> \
     ALLOWED_DOMAIN=taxconsulting.co.za \
     DATABASE_URL=postgresql+asyncpg://$PG_USER:$PG_PASS@$PG_SERVER.postgres.database.azure.com/$PG_DB \
     ANTHROPIC_API_KEY=<> ASSEMBLYAI_API_KEY=<> \
     TRANSCRIBER_IMPL=assemblyai EXTRACTOR_IMPL=anthropic \
-    AUTO_SEND_EMAIL=true POPIA_NOTICE_ENABLED=true \
+    EMAILS_ENABLED=true POPIA_NOTICE_ENABLED=true \
     MAIL_SENDER_UPN=<>
 ```
 
@@ -239,7 +305,7 @@ API_URL=$(az containerapp show --name $API_APP --resource-group $RG \
 az containerapp update --name $API_APP --resource-group $RG \
   --set-env-vars WEBHOOK_BASE_URL=https://$API_URL
 
-# Register webhook subscriptions for all domain users
+# Register or renew webhook subscriptions for opted-in users
 curl -X POST https://$API_URL/subscriptions/ensure
 ```
 
@@ -250,6 +316,9 @@ curl -X POST https://$API_URL/subscriptions/ensure
 | `TENANT_ID` | Yes | Entra tenant ID |
 | `CLIENT_ID` | Yes | App registration client ID |
 | `CLIENT_SECRET` | Yes | App registration secret |
+| `AUTH_MODE` | Yes | `entra` in production; `mock` only for local Mock mode |
+| `ENTRA_API_AUDIENCE` | Yes | Client ID expected in the API access token `aud` claim |
+| `ENTRA_REQUIRED_SCOPE` | No | Default: `access_as_user` |
 | `ALLOWED_DOMAIN` | Yes | e.g. `taxconsulting.co.za` |
 | `DATABASE_URL` | Yes | asyncpg connection string |
 | `ANTHROPIC_API_KEY` | Yes | Anthropic Claude key |
@@ -258,7 +327,7 @@ curl -X POST https://$API_URL/subscriptions/ensure
 | `TRANSCRIBER_IMPL` | No | `assemblyai` or `mock` |
 | `EXTRACTOR_IMPL` | No | `anthropic`, `azure_openai`, or `mock` |
 | `MAIL_SENDER_UPN` | Yes | Mailbox emails send from |
-| `AUTO_SEND_EMAIL` | No | `true` to send on approval, `false` to hold |
+| `AUTO_SEND_EMAIL` | No | Deprecated; explicit organiser approval is the send gate |
 | `POPIA_NOTICE_ENABLED` | No | `true` to send POPIA notice before processing |
 | `WEBHOOK_BASE_URL` | No | Public HTTPS URL for Graph webhook delivery |
 | `WEBHOOK_CLIENT_STATE` | No | Random string to verify webhook authenticity |

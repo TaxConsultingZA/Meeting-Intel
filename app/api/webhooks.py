@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Request, Response, Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import get_db
 from ..services.ledger import claim_item
 from ..queue.bus import enqueue_job
+from ..models import RegisteredUser
 
 settings = get_settings()
 router = APIRouter()
@@ -39,6 +41,17 @@ async def graph_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         # Drive ID is encoded in the resource path — tells us whose OneDrive this is
         drive_id = _parse_drive_id(note.get("resource", ""))
         if not drive_id:
+            continue
+
+        # A valid Graph notification is not consent by itself. Ignore stale or
+        # unexpected subscriptions unless this drive still belongs to an opted-in user.
+        subscriber = await db.scalar(
+            select(RegisteredUser).where(
+                RegisteredUser.graph_drive_id == drive_id,
+                RegisteredUser.is_subscribed.is_(True),
+            )
+        )
+        if not subscriber:
             continue
 
         if await claim_item(db, drive_item_id, drive_id, etag, source="webhook"):

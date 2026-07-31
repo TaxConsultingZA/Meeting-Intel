@@ -8,10 +8,11 @@ import NotificationBell from "@/components/notification-bell";
 
 interface NavProps {
   userEmail: string;
+  accessToken: string;
   isAdmin?: boolean;
 }
 
-export default function Nav({ userEmail, isAdmin }: NavProps) {
+export default function Nav({ userEmail, accessToken, isAdmin }: NavProps) {
   const path = usePathname();
   const initials = userEmail
     .split("@")[0]
@@ -55,7 +56,7 @@ export default function Nav({ userEmail, isAdmin }: NavProps) {
         <span className="text-white/60 text-[13px] hidden sm:block">
           {userEmail}
         </span>
-        <NotificationBell upn={userEmail} />
+        <NotificationBell upn={accessToken} />
         <div className="w-8 h-8 rounded-full bg-[#C9A52C] flex items-center justify-center text-[#003366] font-bold text-xs">
           {initials}
         </div>

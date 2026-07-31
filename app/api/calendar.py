@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from ..graph import client as graph
-from .reviews import current_user
+from .deps import require_subscribed
 
 router = APIRouter()
 
@@ -65,7 +65,7 @@ def _format_event(e: dict) -> dict:
 @router.get("/calendar/upcoming")
 async def upcoming_meetings(
     days: int = 7,
-    upn: str = Depends(current_user),
+    upn: str = Depends(require_subscribed),
 ):
     """Return the user's upcoming online/Teams meetings for the next N days."""
     try:

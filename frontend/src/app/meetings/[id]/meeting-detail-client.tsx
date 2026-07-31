@@ -36,28 +36,31 @@ const SPEAKER_COLOURS = [
 interface Props {
   meeting: MeetingOut;
   upn: string;
+  accessToken: string;
 }
 
-export default function MeetingDetailClient({ meeting: initial, upn }: Props) {
+export default function MeetingDetailClient({ meeting: initial, upn, accessToken }: Props) {
   const router = useRouter();
   const [meeting, setMeeting] = useState(initial);
   const [approving, setApproving] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [recipients, setRecipients] = useState<string[]>(initial.email_recipients ?? []);
 
   const data = meeting.extracted_json ?? {};
   const isReviewable = meeting.state === "awaiting_review";
+  const isOrganizer = meeting.organizer_upn?.toLowerCase() === upn.toLowerCase();
   const isProcessing = (["queued", "downloading", "transcribing", "extracting"] as ProcessingState[]).includes(meeting.state);
 
   async function handleApprove() {
     setApproving(true);
     try {
-      const res = await approveMeeting(meeting.id, upn);
+      const res = await approveMeeting(meeting.id, accessToken, recipients);
       setMeeting((m) => ({ ...m, state: res.state as never }));
       setShowModal(false);
       toast.success(
         res.state === "sent"
-          ? "Meeting notes approved and emailed to all participants."
-          : "Meeting notes approved. Email delivery is disabled or pending.",
+          ? `Meeting notes approved and emailed to ${recipients.length} selected recipient(s).`
+          : "Meeting notes approved. No email was sent.",
       );
     } catch (e: unknown) {
       toast.error(`Approval failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -83,8 +86,8 @@ export default function MeetingDetailClient({ meeting: initial, upn }: Props) {
         <div className="flex items-center gap-2.5 bg-green-50 border border-green-200 rounded-lg px-4 py-3 mb-5 text-green-800 text-[13.5px] font-medium">
           <CheckCircle2 size={16} className="text-green-600" />
           {meeting.state === "sent"
-            ? "Meeting notes approved and emailed to all participants."
-            : "Meeting notes approved. Email delivery is disabled or pending."}
+            ? `Meeting notes approved and emailed to ${meeting.approved_recipients.length} selected recipient(s).`
+            : "Meeting notes approved. No email was sent."}
         </div>
       ) : null}
 
@@ -111,7 +114,7 @@ export default function MeetingDetailClient({ meeting: initial, upn }: Props) {
             </div>
             <MetaRow label="Action Items" value={`${meeting.action_items.length} extracted`} />
             <div className="h-px bg-[#dde1e8]" />
-            {isReviewable && (
+            {isReviewable && isOrganizer && (
               <button
                 type="button"
                 onClick={() => setShowModal(true)}
@@ -181,7 +184,7 @@ export default function MeetingDetailClient({ meeting: initial, upn }: Props) {
           <Section title="Action Items" hint="Hover a row to edit">
             <ActionItemsTable
               items={meeting.action_items}
-              upn={upn}
+              upn={accessToken}
               onUpdate={handleEditItem}
             />
           </Section>
@@ -251,9 +254,42 @@ export default function MeetingDetailClient({ meeting: initial, upn }: Props) {
             <DialogTitle>Approve Meeting Notes</DialogTitle>
           </DialogHeader>
           <p className="text-[13.5px] text-[#1a1a2e] leading-6">
-            Please confirm you have reviewed the action items for{" "}
-            <strong>{meeting.title}</strong>. If email delivery is enabled, the
-            formatted notes will then be sent to the meeting participants.
+            Confirm you have reviewed <strong>{meeting.title}</strong>, then choose
+            exactly who should receive the approved notes.
+          </p>
+          <div className="border border-[#dde1e8] rounded-md max-h-56 overflow-y-auto">
+            {(meeting.email_recipients ?? []).length === 0 ? (
+              <p className="p-3 text-sm text-[#6b7280]">No email addresses were found for this meeting.</p>
+            ) : (
+              meeting.email_recipients.map((email) => (
+                <label
+                  key={email}
+                  className="flex items-center gap-3 px-3 py-2.5 border-b last:border-b-0 border-[#edf0f4] cursor-pointer hover:bg-[#fafbfc]"
+                >
+                  <input
+                    type="checkbox"
+                    checked={recipients.includes(email)}
+                    onChange={(e) =>
+                      setRecipients((current) =>
+                        e.target.checked
+                          ? [...current, email]
+                          : current.filter((value) => value !== email),
+                      )
+                    }
+                    className="h-4 w-4 accent-[#003366]"
+                  />
+                  <span className="text-sm text-[#1a1a2e]">{email}</span>
+                  {email === meeting.organizer_upn?.toLowerCase() && (
+                    <span className="ml-auto text-[11px] text-[#6b7280]">Organiser</span>
+                  )}
+                </label>
+              ))
+            )}
+          </div>
+          <p className="text-xs text-[#6b7280]">
+            {recipients.length === 0
+              ? "Approval will be recorded without sending an email."
+              : `${recipients.length} recipient(s) selected.`}
           </p>
           <DialogFooter>
             <button

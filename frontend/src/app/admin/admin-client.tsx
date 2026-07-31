@@ -8,9 +8,10 @@ interface Props {
   initialUsers: RegisteredUser[];
   businessUnits: BusinessUnit[];
   callerUpn: string;
+  accessToken: string;
 }
 
-export default function AdminClient({ initialUsers, businessUnits, callerUpn }: Props) {
+export default function AdminClient({ initialUsers, businessUnits, callerUpn, accessToken }: Props) {
   const [users, setUsers] = useState<RegisteredUser[]>(initialUsers);
   const [showAdd, setShowAdd] = useState(false);
   const [editUser, setEditUser] = useState<RegisteredUser | null>(null);
@@ -27,7 +28,7 @@ export default function AdminClient({ initialUsers, businessUnits, callerUpn }: 
           business_unit_id: form.business_unit_id ?? undefined,
           is_admin: form.is_admin,
         },
-        callerUpn,
+        accessToken,
       );
       setUsers((prev) => [...prev, created]);
       setShowAdd(false);
@@ -39,7 +40,7 @@ export default function AdminClient({ initialUsers, businessUnits, callerUpn }: 
   async function handleUpdate(targetUpn: string, payload: { display_name?: string; business_unit_id?: number; is_admin?: boolean }) {
     setError(null);
     try {
-      const updated = await updateUser(targetUpn, payload, callerUpn);
+      const updated = await updateUser(targetUpn, payload, accessToken);
       setUsers((prev) => prev.map((u) => (u.upn === targetUpn ? updated : u)));
       setEditUser(null);
     } catch (e: unknown) {
@@ -51,7 +52,7 @@ export default function AdminClient({ initialUsers, businessUnits, callerUpn }: 
     if (!confirm(`Remove ${targetUpn} from the platform?`)) return;
     setError(null);
     try {
-      await removeUser(targetUpn, callerUpn);
+      await removeUser(targetUpn, accessToken);
       setUsers((prev) => prev.filter((u) => u.upn !== targetUpn));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to remove user");

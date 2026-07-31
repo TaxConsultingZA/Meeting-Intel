@@ -22,6 +22,8 @@ def _admin_user(upn="admin@taxconsulting.co.za"):
     u.display_name = "Admin User"
     u.business_unit_id = 1
     u.is_admin = True
+    u.is_subscribed = False
+    u.subscribed_at = None
     u.registered_at = MagicMock()
     u.registered_at.isoformat.return_value = "2026-06-01T10:00:00"
     u.business_unit = MagicMock()
@@ -35,11 +37,42 @@ def _member_user(upn="member@taxconsulting.co.za"):
     u.display_name = "Member User"
     u.business_unit_id = 2
     u.is_admin = False
+    u.is_subscribed = False
+    u.subscribed_at = None
     u.registered_at = MagicMock()
     u.registered_at.isoformat.return_value = "2026-06-02T08:00:00"
     u.business_unit = MagicMock()
     u.business_unit.name = "Tax Technical"
     return u
+
+
+class TestOptInSubscription:
+    async def test_subscribe_sets_explicit_consent_and_timestamp(self):
+        from app.api.users import subscribe
+
+        user = _member_user()
+        db = AsyncMock()
+        db.scalar = AsyncMock(return_value=user)
+        result = await subscribe(db=db, upn=user.upn)
+
+        assert user.is_subscribed is True
+        assert user.subscribed_at is not None
+        assert result.is_subscribed is True
+        db.commit.assert_awaited_once()
+
+    async def test_unsubscribe_clears_drive_binding(self):
+        from app.api.users import unsubscribe
+
+        user = _member_user()
+        user.is_subscribed = True
+        user.graph_drive_id = "drive-123"
+        db = AsyncMock()
+        db.scalar = AsyncMock(return_value=user)
+        result = await unsubscribe(db=db, upn=user.upn)
+
+        assert user.is_subscribed is False
+        assert user.graph_drive_id is None
+        assert result.is_subscribed is False
 
 
 class TestListBusinessUnits:
@@ -62,7 +95,7 @@ class TestListBusinessUnits:
 
         app.dependency_overrides[get_db] = override_db
         client = TestClient(app)
-        resp = client.get("/admin/business-units", headers={"x-user-upn": "user@taxconsulting.co.za"})
+        resp = client.get("/admin/business-units", headers={"Authorization": "Bearer mock:user@taxconsulting.co.za"})
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 2
@@ -76,7 +109,7 @@ class TestListBusinessUnits:
 
         app.dependency_overrides[get_db] = override_db
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/admin/business-units", headers={"x-user-upn": "user@otherdomain.com"})
+        resp = client.get("/admin/business-units", headers={"Authorization": "Bearer mock:user@otherdomain.com"})
         assert resp.status_code == 403
 
 
@@ -97,7 +130,7 @@ class TestListUsers:
 
         app.dependency_overrides[get_db] = override_db
         client = TestClient(app)
-        resp = client.get("/admin/users", headers={"x-user-upn": "admin@taxconsulting.co.za"})
+        resp = client.get("/admin/users", headers={"Authorization": "Bearer mock:admin@taxconsulting.co.za"})
         assert resp.status_code == 200
         users = resp.json()
         assert len(users) == 1
@@ -115,7 +148,7 @@ class TestListUsers:
 
         app.dependency_overrides[get_db] = override_db
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/admin/users", headers={"x-user-upn": "member@taxconsulting.co.za"})
+        resp = client.get("/admin/users", headers={"Authorization": "Bearer mock:member@taxconsulting.co.za"})
         assert resp.status_code == 403
 
     def test_unregistered_user_gets_403(self):
@@ -128,7 +161,7 @@ class TestListUsers:
 
         app.dependency_overrides[get_db] = override_db
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/admin/users", headers={"x-user-upn": "ghost@taxconsulting.co.za"})
+        resp = client.get("/admin/users", headers={"Authorization": "Bearer mock:ghost@taxconsulting.co.za"})
         assert resp.status_code == 403
 
 
@@ -167,7 +200,7 @@ class TestRegisterUser:
         resp = client.post(
             "/admin/users",
             json={"upn": "member@taxconsulting.co.za", "business_unit_id": 1},
-            headers={"x-user-upn": "admin@taxconsulting.co.za"},
+            headers={"Authorization": "Bearer mock:admin@taxconsulting.co.za"},
         )
         assert resp.status_code == 409
 
@@ -186,7 +219,7 @@ class TestRemoveUser:
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.delete(
             "/admin/users/admin%40taxconsulting.co.za",
-            headers={"x-user-upn": "admin@taxconsulting.co.za"},
+            headers={"Authorization": "Bearer mock:admin@taxconsulting.co.za"},
         )
         assert resp.status_code == 400
 
@@ -210,7 +243,7 @@ class TestRemoveUser:
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.delete(
             "/admin/users/ghost%40taxconsulting.co.za",
-            headers={"x-user-upn": "admin@taxconsulting.co.za"},
+            headers={"Authorization": "Bearer mock:admin@taxconsulting.co.za"},
         )
         assert resp.status_code == 404
 
@@ -227,7 +260,7 @@ class TestGetMe:
 
         app.dependency_overrides[get_db] = override_db
         client = TestClient(app)
-        resp = client.get("/users/me", headers={"x-user-upn": "member@taxconsulting.co.za"})
+        resp = client.get("/users/me", headers={"Authorization": "Bearer mock:member@taxconsulting.co.za"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["upn"] == "member@taxconsulting.co.za"
@@ -245,7 +278,7 @@ class TestGetMe:
 
         app.dependency_overrides[get_db] = override_db
         client = TestClient(app)
-        resp = client.get("/users/me", headers={"x-user-upn": "unknown@taxconsulting.co.za"})
+        resp = client.get("/users/me", headers={"Authorization": "Bearer mock:unknown@taxconsulting.co.za"})
         assert resp.status_code == 200
         assert resp.json()["upn"] == "unknown@taxconsulting.co.za"
         assert resp.json()["is_admin"] is False
@@ -261,7 +294,7 @@ class TestGetMe:
 
         app.dependency_overrides[get_db] = override_db
         client = TestClient(app)
-        resp = client.get("/users/me", headers={"x-user-upn": "admin@taxconsulting.co.za"})
+        resp = client.get("/users/me", headers={"Authorization": "Bearer mock:admin@taxconsulting.co.za"})
         assert resp.status_code == 200
         assert resp.json()["is_admin"] is True
 

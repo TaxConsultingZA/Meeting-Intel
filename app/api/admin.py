@@ -36,6 +36,8 @@ def _user_to_out(u: RegisteredUser) -> RegisteredUserOut:
         business_unit_id=u.business_unit_id,
         business_unit_name=u.business_unit.name if u.business_unit else None,
         is_admin=u.is_admin,
+        is_subscribed=u.is_subscribed,
+        subscribed_at=u.subscribed_at.isoformat() if u.subscribed_at else None,
         registered_at=u.registered_at.isoformat(),
     )
 

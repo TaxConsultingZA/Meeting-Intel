@@ -2,6 +2,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
+from fastapi.security import HTTPAuthorizationCredentials
 
 
 def _make_app():
@@ -16,21 +17,38 @@ def _make_app():
 class TestCurrentUser:
     async def test_valid_domain_accepted(self):
         from app.api.reviews import current_user
-        result = await current_user(x_user_upn="alice@taxconsulting.co.za")
+        result = await current_user(
+            credentials=HTTPAuthorizationCredentials(
+                scheme="Bearer", credentials="mock:alice@taxconsulting.co.za"
+            )
+        )
         assert result == "alice@taxconsulting.co.za"
 
     async def test_outside_domain_raises_403(self):
         from fastapi import HTTPException
         from app.api.reviews import current_user
         with pytest.raises(HTTPException) as exc_info:
-            await current_user(x_user_upn="alice@otherdomain.com")
+            await current_user(
+                credentials=HTTPAuthorizationCredentials(
+                    scheme="Bearer", credentials="mock:alice@otherdomain.com"
+                )
+            )
         assert exc_info.value.status_code == 403
 
-    def test_missing_header_raises_422(self):
+    def test_missing_bearer_token_raises_401(self):
         app = _make_app()
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/reviews/all")
-        assert resp.status_code == 422
+        assert resp.status_code == 401
+
+    def test_spoofable_identity_header_is_rejected(self):
+        app = _make_app()
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get(
+            "/reviews/all",
+            headers={"x-user-upn": "alice@taxconsulting.co.za"},
+        )
+        assert resp.status_code == 401
 
 
 class TestAllMeetingsEndpoint:
@@ -45,7 +63,10 @@ class TestAllMeetingsEndpoint:
 
         app.dependency_overrides[get_db] = override_db
         client = TestClient(app)
-        resp = client.get("/reviews/all", headers={"x-user-upn": "alice@taxconsulting.co.za"})
+        resp = client.get(
+            "/reviews/all",
+            headers={"Authorization": "Bearer mock:alice@taxconsulting.co.za"},
+        )
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -62,8 +83,34 @@ class TestToOut:
         m.organizer_upn = "organiser@taxconsulting.co.za"
         m.extracted_json = None
         m.error = None
+        m.attendees_raw = []
+        m.approved_recipients = []
+        m.participants = []
         m.action_items = []
         out = _to_out(m)
         assert out.id == "uuid-1"
         assert out.title == "Budget Meeting"
         assert out.state == ProcessingState.awaiting_review
+
+
+class TestOrganizerReviewGate:
+    def test_organizer_is_allowed(self):
+        from app.api.reviews import _require_organizer
+
+        meeting = MagicMock()
+        meeting.organizer_upn = "owner@taxconsulting.co.za"
+        meeting.participants = []
+        _require_organizer(meeting, "owner@taxconsulting.co.za")
+
+    def test_non_organizer_is_rejected(self):
+        from fastapi import HTTPException
+        from app.api.reviews import _require_organizer
+
+        meeting = MagicMock()
+        meeting.organizer_upn = "owner@taxconsulting.co.za"
+        meeting.participants = [
+            MagicMock(user_upn="guest@taxconsulting.co.za", is_organizer=False)
+        ]
+        with pytest.raises(HTTPException) as exc:
+            _require_organizer(meeting, "guest@taxconsulting.co.za")
+        assert exc.value.status_code == 403

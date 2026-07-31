@@ -1,12 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from datetime import datetime, timezone
+from fastapi import APIRouter, Body, Depends, HTTPException
+from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import get_db
 from ..models import Meeting, ActionItem, MeetingParticipant, ProcessingState, RegisteredUser
-from ..schemas import MeetingOut, ActionItemOut, ActionItemEdit, ShareMeetingIn
+from ..schemas import (
+    MeetingOut, ActionItemOut, ActionItemEdit, ShareMeetingIn, ApproveMeetingIn
+)
 from ..graph import client as graph
 from ..email_templates import build_meeting_email
 from .deps import current_user, require_registered  # noqa: F401 — re-exported; tests may import from here
@@ -35,9 +38,19 @@ async def _authorize(db: AsyncSession, meeting_id, upn: str) -> Meeting:
 
 def _to_out(m: Meeting) -> MeetingOut:
     """Convert a Meeting ORM instance to its Pydantic API output schema."""
+    known_recipients = {
+        value.strip().lower()
+        for value in (m.attendees_raw or [])
+        if isinstance(value, str) and "@" in value
+    }
+    known_recipients.update(p.user_upn.lower() for p in m.participants)
+    if m.organizer_upn:
+        known_recipients.add(m.organizer_upn.lower())
     return MeetingOut(
         id=str(m.id), title=m.title, state=m.state, summary=m.summary,
         organizer_upn=m.organizer_upn, extracted_json=m.extracted_json, error=m.error,
+        email_recipients=sorted(known_recipients),
+        approved_recipients=m.approved_recipients or [],
         action_items=[
             ActionItemOut(
                 id=str(a.id), task=a.task, owner=a.owner,
@@ -46,6 +59,16 @@ def _to_out(m: Meeting) -> MeetingOut:
             ) for a in m.action_items
         ],
     )
+
+
+def _require_organizer(m: Meeting, upn: str) -> None:
+    """The human-in-the-loop reviewer is the meeting organiser only."""
+    organizer = (m.organizer_upn or "").lower()
+    participant_marks_organizer = any(
+        p.user_upn.lower() == upn and p.is_organizer for p in m.participants
+    )
+    if organizer != upn and not participant_marks_organizer:
+        raise HTTPException(403, "Only the meeting organiser can review and approve")
 
 
 @router.get("/reviews/all", response_model=list[MeetingOut])
@@ -67,6 +90,10 @@ async def pending(db: AsyncSession = Depends(get_db), upn: str = Depends(current
         .where(
             Meeting.state == ProcessingState.awaiting_review,
             MeetingParticipant.user_upn == upn,
+            or_(
+                MeetingParticipant.is_organizer.is_(True),
+                Meeting.organizer_upn == upn,
+            ),
         )
     )).unique().all()
     return [_to_out(m) for m in rows]
@@ -111,7 +138,8 @@ async def edit_item(item_id: str, edit: ActionItemEdit,
     item = await db.get(ActionItem, item_id)
     if not item:
         raise HTTPException(404)
-    await _authorize(db, item.meeting_id, upn)
+    meeting = await _authorize(db, item.meeting_id, upn)
+    _require_organizer(meeting, upn)
     for field, val in edit.model_dump(exclude_unset=True).items():
         setattr(item, field, val)
     item.edited_by = upn
@@ -121,17 +149,44 @@ async def edit_item(item_id: str, edit: ActionItemEdit,
 
 @router.post("/reviews/{meeting_id}/approve")
 async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
-                  upn: str = Depends(current_user)):
+                  upn: str = Depends(current_user),
+                  body: ApproveMeetingIn = Body(default=ApproveMeetingIn())):
     m = await _authorize(db, meeting_id, upn)
+    _require_organizer(m, upn)
+
+    known_recipients = {
+        value.strip().lower()
+        for value in (m.attendees_raw or [])
+        if isinstance(value, str) and "@" in value
+    }
+    known_recipients.update(p.user_upn.lower() for p in m.participants)
+    if m.organizer_upn:
+        known_recipients.add(m.organizer_upn.lower())
+    unknown = set(body.recipients) - known_recipients
+    if unknown:
+        raise HTTPException(
+            422,
+            f"Recipients were not part of this meeting: {', '.join(sorted(unknown))}",
+        )
+
     for a in m.action_items:
         a.approved = True
     m.state = ProcessingState.approved
+    m.approved_recipients = body.recipients
+    m.approved_by = upn
+    m.approved_at = datetime.now(timezone.utc)
     await db.commit()
 
-    if settings.emails_enabled and settings.auto_send_email and m.organizer_upn:
-        recipients = [p.user_upn for p in m.participants]
-        subject, body = build_meeting_email(m)
-        await graph.send_mail(m.organizer_upn, recipients, subject, body)
+    # The explicit organiser approval is the send gate. AUTO_SEND_EMAIL is no
+    # longer used here: selected recipients are never contacted before this POST.
+    if settings.emails_enabled and body.recipients and m.organizer_upn:
+        subject, email_body = build_meeting_email(m)
+        await graph.send_mail(
+            settings.mail_sender_upn or m.organizer_upn,
+            m.approved_recipients,
+            subject,
+            email_body,
+        )
         m.state = ProcessingState.sent
         await db.commit()
 

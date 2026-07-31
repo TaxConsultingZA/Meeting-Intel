@@ -46,6 +46,8 @@ export interface MeetingOut {
   extracted_json?: ExtractedJson | null;
   organizer_upn?: string | null;
   error?: string | null;
+  email_recipients: string[];
+  approved_recipients: string[];
 }
 
 export interface ExtractedJson {
@@ -147,6 +149,8 @@ export interface RegisteredUser {
   business_unit_id: number | null;
   business_unit_name: string | null;
   is_admin: boolean;
+  is_subscribed: boolean;
+  subscribed_at: string | null;
   registered_at: string;
 }
 

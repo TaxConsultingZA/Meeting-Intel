@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     graph_scope: str = "https://graph.microsoft.com/.default"
     graph_base: str = "https://graph.microsoft.com/v1.0"
 
+    # Authentication for this API.  Production accepts only Microsoft Entra
+    # access tokens issued specifically for this API.  ``mock`` is deliberately
+    # limited to local development and never trusts an arbitrary identity header.
+    auth_mode: str = "entra"  # entra | mock
+    entra_api_audience: str = ""
+    entra_required_scope: str = "access_as_user"
+
     # Restrict logins / processing to your domain
     allowed_domain: str = "taxconsulting.co.za"
 
@@ -86,6 +93,11 @@ class Settings(BaseSettings):
     # Comma-separated UPNs that are auto-registered as admins at startup.
     # Use this to bootstrap the first admin before anyone has been registered via the UI.
     admin_upns: list[str] = []
+
+    @property
+    def api_audience(self) -> str:
+        """Audience expected in Entra access tokens for this FastAPI service."""
+        return self.entra_api_audience or self.client_id
 
     @field_validator("admin_upns", mode="before")
     @classmethod

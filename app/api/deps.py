@@ -1,28 +1,75 @@
 """Shared FastAPI dependencies used across multiple routers."""
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
+from ..auth.entra import validate_access_token
 from ..db import get_db
 from ..models import RegisteredUser
 
 settings = get_settings()
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
-async def current_user(x_user_upn: str = Header(...)) -> str:
-    """FastAPI dependency: extract and validate the caller's UPN from the request header.
-
-    The frontend sends ``x-user-upn`` on every API call.  Any UPN outside the
-    configured ``ALLOWED_DOMAIN`` is rejected with 403.
-    """
-    if not x_user_upn.endswith("@" + settings.allowed_domain):
+def _domain_user(upn: str) -> str:
+    normalized = upn.strip().lower()
+    if not normalized.endswith("@" + settings.allowed_domain.lower()):
         raise HTTPException(403, "Outside allowed domain")
-    return x_user_upn
+    return normalized
+
+
+async def current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> str:
+    """Authenticate the caller using a bearer token.
+
+    Production validates a Microsoft Entra access token for this API. Local
+    Mock mode accepts only the explicit ``Bearer mock:<company-upn>`` format;
+    the old spoofable ``x-user-upn`` header is intentionally unsupported.
+    """
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(401, "Bearer token required")
+
+    token = credentials.credentials
+    if settings.auth_mode == "mock":
+        if settings.graph_impl != "mock":
+            raise HTTPException(500, "Mock authentication requires GRAPH_IMPL=mock")
+        if not token.startswith("mock:"):
+            raise HTTPException(401, "Invalid local Mock token")
+        return _domain_user(token.removeprefix("mock:"))
+
+    if settings.auth_mode != "entra":
+        raise HTTPException(500, "Unsupported AUTH_MODE")
+
+    claims = validate_access_token(token)
+    # ``preferred_username`` is mutable, so it is used only as an addressable
+    # company UPN. Authorization is anchored to Entra's immutable object ID.
+    upn = claims.get("preferred_username") or claims.get("upn") or claims.get("email")
+    if not isinstance(upn, str):
+        raise HTTPException(403, "Microsoft token has no addressable company username")
+    upn = _domain_user(upn)
+    oid = claims.get("oid")
+    if not isinstance(oid, str) or not oid:
+        raise HTTPException(403, "Microsoft token has no immutable user object ID")
+
+    by_oid = await db.scalar(select(RegisteredUser).where(RegisteredUser.entra_oid == oid))
+    if by_oid:
+        return by_oid.upn
+
+    by_upn = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
+    if by_upn:
+        if by_upn.entra_oid and by_upn.entra_oid != oid:
+            raise HTTPException(403, "Microsoft identity does not match this user record")
+        by_upn.entra_oid = oid
+        await db.commit()
+    return upn
 
 
 async def require_registered(
-    x_user_upn: str = Header(...),
+    upn: str = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> str:
     """FastAPI dependency: verify the caller is a registered platform user.
@@ -31,12 +78,20 @@ async def require_registered(
     Use this instead of ``current_user`` on endpoints that should be invisible
     to unregistered domain members.
     """
-    upn = x_user_upn.lower()
-    if not upn.endswith("@" + settings.allowed_domain):
-        raise HTTPException(403, "Outside allowed domain")
     user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
     if not user:
         raise HTTPException(403, "Not registered on the platform")
+    return upn
+
+
+async def require_subscribed(
+    upn: str = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> str:
+    """Allow Microsoft data access only after the user explicitly opts in."""
+    user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
+    if not user or not user.is_subscribed:
+        raise HTTPException(403, "Subscribe before accessing Calendar or OneDrive")
     return upn
 
 

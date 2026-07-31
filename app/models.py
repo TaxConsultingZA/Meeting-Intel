@@ -75,7 +75,8 @@ class BusinessUnit(Base):
 class RegisteredUser(Base):
     """A domain user explicitly registered to use the Meeting Intelligence platform.
 
-    Only registered users have their OneDrive recordings scanned and processed.
+    Registration permits sign-in; only users with ``is_subscribed=True`` have
+    Calendar/OneDrive data scanned and processed.
     Admin users (``is_admin=True``) can access the ``/admin`` management panel.
     The first admin UPN(s) are bootstrapped from the ``ADMIN_UPNS`` env var at startup.
     """
@@ -83,11 +84,17 @@ class RegisteredUser(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     upn: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    entra_oid: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     business_unit_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("business_units.id"), nullable=True
     )
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_subscribed: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    subscribed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    graph_drive_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     business_unit: Mapped["BusinessUnit | None"] = relationship(back_populates="users")
@@ -112,6 +119,26 @@ class ProcessedItem(Base):
     etag: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source: Mapped[str] = mapped_column(String(32))  # "webhook" | "reconcile"
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class SyncedCalendarEvent(Base):
+    """Cached Outlook event for an opted-in user.
+
+    This makes calendar discovery a real background sync rather than a page-load
+    side effect. The raw Graph shape is retained so the UI can evolve without
+    repeatedly re-fetching old events.
+    """
+    __tablename__ = "synced_calendar_events"
+    __table_args__ = (UniqueConstraint("user_upn", "event_id", name="uq_calendar_user_event"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    user_upn: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    event_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    subject: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    raw: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 # --- Core domain ---------------------------------------------------------
@@ -141,6 +168,9 @@ class Meeting(Base):
     # historical access when a user registers after a meeting was already processed.
     attendees_raw: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_recipients: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     action_items: Mapped[list["ActionItem"]] = relationship(

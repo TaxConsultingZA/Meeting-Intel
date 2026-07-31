@@ -17,6 +17,8 @@ class RegisteredUserOut(BaseModel):
     business_unit_id: int | None
     business_unit_name: str | None
     is_admin: bool
+    is_subscribed: bool
+    subscribed_at: str | None
     registered_at: str
 
 
@@ -40,6 +42,11 @@ class UpdateUserIn(BaseModel):
     display_name: str | None = None
     business_unit_id: int | None = None
     is_admin: bool | None = None
+
+
+class SubscriptionOut(BaseModel):
+    is_subscribed: bool
+    subscribed_at: str | None
 
 
 class ShareMeetingIn(BaseModel):
@@ -88,7 +95,18 @@ class MeetingOut(BaseModel):
     organizer_upn: str | None = None
     extracted_json: dict | None = None
     error: str | None = None
+    email_recipients: list[str] = []
+    approved_recipients: list[str] = []
     action_items: list[ActionItemOut]
+
+
+class ApproveMeetingIn(BaseModel):
+    recipients: list[str] = []
+
+    @field_validator("recipients")
+    @classmethod
+    def normalise_recipients(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(v.strip().lower() for v in values if v.strip()))
 
 
 # ── Rich extraction schema (what Claude must return) ──────────────────────────

@@ -1,4 +1,4 @@
-"""Tests for registration-related logic: BusinessUnit seeding, reconcile filtering."""
+"""Tests for opt-in user processing and attendee filtering."""
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from app.models import BUSINESS_UNITS
@@ -17,26 +17,20 @@ class TestBusinessUnitsList:
         assert len(BUSINESS_UNITS) == 6
 
 
-class TestReconcileRegisteredFilter:
-    async def test_reconcile_skips_unregistered_users(self):
-        """reconcile() should only process users in registered_users."""
+class TestReconcileSubscribedFilter:
+    async def test_reconcile_scans_only_returned_subscribers(self):
+        """The worker only scans UPNs returned by the is_subscribed query."""
         with (
-            patch("app.workers.reconcile.graph.list_domain_users", new_callable=AsyncMock) as mock_users,
             patch("app.workers.reconcile.graph.get_user_drive_id", new_callable=AsyncMock) as mock_drive,
             patch("app.workers.reconcile.graph.list_recordings_folder", new_callable=AsyncMock) as mock_recs,
             patch("app.workers.reconcile.SessionLocal") as mock_session_cls,
         ):
-            mock_users.return_value = [
-                {"mail": "registered@taxconsulting.co.za"},
-                {"mail": "unregistered@taxconsulting.co.za"},
-            ]
-
-            # DB returns only the registered UPN
+            # DB returns only the explicitly subscribed UPN.
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
             scalars_result = MagicMock()
-            scalars_result.all.return_value = ["registered@taxconsulting.co.za"]
+            scalars_result.all.return_value = ["subscribed@taxconsulting.co.za"]
             mock_session.scalars = AsyncMock(return_value=scalars_result)
             mock_session_cls.return_value = mock_session
 
@@ -46,12 +40,12 @@ class TestReconcileRegisteredFilter:
             from app.workers.reconcile import reconcile
             await reconcile()
 
-            # get_user_drive_id should only have been called for the registered user
+            # No tenant-wide list is used; only this exact subscriber is scanned.
             called_upns = [call.args[0] for call in mock_drive.call_args_list]
-            assert "registered@taxconsulting.co.za" in called_upns
+            assert "subscribed@taxconsulting.co.za" in called_upns
             assert "unregistered@taxconsulting.co.za" not in called_upns
 
-    async def test_reconcile_returns_zero_when_no_registered_users(self):
+    async def test_reconcile_returns_zero_when_no_subscribed_users(self):
         with (
             patch("app.workers.reconcile.SessionLocal") as mock_session_cls,
         ):
@@ -59,7 +53,7 @@ class TestReconcileRegisteredFilter:
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
             scalars_result = MagicMock()
-            scalars_result.all.return_value = []  # nobody registered
+            scalars_result.all.return_value = []  # nobody opted in
             mock_session.scalars = AsyncMock(return_value=scalars_result)
             mock_session_cls.return_value = mock_session
 

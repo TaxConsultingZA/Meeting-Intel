@@ -4,19 +4,19 @@ const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 /**
  * Base fetch wrapper for all backend API calls.
- * Attaches the `x-user-upn` identity header, throws on non-2xx responses,
+ * Attaches the Microsoft Entra bearer token, throws on non-2xx responses,
  * and handles 204 No Content by returning undefined.
  */
 async function apiFetch<T>(
   path: string,
-  upn: string,
+  accessToken: string,
   init?: RequestInit,
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      "x-user-upn": upn,
+      Authorization: `Bearer ${accessToken}`,
       ...(init?.headers ?? {}),
     },
   });
@@ -58,9 +58,13 @@ export async function editActionItem(
 /** Approve a meeting's notes, triggering the final email send to all participants. */
 export async function approveMeeting(
   meetingId: string,
-  upn: string,
+  accessToken: string,
+  recipients: string[],
 ): Promise<{ ok: boolean; state: string }> {
-  return apiFetch(`/reviews/${meetingId}/approve`, upn, { method: "POST" });
+  return apiFetch(`/reviews/${meetingId}/approve`, accessToken, {
+    method: "POST",
+    body: JSON.stringify({ recipients }),
+  });
 }
 
 /** Fetch the 30 most recent activity notifications for the current user. */
@@ -112,6 +116,20 @@ export async function getMe(upn: string): Promise<RegisteredUser | null> {
     if (e instanceof Error && e.message.startsWith("404")) return null;
     throw e;
   }
+}
+
+/** Explicitly opt the current user into automatic Calendar/OneDrive processing. */
+export async function subscribeCurrentUser(
+  accessToken: string,
+): Promise<{ is_subscribed: boolean; subscribed_at: string | null }> {
+  return apiFetch("/users/me/subscription", accessToken, { method: "POST" });
+}
+
+/** Stop future automatic processing without deleting historical meeting data. */
+export async function unsubscribeCurrentUser(
+  accessToken: string,
+): Promise<{ is_subscribed: boolean; subscribed_at: string | null }> {
+  return apiFetch("/users/me/subscription", accessToken, { method: "DELETE" });
 }
 
 /** Fetch all available business units (any authenticated domain user can call this). */

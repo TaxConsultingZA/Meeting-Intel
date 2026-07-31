@@ -64,7 +64,7 @@ async def _seed_admin_users() -> None:
 
 
 async def _reconcile_loop() -> None:
-    """Background loop: scan every registered user's OneDrive and auto-import new recordings.
+    """Background loop: sync Microsoft data for explicitly subscribed users.
 
     Waits 30 seconds after startup to let the app and DB pool finish initialising,
     then runs ``reconcile()`` every ``_RECONCILE_INTERVAL`` seconds.  Errors are
@@ -74,7 +74,11 @@ async def _reconcile_loop() -> None:
     while True:
         try:
             from app.workers.reconcile import reconcile
+            from app.workers.sync_microsoft import sync_calendar_events
+            calendar_count = await sync_calendar_events()
             found = await reconcile()
+            if calendar_count:
+                log.info("Microsoft sync: refreshed %d calendar event(s)", calendar_count)
             if found:
                 log.info("Auto-reconcile: processed %d new recording(s)", found)
         except Exception as exc:

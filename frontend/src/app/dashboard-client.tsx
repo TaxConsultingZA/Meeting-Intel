@@ -36,11 +36,12 @@ interface Props {
   upcoming: CalendarEvent[];
   historical: MeetingOut[];
   upn: string;
+  accessToken: string;
 }
 
 type Tab = "upcoming" | "in_progress" | "review" | "old_meetings" | "historical" | "cancelled";
 
-export default function DashboardClient({ meetings, upcoming, historical: initialHistorical, upn }: Props) {
+export default function DashboardClient({ meetings, upcoming, historical: initialHistorical, upn, accessToken }: Props) {
   const [tab, setTab] = useState<Tab>("upcoming");
   const [showImport, setShowImport] = useState(false);
   const [historical, setHistorical] = useState<MeetingOut[]>(initialHistorical);
@@ -55,7 +56,7 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
 
   async function handleRequestAccess(meetingId: string) {
     try {
-      await requestHistoricalAccess(meetingId, upn);
+      await requestHistoricalAccess(meetingId, accessToken);
       setHistorical((prev) => prev.filter((m) => m.id !== meetingId));
       alert("Access granted — the meeting will now appear in your Old Meetings tab.");
     } catch (e: unknown) {
@@ -88,7 +89,7 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
         </button>
       </div>
 
-      {showImport && <ImportModal upn={upn} onClose={() => setShowImport(false)} />}
+      {showImport && <ImportModal upn={accessToken} onClose={() => setShowImport(false)} />}
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-7">
@@ -284,7 +285,7 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
         <ShareModal
           meetingId={shareModal.meetingId}
           meetingTitle={shareModal.title}
-          callerUpn={upn}
+          callerUpn={accessToken}
           onClose={() => setShareModal(null)}
         />
       )}

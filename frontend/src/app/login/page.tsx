@@ -3,6 +3,7 @@ import { useState } from "react";
 import { signIn } from "next-auth/react";
 
 const HAS_RESEND = process.env.NEXT_PUBLIC_HAS_RESEND === "true";
+const IS_MOCK = process.env.NEXT_PUBLIC_AUTH_MODE === "mock";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -69,29 +70,34 @@ export default function LoginPage() {
             </div>
           ) : (
             <div className="flex flex-col gap-6">
-              <button
-                type="button"
-                onClick={() => signIn("microsoft-entra-id", { callbackUrl: "/" })}
-                className="w-full flex items-center justify-center gap-3 bg-white border border-[#dde1e8] hover:bg-gray-50 text-[#374151] font-semibold py-2.5 px-4 rounded-md text-sm transition-colors shadow-sm"
-              >
-                <svg width="20" height="20" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M1 1h9v9H1z" fill="#f25022"/><path d="M11 1h9v9h-9z" fill="#7fbb00"/><path d="M1 11h9v9H1z" fill="#00a4ef"/><path d="M11 11h9v9h-9z" fill="#ffb900"/>
-                </svg>
-                Sign in with Microsoft
-              </button>
-
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center">
-                  <span className="w-full border-t border-[#dde1e8]"></span>
-                </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-white px-2 text-[#9ca3af]">Or continue with email</span>
-                </div>
-              </div>
+              {!IS_MOCK && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => signIn("microsoft-entra-id", { callbackUrl: "/" })}
+                    className="w-full flex items-center justify-center gap-3 bg-white border border-[#dde1e8] hover:bg-gray-50 text-[#374151] font-semibold py-2.5 px-4 rounded-md text-sm transition-colors shadow-sm"
+                  >
+                    <svg width="20" height="20" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M1 1h9v9H1z" fill="#f25022"/><path d="M11 1h9v9h-9z" fill="#7fbb00"/><path d="M1 11h9v9H1z" fill="#00a4ef"/><path d="M11 11h9v9h-9z" fill="#ffb900"/>
+                    </svg>
+                    Sign in with Microsoft
+                  </button>
+                  <div className="relative">
+                    <div className="absolute inset-0 flex items-center">
+                      <span className="w-full border-t border-[#dde1e8]"></span>
+                    </div>
+                    <div className="relative flex justify-center text-xs uppercase">
+                      <span className="bg-white px-2 text-[#9ca3af]">Or continue with email</span>
+                    </div>
+                  </div>
+                </>
+              )}
 
               <form onSubmit={handleSubmit} className="flex flex-col gap-4">
                 <p className="text-[#6b7280] text-xs text-center">
-                  Enter your work email and we&apos;ll send you a sign-in link.
+                  {IS_MOCK
+                    ? "Local Mock mode — no Microsoft or email service will be contacted."
+                    : "Enter your work email and we'll send you a sign-in link."}
                 </p>
                 <div>
                   <label htmlFor="email" className="block text-xs font-semibold text-[#374151] mb-1">
@@ -115,7 +121,9 @@ export default function LoginPage() {
                   disabled={loading}
                   className="w-full bg-[#003366] hover:bg-[#0a4a8c] disabled:opacity-60 text-white font-semibold py-2.5 px-4 rounded-md text-sm transition-colors"
                 >
-                  {loading ? "Sending…" : "Send sign-in link"}
+                  {loading
+                    ? (IS_MOCK ? "Signing in…" : "Sending…")
+                    : (IS_MOCK ? "Continue in Mock mode" : "Send sign-in link")}
                 </button>
               </form>
             </div>

@@ -11,7 +11,7 @@ from ..models import ProcessedItem, Meeting, MeetingParticipant, ProcessingState
 from ..graph import client as graph
 from ..services.ledger import claim_item
 from ..pipeline.steps import process_recording
-from .reviews import current_user
+from .deps import require_subscribed
 
 settings = get_settings()
 router = APIRouter()
@@ -25,7 +25,7 @@ class ImportRequest(BaseModel):
 @router.get("/recordings/available")
 async def available_recordings(
     db: AsyncSession = Depends(get_db),
-    upn: str = Depends(current_user),
+    upn: str = Depends(require_subscribed),
 ):
     """List recordings in the user's OneDrive Recordings folder with current processing state."""
     try:
@@ -77,7 +77,7 @@ async def available_recordings(
 async def import_recording(
     req: ImportRequest,
     db: AsyncSession = Depends(get_db),
-    upn: str = Depends(current_user),
+    upn: str = Depends(require_subscribed),
 ):
     """Trigger background processing of a new recording."""
     claimed = await claim_item(db, req.drive_item_id, req.drive_id, etag=None, source="manual")
@@ -96,7 +96,7 @@ async def import_recording(
 async def reprocess_recording(
     req: ImportRequest,
     db: AsyncSession = Depends(get_db),
-    upn: str = Depends(current_user),
+    upn: str = Depends(require_subscribed),
 ):
     """Re-trigger processing for a failed recording and ensure caller is a participant."""
     m = await db.scalar(

@@ -20,13 +20,13 @@ function makeResponse(body: unknown, status = 200): Response {
 }
 
 describe("getAllMeetings", () => {
-  it("passes x-user-upn header", async () => {
+  it("passes the bearer token", async () => {
     mockFetch.mockResolvedValueOnce(makeResponse([]));
     const { getAllMeetings } = await import("../api");
     await getAllMeetings("alice@taxconsulting.co.za");
     const [, init] = mockFetch.mock.calls[0];
     expect((init as RequestInit).headers).toMatchObject({
-      "x-user-upn": "alice@taxconsulting.co.za",
+      Authorization: "Bearer alice@taxconsulting.co.za",
     });
   });
 

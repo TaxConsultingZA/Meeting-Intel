@@ -1,6 +1,8 @@
 """Tests for app/schemas.py — Pydantic model validation and field sync."""
 import pytest
-from app.schemas import ExtractedActionItem, ActionItemEdit, RichExtractionResult
+from app.schemas import (
+    ExtractedActionItem, ActionItemEdit, RichExtractionResult, ApproveMeetingIn
+)
 from app.models import Confidence
 
 
@@ -44,6 +46,14 @@ class TestActionItemEdit:
         edit = ActionItemEdit(task="Updated task")
         dumped = edit.model_dump(exclude_unset=True)
         assert dumped == {"task": "Updated task"}
+
+
+class TestApproveMeetingIn:
+    def test_recipients_are_normalised_and_deduplicated(self):
+        body = ApproveMeetingIn(
+            recipients=[" Alice@Example.com ", "alice@example.com", "bob@example.com"]
+        )
+        assert body.recipients == ["alice@example.com", "bob@example.com"]
 
 
 class TestRichExtractionResult:

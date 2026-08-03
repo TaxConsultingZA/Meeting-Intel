@@ -46,7 +46,10 @@ async def list_domain_users() -> list[dict]:
 async def get_user_drive_id(user_upn: str) -> str:
     """Return the OneDrive drive-id for a given user UPN."""
     if _mock_enabled():
-        return "mock-drive-demo-user"
+        # Keep each local demo user's fake OneDrive independent.  Reusing one
+        # drive/item id made a recording imported by one tester appear already
+        # processed for every later tester.
+        return f"mock-drive::{user_upn.lower()}"
 
     url = f"{settings.graph_base}/users/{user_upn}/drive"
     async with httpx.AsyncClient(timeout=30) as c:
@@ -60,7 +63,7 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
     Returns [] if the folder doesn't exist yet (new user with no recordings)."""
     if _mock_enabled():
         return [{
-            "id": "mock-recording-quarterly-planning",
+            "id": f"{drive_id}::recording-quarterly-planning",
             "name": "Quarterly Planning Demo.mp4",
             "size": 12_582_912,
             "createdDateTime": "2026-07-30T08:00:00Z",
@@ -79,15 +82,18 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
 async def get_drive_item(drive_id: str, item_id: str) -> dict:
     """Fetch a single OneDrive item's metadata (name, size, createdBy, etc.)."""
     if _mock_enabled():
+        owner_upn = drive_id.removeprefix("mock-drive::")
+        if not owner_upn or owner_upn == drive_id:
+            owner_upn = "demo.user@taxconsulting.co.za"
         return {
             "id": item_id,
             "name": "Quarterly Planning Demo.mp4",
             "size": 12_582_912,
             "createdDateTime": "2026-07-30T08:00:00Z",
             "createdBy": {"user": {
-                "displayName": "Demo User",
-                "userPrincipalName": "demo.user@taxconsulting.co.za",
-                "email": "demo.user@taxconsulting.co.za",
+                "displayName": owner_upn.split("@", 1)[0].replace(".", " ").title(),
+                "userPrincipalName": owner_upn,
+                "email": owner_upn,
             }},
         }
 
@@ -151,8 +157,8 @@ async def get_upcoming_calendar_events(upn: str, days: int = 7) -> list[dict]:
             "start": {"dateTime": start.isoformat(), "timeZone": "UTC"},
             "end": {"dateTime": end.isoformat(), "timeZone": "UTC"},
             "organizer": {"emailAddress": {
-                "name": "Demo User",
-                "address": "demo.user@taxconsulting.co.za",
+                "name": upn.split("@", 1)[0].replace(".", " ").title(),
+                "address": upn,
             }},
             "attendees": [{"emailAddress": {
                 "name": "Demo Colleague",
@@ -187,8 +193,11 @@ async def get_event_attendees(drive_id: str, drive_item_id: str) -> list[str]:
     """Best-effort: Teams recordings carry attendee metadata in SharePoint list-item fields.
     Falls back to empty list if the metadata isn't present."""
     if _mock_enabled():
+        owner_upn = drive_id.removeprefix("mock-drive::")
+        if not owner_upn or owner_upn == drive_id:
+            owner_upn = "demo.user@taxconsulting.co.za"
         return [
-            "demo.user@taxconsulting.co.za",
+            owner_upn,
             "demo.colleague@taxconsulting.co.za",
         ]
 

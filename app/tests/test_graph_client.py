@@ -99,13 +99,36 @@ class TestGetEventAttendees:
 
 
 class TestLocalMockGraph:
+    async def test_mock_drives_and_recordings_are_isolated_per_user(self, monkeypatch):
+        from app.graph import client
+        monkeypatch.setattr(client.settings, "graph_impl", "mock")
+
+        alice_drive = await client.get_user_drive_id("alice@taxconsulting.co.za")
+        bob_drive = await client.get_user_drive_id("bob@taxconsulting.co.za")
+        alice_items = await client.list_recordings_folder(alice_drive)
+        bob_items = await client.list_recordings_folder(bob_drive)
+
+        assert alice_drive != bob_drive
+        assert alice_items[0]["id"] != bob_items[0]["id"]
+
+    async def test_mock_recording_belongs_to_current_drive_owner(self, monkeypatch):
+        from app.graph import client
+        monkeypatch.setattr(client.settings, "graph_impl", "mock")
+
+        drive = await client.get_user_drive_id("alice@taxconsulting.co.za")
+        metadata = await client.get_drive_item(drive, "mock-item")
+        attendees = await client.get_event_attendees(drive, "mock-item")
+
+        assert metadata["createdBy"]["user"]["email"] == "alice@taxconsulting.co.za"
+        assert "alice@taxconsulting.co.za" in attendees
+
     async def test_returns_demo_recording_without_http(self, monkeypatch):
         from app.graph import client
         monkeypatch.setattr(client.settings, "graph_impl", "mock")
 
-        rows = await client.list_recordings_folder("mock-drive")
+        rows = await client.list_recordings_folder("mock-drive::demo.user@taxconsulting.co.za")
 
-        assert rows[0]["id"] == "mock-recording-quarterly-planning"
+        assert rows[0]["id"] == "mock-drive::demo.user@taxconsulting.co.za::recording-quarterly-planning"
         assert rows[0]["name"].endswith(".mp4")
 
     async def test_download_creates_local_marker_file(self, monkeypatch, tmp_path):

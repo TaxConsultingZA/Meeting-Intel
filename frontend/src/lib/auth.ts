@@ -18,6 +18,9 @@ const tenantId = process.env.AUTH_MICROSOFT_ENTRA_ID_TENANT_ID;
 const apiClientId =
   process.env.AUTH_MICROSOFT_ENTRA_ID_API_ID ??
   process.env.AUTH_MICROSOFT_ENTRA_ID_ID;
+const authMode = process.env.NEXT_PUBLIC_AUTH_MODE ?? "entra";
+const demoLoginEnabled =
+  process.env.NODE_ENV !== "production" && ["mock", "hybrid"].includes(authMode);
 
 async function refreshAccessToken(token: any) {
   const response = await fetch(
@@ -80,14 +83,19 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         from: process.env.EMAIL_FROM ?? "Meeting Intelligence <onboarding@resend.dev>",
       })
     ] : []),
-    ...(process.env.NODE_ENV !== "production" ? [
+    ...(demoLoginEnabled ? [
       Credentials({
         id: "dev-login",
-        name: "Dev Login",
+        name: "Whitelisted Demo Login",
         credentials: { email: { label: "Email", type: "email" } },
         async authorize(credentials) {
-          const email = credentials?.email as string | undefined;
-          if (!email) return null;
+          const email = String(credentials?.email ?? "").trim().toLowerCase();
+          if (!email.endsWith("@taxconsulting.co.za")) return null;
+          const result = await pool.query(
+            "SELECT 1 FROM registered_users WHERE lower(upn) = $1 LIMIT 1",
+            [email],
+          );
+          if (result.rowCount !== 1) return null;
           return { id: email, email, name: email.split("@")[0] };
         },
       })
@@ -100,7 +108,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       if (account?.provider === "resend" || account?.provider === "microsoft-entra-id") {
         return user.email?.toLowerCase().endsWith("@taxconsulting.co.za") ?? false;
       }
-      return true;
+      return account?.provider === "dev-login" && demoLoginEnabled;
     },
     async jwt({ token, user, account }) {
       if (user?.email) token.email = user.email;
@@ -111,11 +119,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         token.refreshToken = account.refresh_token;
         return token;
       }
-      if (
-        process.env.NODE_ENV !== "production" &&
-        user?.email &&
-        account?.provider !== "microsoft-entra-id"
-      ) {
+      if (demoLoginEnabled && user?.email && account?.provider === "dev-login") {
         token.accessToken = `mock:${user.email.toLowerCase()}`;
         token.accessTokenExpires = Number.MAX_SAFE_INTEGER;
         return token;

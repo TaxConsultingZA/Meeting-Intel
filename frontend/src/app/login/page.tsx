@@ -4,6 +4,8 @@ import { signIn } from "next-auth/react";
 
 const HAS_RESEND = process.env.NEXT_PUBLIC_HAS_RESEND === "true";
 const IS_MOCK = process.env.NEXT_PUBLIC_AUTH_MODE === "mock";
+const IS_HYBRID = process.env.NEXT_PUBLIC_AUTH_MODE === "hybrid";
+const DEMO_LOGIN_ENABLED = IS_MOCK || IS_HYBRID;
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -17,7 +19,15 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
 
-    if (HAS_RESEND) {
+    if (DEMO_LOGIN_ENABLED) {
+      const result = await signIn("dev-login", { email, callbackUrl: "/", redirect: false });
+      setLoading(false);
+      if (result?.error) {
+        setError("This account is not on the local demo whitelist.");
+      } else {
+        window.location.href = "/";
+      }
+    } else if (HAS_RESEND) {
       const result = await signIn("resend", { email, callbackUrl: "/", redirect: false });
       setLoading(false);
       if (result?.error) {
@@ -26,7 +36,7 @@ export default function LoginPage() {
         setSent(true);
       }
     } else {
-      await signIn("dev-login", { email, callbackUrl: "/" });
+      setError("Email sign-in is not configured. Use Microsoft sign-in.");
       setLoading(false);
     }
   }
@@ -87,7 +97,9 @@ export default function LoginPage() {
                       <span className="w-full border-t border-[#dde1e8]"></span>
                     </div>
                     <div className="relative flex justify-center text-xs uppercase">
-                      <span className="bg-white px-2 text-[#9ca3af]">Or continue with email</span>
+                      <span className="bg-white px-2 text-[#9ca3af]">
+                        {IS_HYBRID ? "Or use a whitelisted demo account" : "Or continue with email"}
+                      </span>
                     </div>
                   </div>
                 </>
@@ -95,8 +107,8 @@ export default function LoginPage() {
 
               <form onSubmit={handleSubmit} className="flex flex-col gap-4">
                 <p className="text-[#6b7280] text-xs text-center">
-                  {IS_MOCK
-                    ? "Local Mock mode — no Microsoft or email service will be contacted."
+                  {DEMO_LOGIN_ENABLED
+                    ? "Local demo accounts only — no Microsoft or email service will be contacted."
                     : "Enter your work email and we'll send you a sign-in link."}
                 </p>
                 <div>
@@ -122,8 +134,8 @@ export default function LoginPage() {
                   className="w-full bg-[#003366] hover:bg-[#0a4a8c] disabled:opacity-60 text-white font-semibold py-2.5 px-4 rounded-md text-sm transition-colors"
                 >
                   {loading
-                    ? (IS_MOCK ? "Signing in…" : "Sending…")
-                    : (IS_MOCK ? "Continue in Mock mode" : "Send sign-in link")}
+                    ? (DEMO_LOGIN_ENABLED ? "Signing in…" : "Sending…")
+                    : (DEMO_LOGIN_ENABLED ? "Continue with Demo Account" : "Send sign-in link")}
                 </button>
               </form>
             </div>

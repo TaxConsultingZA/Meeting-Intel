@@ -43,6 +43,14 @@ export async function getMeeting(id: string, upn: string): Promise<MeetingOut> {
   return apiFetch<MeetingOut>(`/reviews/${id}`, upn);
 }
 
+/** Render the exact branded email without sending it. */
+export async function previewMeetingEmail(
+  meetingId: string,
+  accessToken: string,
+): Promise<{ subject: string; html: string }> {
+  return apiFetch(`/reviews/${meetingId}/email-preview`, accessToken);
+}
+
 /** Partially update an action item's fields (task, owner, deadline, confidence). */
 export async function editActionItem(
   itemId: string,

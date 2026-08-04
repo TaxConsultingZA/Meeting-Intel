@@ -205,16 +205,24 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
                         <StateBadge state={m.state} />
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8]">
-                        {m.organizer_upn === upn && (
-                          <button
-                            type="button"
-                            onClick={() => setShareModal({ meetingId: m.id, title: m.title ?? "Untitled Meeting" })}
-                            className="inline-flex items-center gap-1 text-[11.5px] text-[#003366] hover:text-[#C9A52C] transition-colors"
-                            title="Share transcript"
+                        <div className="flex items-center gap-3 whitespace-nowrap">
+                          <Link
+                            href={`/meetings/${m.id}`}
+                            className="text-[11.5px] font-semibold text-[#003366] hover:text-[#C9A52C] hover:underline"
                           >
-                            <Share2 size={13} /> Share
-                          </button>
-                        )}
+                            View notes
+                          </Link>
+                          {m.organizer_upn === upn && (
+                            <button
+                              type="button"
+                              onClick={() => setShareModal({ meetingId: m.id, title: m.title ?? "Untitled Meeting" })}
+                              className="inline-flex items-center gap-1 text-[11.5px] text-[#003366] hover:text-[#C9A52C] transition-colors"
+                              title="Share transcript"
+                            >
+                              <Share2 size={13} /> Share
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}

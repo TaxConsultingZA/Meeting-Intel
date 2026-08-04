@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import StateBadge from "@/components/state-badge";
 import PipelineView from "./pipeline-view";
-import { editActionItem, approveMeeting } from "@/lib/api";
+import { editActionItem, approveMeeting, previewMeetingEmail } from "@/lib/api";
 import type {
   MeetingOut,
   ActionItemOut,
@@ -44,6 +44,9 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [meeting, setMeeting] = useState(initial);
   const [approving, setApproving] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [showEmailPreview, setShowEmailPreview] = useState(false);
+  const [emailPreview, setEmailPreview] = useState<{ subject: string; html: string } | null>(null);
+  const [previewingEmail, setPreviewingEmail] = useState(false);
   const [recipients, setRecipients] = useState<string[]>(initial.email_recipients ?? []);
 
   const data = meeting.extracted_json ?? {};
@@ -74,6 +77,19 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
       ...m,
       action_items: m.action_items.map((a) => (a.id === updated.id ? updated : a)),
     }));
+  }
+
+  async function handlePreviewEmail() {
+    setPreviewingEmail(true);
+    try {
+      const preview = await previewMeetingEmail(meeting.id, accessToken);
+      setEmailPreview(preview);
+      setShowEmailPreview(true);
+    } catch (e) {
+      toast.error(`Preview failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setPreviewingEmail(false);
+    }
   }
 
   return (
@@ -123,8 +139,13 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                 ✓ Approve Meeting Notes
               </button>
             )}
-            <button type="button" className="w-full border border-[#dde1e8] hover:border-[#003366] text-[#003366] font-semibold py-2 rounded-md text-[12.5px] transition-colors">
-              Preview Email
+            <button
+              type="button"
+              onClick={handlePreviewEmail}
+              disabled={previewingEmail || isProcessing}
+              className="w-full border border-[#dde1e8] hover:border-[#003366] text-[#003366] font-semibold py-2 rounded-md text-[12.5px] transition-colors disabled:opacity-50"
+            >
+              {previewingEmail ? "Preparing preview…" : "Preview Email"}
             </button>
           </div>
         </div>
@@ -181,10 +202,14 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </Section>
           )}
 
-          <Section title="Action Items" hint="Hover a row to edit">
+          <Section
+            title="Action Items"
+            hint={isReviewable && isOrganizer ? "Hover a row to edit" : "Only the organiser can edit before approval"}
+          >
             <ActionItemsTable
               items={meeting.action_items}
               upn={accessToken}
+              canEdit={isReviewable && isOrganizer}
               onUpdate={handleEditItem}
             />
           </Section>
@@ -227,6 +252,16 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                   </li>
                 ))}
               </ul>
+            </Section>
+          )}
+
+          {meeting.transcript && (
+            <Section title="Transcript">
+              <div className="max-h-96 overflow-y-auto rounded-md border border-[#dde1e8] bg-[#fafbfc] p-4">
+                <pre className="whitespace-pre-wrap font-sans text-[13px] leading-6 text-[#374151]">
+                  {meeting.transcript}
+                </pre>
+              </div>
             </Section>
           )}
 
@@ -306,6 +341,35 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               className="bg-[#C9A52C] hover:bg-[#e8c84a] text-[#003366] px-5 py-2 rounded-md text-sm font-bold transition-colors disabled:opacity-60"
             >
               {approving ? "Approving…" : "✓ Confirm Approval"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showEmailPreview} onOpenChange={setShowEmailPreview}>
+        <DialogContent className="max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>Email Preview</DialogTitle>
+          </DialogHeader>
+          <div className="rounded-md border border-[#dde1e8] bg-[#fafbfc] px-4 py-3">
+            <span className="text-xs font-semibold uppercase tracking-wide text-[#6b7280]">Subject</span>
+            <p className="mt-1 text-sm font-medium text-[#1a1a2e]">{emailPreview?.subject}</p>
+          </div>
+          {emailPreview && (
+            <iframe
+              title="Meeting notes email preview"
+              srcDoc={emailPreview.html}
+              sandbox=""
+              className="h-[60vh] w-full rounded-md border border-[#dde1e8] bg-white"
+            />
+          )}
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setShowEmailPreview(false)}
+              className="border border-[#dde1e8] text-[#003366] px-4 py-2 rounded-md text-sm font-semibold hover:border-[#003366]"
+            >
+              Close Preview
             </button>
           </DialogFooter>
         </DialogContent>
@@ -414,10 +478,12 @@ function DataTable({
 function ActionItemsTable({
   items,
   upn,
+  canEdit,
   onUpdate,
 }: {
   items: ActionItemOut[];
   upn: string;
+  canEdit: boolean;
   onUpdate: (updated: ActionItemOut) => void;
 }) {
   if (items.length === 0) {
@@ -438,7 +504,7 @@ function ActionItemsTable({
         </thead>
         <tbody>
           {items.map((item, i) => (
-            <EditableRow key={item.id} item={item} alt={i % 2 === 1} upn={upn} onUpdate={onUpdate} />
+            <EditableRow key={item.id} item={item} alt={i % 2 === 1} upn={upn} canEdit={canEdit} onUpdate={onUpdate} />
           ))}
         </tbody>
       </table>
@@ -450,11 +516,13 @@ function EditableRow({
   item,
   alt,
   upn,
+  canEdit,
   onUpdate,
 }: {
   item: ActionItemOut;
   alt: boolean;
   upn: string;
+  canEdit: boolean;
   onUpdate: (updated: ActionItemOut) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -516,14 +584,16 @@ function EditableRow({
         ) : (
           <div className="flex items-start gap-1.5">
             <span className="font-medium">{item.task}</span>
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              className="opacity-0 group-hover:opacity-100 transition-opacity text-[#6b7280] hover:text-[#003366] mt-0.5 shrink-0"
-              title="Edit"
-            >
-              <Pencil size={12} />
-            </button>
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="opacity-0 group-hover:opacity-100 transition-opacity text-[#6b7280] hover:text-[#003366] mt-0.5 shrink-0"
+                title="Edit"
+              >
+                <Pencil size={12} />
+              </button>
+            )}
           </div>
         )}
       </td>

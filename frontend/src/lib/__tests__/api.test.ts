@@ -55,6 +55,20 @@ describe("approveMeeting", () => {
   });
 });
 
+describe("previewMeetingEmail", () => {
+  it("requests the exact email preview without sending", async () => {
+    mockFetch.mockResolvedValueOnce(
+      makeResponse({ subject: "Meeting Notes", html: "<p>Preview</p>" }),
+    );
+    const { previewMeetingEmail } = await import("../api");
+    const result = await previewMeetingEmail("meeting-id", "token-1");
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toContain("/reviews/meeting-id/email-preview");
+    expect((init as RequestInit).method).toBeUndefined();
+    expect(result.subject).toBe("Meeting Notes");
+  });
+});
+
 describe("importRecording", () => {
   it("sends drive item id and drive id in body", async () => {
     mockFetch.mockResolvedValueOnce(makeResponse({ ok: true }));

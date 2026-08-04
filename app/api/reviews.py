@@ -8,7 +8,8 @@ from ..config import get_settings
 from ..db import get_db
 from ..models import Meeting, ActionItem, MeetingParticipant, ProcessingState, RegisteredUser
 from ..schemas import (
-    MeetingOut, ActionItemOut, ActionItemEdit, ShareMeetingIn, ApproveMeetingIn
+    MeetingOut, ActionItemOut, ActionItemEdit, ShareMeetingIn, ApproveMeetingIn,
+    EmailPreviewOut,
 )
 from ..graph import client as graph
 from ..email_templates import build_meeting_email
@@ -48,6 +49,7 @@ def _to_out(m: Meeting) -> MeetingOut:
         known_recipients.add(m.organizer_upn.lower())
     return MeetingOut(
         id=str(m.id), title=m.title, state=m.state, summary=m.summary,
+        transcript=m.transcript,
         organizer_upn=m.organizer_upn, extracted_json=m.extracted_json, error=m.error,
         email_recipients=sorted(known_recipients),
         approved_recipients=m.approved_recipients or [],
@@ -69,6 +71,11 @@ def _require_organizer(m: Meeting, upn: str) -> None:
     )
     if organizer != upn and not participant_marks_organizer:
         raise HTTPException(403, "Only the meeting organiser can review and approve")
+
+
+def _require_awaiting_review(m: Meeting) -> None:
+    if m.state != ProcessingState.awaiting_review:
+        raise HTTPException(409, "Meeting notes can only be changed while awaiting review")
 
 
 @router.get("/reviews/all", response_model=list[MeetingOut])
@@ -132,6 +139,15 @@ async def get_meeting(meeting_id: str, db: AsyncSession = Depends(get_db),
     return _to_out(m)
 
 
+@router.get("/reviews/{meeting_id}/email-preview", response_model=EmailPreviewOut)
+async def email_preview(meeting_id: str, db: AsyncSession = Depends(get_db),
+                        upn: str = Depends(current_user)):
+    """Render the exact branded HTML that approval would send, without sending it."""
+    m = await _authorize(db, meeting_id, upn)
+    subject, html = build_meeting_email(m)
+    return EmailPreviewOut(subject=subject, html=html)
+
+
 @router.patch("/reviews/action-items/{item_id}")
 async def edit_item(item_id: str, edit: ActionItemEdit,
                     db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
@@ -140,6 +156,7 @@ async def edit_item(item_id: str, edit: ActionItemEdit,
         raise HTTPException(404)
     meeting = await _authorize(db, item.meeting_id, upn)
     _require_organizer(meeting, upn)
+    _require_awaiting_review(meeting)
     for field, val in edit.model_dump(exclude_unset=True).items():
         setattr(item, field, val)
     item.edited_by = upn
@@ -153,6 +170,7 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
                   body: ApproveMeetingIn = Body(default=ApproveMeetingIn())):
     m = await _authorize(db, meeting_id, upn)
     _require_organizer(m, upn)
+    _require_awaiting_review(m)
 
     known_recipients = {
         value.strip().lower()

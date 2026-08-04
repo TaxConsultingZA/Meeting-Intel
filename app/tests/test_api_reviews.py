@@ -80,6 +80,7 @@ class TestToOut:
         m.title = "Budget Meeting"
         m.state = ProcessingState.awaiting_review
         m.summary = "Summary here"
+        m.transcript = "Speaker A: Opening remarks"
         m.organizer_upn = "organiser@taxconsulting.co.za"
         m.extracted_json = None
         m.error = None
@@ -91,6 +92,7 @@ class TestToOut:
         assert out.id == "uuid-1"
         assert out.title == "Budget Meeting"
         assert out.state == ProcessingState.awaiting_review
+        assert out.transcript == "Speaker A: Opening remarks"
 
 
 class TestOrganizerReviewGate:
@@ -114,3 +116,25 @@ class TestOrganizerReviewGate:
         with pytest.raises(HTTPException) as exc:
             _require_organizer(meeting, "guest@taxconsulting.co.za")
         assert exc.value.status_code == 403
+
+
+class TestReviewStateGate:
+    def test_awaiting_review_is_editable(self):
+        from app.api.reviews import _require_awaiting_review
+        from app.models import ProcessingState
+
+        meeting = MagicMock(state=ProcessingState.awaiting_review)
+        _require_awaiting_review(meeting)
+
+    @pytest.mark.parametrize(
+        "state",
+        ["approved", "completed", "processing", "failed"],
+    )
+    def test_other_states_are_locked(self, state):
+        from fastapi import HTTPException
+        from app.api.reviews import _require_awaiting_review
+
+        meeting = MagicMock(state=state)
+        with pytest.raises(HTTPException) as exc:
+            _require_awaiting_review(meeting)
+        assert exc.value.status_code == 409

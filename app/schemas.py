@@ -92,12 +92,18 @@ class MeetingOut(BaseModel):
     title: str | None
     state: ProcessingState
     summary: str | None
+    transcript: str | None = None
     organizer_upn: str | None = None
     extracted_json: dict | None = None
     error: str | None = None
     email_recipients: list[str] = []
     approved_recipients: list[str] = []
     action_items: list[ActionItemOut]
+
+
+class EmailPreviewOut(BaseModel):
+    subject: str
+    html: str
 
 
 class ApproveMeetingIn(BaseModel):

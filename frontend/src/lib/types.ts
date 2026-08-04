@@ -41,6 +41,7 @@ export interface MeetingOut {
   title: string | null;
   state: ProcessingState;
   summary: string | null;
+  transcript?: string | null;
   action_items: ActionItemOut[];
   // rich fields from extracted_json (may be absent on older records)
   extracted_json?: ExtractedJson | null;

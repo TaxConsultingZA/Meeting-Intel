@@ -35,8 +35,15 @@ def test_entra_validator_checks_signature_audience_issuer_and_required_claims(mo
 
     assert entra.validate_access_token("signed.jwt")["tid"] == "tenant-id"
     _, kwargs = decode.call_args
-    assert kwargs["audience"] == "api-client-id"
-    assert kwargs["issuer"] == "https://login.microsoftonline.com/tenant-id/v2.0"
+    assert kwargs["audience"] == [
+        "api-client-id",
+        settings.client_id,
+        f"api://{settings.client_id}",
+    ]
+    assert kwargs["issuer"] == [
+        "https://login.microsoftonline.com/tenant-id/v2.0",
+        "https://sts.windows.net/tenant-id/",
+    ]
     assert kwargs["algorithms"] == ["RS256"]
 
 

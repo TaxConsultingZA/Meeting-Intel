@@ -9,7 +9,12 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="h-full antialiased" suppressHydrationWarning>
+    <html
+      lang="en"
+      translate="no"
+      className="notranslate h-full antialiased"
+      suppressHydrationWarning
+    >
       <body className="min-h-full bg-[#F0F2F5]" suppressHydrationWarning>
         {children}
         <Toaster richColors position="bottom-right" />

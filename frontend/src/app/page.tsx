@@ -14,7 +14,9 @@ export default async function DashboardPage() {
   const accessToken = session.accessToken;
 
   // Check if the user is registered — unregistered domain users see the pending screen.
-  const me = await getMe(accessToken).catch(() => null);
+  // /users/me auto-registers valid company users on their first Entra login.
+  // Do not turn backend/network failures into a misleading "Access Pending" page.
+  const me = await getMe(accessToken);
   if (!me) {
     return <PendingAccess userEmail={upn} />;
   }

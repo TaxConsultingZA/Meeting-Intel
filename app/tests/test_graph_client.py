@@ -128,7 +128,9 @@ class TestLocalMockGraph:
 
         rows = await client.list_recordings_folder("mock-drive::demo.user@taxconsulting.co.za")
 
-        assert rows[0]["id"] == "mock-drive::demo.user@taxconsulting.co.za::recording-quarterly-planning"
+        assert len(rows) == 1
+        assert rows[0]["id"] == "mock-drive::demo.user@taxconsulting.co.za::recording-past-untranscribed"
+        assert "Untranscribed" in rows[0]["name"]
         assert rows[0]["name"].endswith(".mp4")
 
     async def test_download_creates_local_marker_file(self, monkeypatch, tmp_path):

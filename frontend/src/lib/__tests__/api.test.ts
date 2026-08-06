@@ -49,7 +49,7 @@ describe("approveMeeting", () => {
   it("sends POST method", async () => {
     mockFetch.mockResolvedValueOnce(makeResponse({ ok: true, state: "sent" }));
     const { approveMeeting } = await import("../api");
-    await approveMeeting("meeting-id", "alice@taxconsulting.co.za");
+    await approveMeeting("meeting-id", "alice@taxconsulting.co.za", []);
     const [, init] = mockFetch.mock.calls[0];
     expect((init as RequestInit).method).toBe("POST");
   });

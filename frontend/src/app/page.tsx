@@ -20,25 +20,28 @@ export default async function DashboardPage() {
   if (!me) {
     return <PendingAccess userEmail={upn} />;
   }
-  if (!me.is_subscribed) {
-    return (
-      <>
-        <Nav userEmail={upn} accessToken={accessToken} isAdmin={me.is_admin} />
-        <SubscriptionGate userEmail={upn} accessToken={accessToken} />
-      </>
-    );
-  }
-
   const [meetings, upcoming, historical] = await Promise.all([
     getAllMeetings(accessToken).catch(() => []),
-    getUpcomingMeetings(accessToken).catch(() => []),
+    me.is_subscribed
+      ? getUpcomingMeetings(accessToken).catch(() => [])
+      : Promise.resolve([]),
     getHistoricalMeetings(accessToken).catch(() => []),
   ]);
 
   return (
     <>
       <Nav userEmail={upn} accessToken={accessToken} isAdmin={me.is_admin} />
-      <DashboardClient meetings={meetings} upcoming={upcoming} historical={historical} upn={upn} accessToken={accessToken} />
+      {!me.is_subscribed && (
+        <SubscriptionGate userEmail={upn} accessToken={accessToken} />
+      )}
+      <DashboardClient
+        meetings={meetings}
+        upcoming={upcoming}
+        historical={historical}
+        upn={upn}
+        accessToken={accessToken}
+        isSubscribed={me.is_subscribed}
+      />
     </>
   );
 }

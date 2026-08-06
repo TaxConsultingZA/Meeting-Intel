@@ -37,11 +37,12 @@ interface Props {
   historical: MeetingOut[];
   upn: string;
   accessToken: string;
+  isSubscribed: boolean;
 }
 
 type Tab = "upcoming" | "in_progress" | "review" | "old_meetings" | "historical" | "cancelled";
 
-export default function DashboardClient({ meetings, upcoming, historical: initialHistorical, upn, accessToken }: Props) {
+export default function DashboardClient({ meetings, upcoming, historical: initialHistorical, upn, accessToken, isSubscribed }: Props) {
   const [tab, setTab] = useState<Tab>("upcoming");
   const [showImport, setShowImport] = useState(false);
   const [historical, setHistorical] = useState<MeetingOut[]>(initialHistorical);
@@ -82,10 +83,12 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
         </div>
         <button
           type="button"
-          onClick={() => setShowImport(true)}
-          className="shrink-0 inline-flex items-center gap-2 bg-[#003366] hover:bg-[#0a4a8c] text-white text-[13px] font-semibold px-4 py-2 rounded-md transition-colors"
+          onClick={() => isSubscribed && setShowImport(true)}
+          disabled={!isSubscribed}
+          title={isSubscribed ? "Process a past OneDrive recording" : "Opt in to process Calendar and OneDrive recordings"}
+          className="shrink-0 inline-flex items-center gap-2 bg-[#003366] hover:bg-[#0a4a8c] text-white text-[13px] font-semibold px-4 py-2 rounded-md transition-colors disabled:opacity-45 disabled:cursor-not-allowed"
         >
-          <Upload size={15} /> Import Recordings
+          <Upload size={15} /> {isSubscribed ? "Process Past Recording" : "Opt in to process recordings"}
         </button>
       </div>
 
@@ -146,7 +149,13 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
       {/* Upcoming Meetings */}
       {tab === "upcoming" && (
         upcomingEvents.length === 0
-          ? <EmptyState icon="📅" title="No upcoming meetings" sub="No Teams meetings scheduled in the next 7 days." />
+          ? <EmptyState
+              icon="📅"
+              title={isSubscribed ? "No upcoming meetings" : "Calendar processing is off"}
+              sub={isSubscribed
+                ? "No Teams meetings scheduled in the next 7 days."
+                : "Opt in above to let Meeting Intelligence check your Outlook calendar and OneDrive recordings."}
+            />
           : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {upcomingEvents.map((ev) => <CalendarCard key={ev.event_id} event={ev} />)}
             </div>

@@ -62,13 +62,22 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
     """List mp4 files in the Recordings folder of the given drive.
     Returns [] if the folder doesn't exist yet (new user with no recordings)."""
     if _mock_enabled():
-        return [{
-            "id": f"{drive_id}::recording-quarterly-planning",
-            "name": "Quarterly Planning Demo.mp4",
-            "size": 12_582_912,
-            "createdDateTime": "2026-07-30T08:00:00Z",
-            "eTag": '"mock-etag-1"',
-        }]
+        return [
+            {
+                "id": f"{drive_id}::recording-quarterly-planning",
+                "name": "Client Compliance Review - Leadership Demo.mp4",
+                "size": 12_582_912,
+                "createdDateTime": "2026-07-30T08:00:00Z",
+                "eTag": '"mock-etag-1"',
+            },
+            {
+                "id": f"{drive_id}::recording-past-untranscribed",
+                "name": "Past Client Update - Untranscribed.mp4",
+                "size": 9_437_184,
+                "createdDateTime": "2026-07-15T09:30:00Z",
+                "eTag": '"mock-etag-2"',
+            },
+        ]
 
     url = f"{settings.graph_base}/drives/{drive_id}/root:/Recordings:/children"
     async with httpx.AsyncClient(timeout=30) as c:
@@ -85,11 +94,20 @@ async def get_drive_item(drive_id: str, item_id: str) -> dict:
         owner_upn = drive_id.removeprefix("mock-drive::")
         if not owner_upn or owner_upn == drive_id:
             owner_upn = "demo.user@taxconsulting.co.za"
+        is_past_untranscribed = item_id.endswith("::recording-past-untranscribed")
         return {
             "id": item_id,
-            "name": "Quarterly Planning Demo.mp4",
-            "size": 12_582_912,
-            "createdDateTime": "2026-07-30T08:00:00Z",
+            "name": (
+                "Past Client Update - Untranscribed.mp4"
+                if is_past_untranscribed
+                else "Client Compliance Review - Leadership Demo.mp4"
+            ),
+            "size": 9_437_184 if is_past_untranscribed else 12_582_912,
+            "createdDateTime": (
+                "2026-07-15T09:30:00Z"
+                if is_past_untranscribed
+                else "2026-07-30T08:00:00Z"
+            ),
             "createdBy": {"user": {
                 "displayName": owner_upn.split("@", 1)[0].replace(".", " ").title(),
                 "userPrincipalName": owner_upn,

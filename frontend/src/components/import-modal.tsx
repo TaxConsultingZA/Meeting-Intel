@@ -105,7 +105,7 @@ export default function ImportModal({ upn, onClose }: Props) {
           onClick={() => handleImport(rec)}
           className="inline-flex items-center gap-1.5 bg-[#003366] hover:bg-[#0a4a8c] text-white text-[12.5px] font-semibold px-3 py-1.5 rounded transition-colors"
         >
-          <Download size={13} /> Import
+          <Download size={13} /> Transcribe
         </button>
       );
     }
@@ -154,9 +154,9 @@ export default function ImportModal({ upn, onClose }: Props) {
       <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl overflow-hidden">
         <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-6 py-5 flex items-center justify-between">
           <div>
-            <h2 className="text-white font-semibold text-[15px]">Import Recordings</h2>
+            <h2 className="text-white font-semibold text-[15px]">Process a Past Recording</h2>
             <p className="text-white/60 text-[13px] mt-0.5">
-              Recordings found in your OneDrive · Recordings folder
+              Select an existing, untranscribed MP4 from your OneDrive Recordings folder
             </p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" className="text-white/60 hover:text-white transition-colors">
@@ -240,7 +240,7 @@ export default function ImportModal({ upn, onClose }: Props) {
 
         <div className="px-6 py-4 border-t border-[#dde1e8] flex items-center justify-between bg-[#f8fafc]">
           <p className="text-[12px] text-[#6b7280]">
-            Imported recordings appear on the dashboard once processed.
+            The transcript and AI notes will appear for organiser review once processing finishes.
           </p>
           <button type="button" onClick={onClose} className="text-[13px] font-medium text-[#003366] hover:underline">
             Close

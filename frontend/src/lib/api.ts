@@ -1,6 +1,6 @@
 import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, AppNotification, RegisteredUser, BusinessUnit } from "./types";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
 /**
  * Base fetch wrapper for all backend API calls.

@@ -1,4 +1,3 @@
-import asyncio
 import json
 from abc import ABC, abstractmethod
 from ..config import get_settings
@@ -166,68 +165,15 @@ class MockExtractor(Extractor):
         )
 
 
-_ACTIONS_PROMPT = """You are a meeting intelligence assistant for Tax Consulting SA.
-Given the transcript below, extract ONLY action items, deliverables, risks, and next steps.
-Return ONLY valid JSON — no prose, no markdown fences. Be concise (1-2 sentences per field).
+class TranscriptOnlyExtractor(Extractor):
+    """Complete processing without calling a paid language model.
 
-Return this exact schema:
-{
-  "action_items": [
-    {"action":"","assigned_to":null,"department":null,"reason":null,"expected_outcome":null,"due_date":null,"confidence":"medium","source_quote":null}
-  ],
-  "deliverables": [
-    {"deliverable":"","responsible":null,"delivery_method":null,"due_date":null,"expected_outcome":null}
-  ],
-  "risks": [
-    {"item":"","impact":null,"resolution":null,"owner":null}
-  ],
-  "next_steps": [""],
-  "next_meeting": {"proposed_date":null,"proposed_time":null,"agenda_focus":null}
-}"""
-
-
-class AnthropicExtractor(Extractor):
-    """Two-pass extractor using Anthropic Claude.
-
-    Pass 1 extracts meeting structure, speakers, and discussion points.
-    Pass 2 extracts action items, deliverables, risks, and next steps separately
-    to avoid the LLM conflating structure with tasks under a single large prompt.
+    AssemblyAI's real transcript remains on the meeting record. Structured
+    notes stay empty until the company selects a replacement AI provider.
     """
 
-    def _call(self, client, system: str, user: str) -> str:
-        """Synchronous Claude API call — run in an executor to avoid blocking the event loop."""
-        msg = client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=8192,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        return msg.content[0].text
-
     async def extract(self, segments: list[TranscriptSegment]) -> RichExtractionResult:
-        import anthropic
-        client  = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        text    = _transcript_to_text(segments)
-        loop    = asyncio.get_running_loop()
-
-        # Pass 1 — structure, speakers, discussion (no action items)
-        p1_system = SYSTEM_PROMPT + "\n\nFor this call, set action_items=[], deliverables=[], risks=[], next_steps=[], next_meeting=null."
-        raw1 = await loop.run_in_executor(None, self._call, client, p1_system, text)
-        result = _parse_raw(raw1)
-
-        # Pass 2 — action items, deliverables, risks, next steps only
-        raw2 = await loop.run_in_executor(None, self._call, client, _ACTIONS_PROMPT, text)
-        try:
-            data2 = json.loads(raw2.strip().strip("```").lstrip("json").strip())
-            result.action_items  = [ExtractedActionItem(**i) for i in (data2.get("action_items") or [])]
-            result.deliverables  = data2.get("deliverables") or []
-            result.risks         = data2.get("risks") or []
-            result.next_steps    = data2.get("next_steps") or []
-            result.next_meeting  = data2.get("next_meeting")
-        except Exception:
-            pass  # keep whatever pass 1 extracted for these fields
-
-        return result
+        return RichExtractionResult(extraction_mode="transcript_only")
 
 
 class AzureOpenAIExtractor(Extractor):
@@ -257,10 +203,12 @@ class AzureOpenAIExtractor(Extractor):
 def get_extractor() -> Extractor:
     """Factory: return the configured extraction backend.
 
-    Controlled by the ``EXTRACTOR_IMPL`` env var (``anthropic`` | ``azure_openai`` | ``mock``).
+    Controlled by ``EXTRACTOR_IMPL`` (``transcript_only`` | ``azure_openai`` | ``mock``).
     """
-    if settings.extractor_impl == "anthropic":
-        return AnthropicExtractor()
+    if settings.extractor_impl == "transcript_only":
+        return TranscriptOnlyExtractor()
     if settings.extractor_impl == "azure_openai":
         return AzureOpenAIExtractor()
-    return MockExtractor()
+    if settings.extractor_impl == "mock":
+        return MockExtractor()
+    raise ValueError(f"Unsupported EXTRACTOR_IMPL: {settings.extractor_impl}")

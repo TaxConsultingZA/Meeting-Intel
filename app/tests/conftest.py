@@ -14,6 +14,5 @@ def isolate_auth_and_graph_modes(monkeypatch, request):
     monkeypatch.setattr(deps.settings, "graph_impl", graph_impl)
     monkeypatch.setattr(deps.settings, "auth_mode", "mock")
     monkeypatch.setattr(extract.settings, "extractor_impl", "mock")
-    monkeypatch.setattr(extract.settings, "anthropic_api_key", "")
     monkeypatch.setattr(transcribe.settings, "transcriber_impl", "mock")
     monkeypatch.setattr(transcribe.settings, "assemblyai_api_key", "")

@@ -52,6 +52,7 @@ export interface MeetingOut {
 }
 
 export interface ExtractedJson {
+  extraction_mode?: "structured" | "transcript_only";
   objective?: string;
   meeting_time?: string | null;
   attendees?: string[];

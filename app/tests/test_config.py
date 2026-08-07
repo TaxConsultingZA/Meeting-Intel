@@ -47,9 +47,9 @@ class TestAsyncpgUrl:
 
 
 class TestEmailsEnabledDefault:
-    def test_default_is_true(self):
+    def test_default_is_false(self):
         s = _make_settings()
-        assert s.emails_enabled is True
+        assert s.emails_enabled is False
 
     def test_can_be_disabled(self):
         s = _make_settings(emails_enabled=False)

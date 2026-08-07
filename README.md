@@ -2,8 +2,9 @@
 
 Opt-in meeting pipeline: a company user signs in with Microsoft Entra, subscribes
 once, and the background worker syncs that user's Outlook calendar and OneDrive
-Recordings folder. New recordings are transcribed and converted to structured
-notes. The meeting organiser reviews the result, chooses the exact email
+Recordings folder. New recordings are transcribed and saved for review. Structured
+AI notes are intentionally disabled until the company selects a provider. The organiser
+reviews the result, chooses the exact email
 recipients, and approves before any notes are sent.
 
 ## Architecture
@@ -27,9 +28,7 @@ Microsoft sync worker (runs every 10 min)
 Download MP4 ─► AssemblyAI transcription (diarized, speaker-labelled)
         │
         ▼
-Anthropic Claude extraction (two-pass)
-  Pass 1: objective · speakers · discussion points
-  Pass 2: action items · deliverables · risks · next steps
+Transcript-only completion (no language-model call)
         │
         ▼
 Postgres (meetings · action_items · participants · processed_items)
@@ -52,7 +51,7 @@ Email sent via Graph sendMail
 - **Explicit opt-in** — sign-in alone does not grant processing consent.
 - **Least data access** — reconciliation and webhooks ignore non-subscribed users.
 - **AssemblyAI** for diarized transcription (speaker labels, no ffmpeg needed — accepts MP4 directly).
-- **Anthropic Claude** (two-pass) for structured extraction — avoids token-limit truncation on long meetings.
+- **Transcript-only review** after AssemblyAI; structured extraction remains disabled until an AI provider is approved.
 - **organizer_upn fallback** — uses drive-owner UPN when SharePoint App is listed as creator.
 - **POPIA notice** fires before any AI processing (Section 18 compliance).
 - **Row-level access** — a user sees a meeting only if they appear in `meeting_participants`.
@@ -120,14 +119,15 @@ You can also create `frontend/.env.local` specifically for frontend-only variabl
 - [ ] **Microsoft Entra ID:** `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` (Get from Azure Portal)
 - [ ] **Auth Secret:** `AUTH_SECRET` (Generate with `npx auth secret`)
 - [ ] **Database:** `DATABASE_URL` (Ensure port 5434 matches Docker)
-- [ ] **AI Keys:** `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`
+- [ ] **Transcription:** `ASSEMBLYAI_API_KEY`
 
-## Safe local Mock mode
+## Safe automated tests
 
-Mock mode runs the complete UI and processing workflow with a fictional OneDrive
-recording. It does not call Microsoft Graph, AssemblyAI, Anthropic, or email.
+The test suite forces Mock Graph, transcription, and extraction internally so it
+cannot consume paid API quota. The interactive application uses Microsoft Entra
+only; there is no Demo/Hybrid email login.
 
-1. Copy `.env.example` to `.env` and set:
+For test-only backend processes, use:
 
    ```env
    TENANT_ID=mock-tenant
@@ -144,8 +144,7 @@ recording. It does not call Microsoft Graph, AssemblyAI, Anthropic, or email.
    AUTO_SEND_EMAIL=false
    ```
 
-2. Copy `frontend/.env.example` to `frontend/.env.local`.
-3. Create the Python environment and install backend/test dependencies:
+Create the Python environment and install backend/test dependencies:
 
    ```powershell
    py -3.12 -m venv .venv
@@ -259,10 +258,9 @@ az containerapp create \
     ENTRA_API_AUDIENCE=<> ENTRA_REQUIRED_SCOPE=access_as_user \
     ALLOWED_DOMAIN=taxconsulting.co.za \
     DATABASE_URL=postgresql+asyncpg://$PG_USER:$PG_PASS@$PG_SERVER.postgres.database.azure.com/$PG_DB \
-    ANTHROPIC_API_KEY=<> ASSEMBLYAI_API_KEY=<> \
-    ANTHROPIC_MODEL=claude-sonnet-4-6 \
-    TRANSCRIBER_IMPL=assemblyai EXTRACTOR_IMPL=anthropic \
-    EMAILS_ENABLED=true POPIA_NOTICE_ENABLED=true ENABLE_AUTO_RECONCILE=true \
+    ASSEMBLYAI_API_KEY=<> \
+    TRANSCRIBER_IMPL=assemblyai EXTRACTOR_IMPL=transcript_only \
+    EMAILS_ENABLED=false POPIA_NOTICE_ENABLED=true ENABLE_AUTO_RECONCILE=false \
     MAIL_SENDER_UPN=<> WEBHOOK_CLIENT_STATE=<>
 ```
 
@@ -282,9 +280,9 @@ az containerapp job create \
     AUTH_MODE=entra TENANT_ID=<> CLIENT_ID=<> CLIENT_SECRET=<> \
     ALLOWED_DOMAIN=taxconsulting.co.za \
     DATABASE_URL=postgresql+asyncpg://$PG_USER:$PG_PASS@$PG_SERVER.postgres.database.azure.com/$PG_DB \
-    ANTHROPIC_API_KEY=<> ASSEMBLYAI_API_KEY=<> \
-    TRANSCRIBER_IMPL=assemblyai EXTRACTOR_IMPL=anthropic \
-    EMAILS_ENABLED=true POPIA_NOTICE_ENABLED=true \
+    ASSEMBLYAI_API_KEY=<> \
+    TRANSCRIBER_IMPL=assemblyai EXTRACTOR_IMPL=transcript_only \
+    EMAILS_ENABLED=false POPIA_NOTICE_ENABLED=true \
     MAIL_SENDER_UPN=<>
 ```
 
@@ -321,11 +319,9 @@ curl -X POST https://$API_URL/subscriptions/ensure
 | `ENTRA_REQUIRED_SCOPE` | No | Default: `access_as_user` |
 | `ALLOWED_DOMAIN` | Yes | e.g. `taxconsulting.co.za` |
 | `DATABASE_URL` | Yes | asyncpg connection string |
-| `ANTHROPIC_API_KEY` | Yes | Anthropic Claude key |
 | `ASSEMBLYAI_API_KEY` | Yes | AssemblyAI key |
-| `ANTHROPIC_MODEL` | No | Default: `claude-sonnet-4-6` |
 | `TRANSCRIBER_IMPL` | No | `assemblyai` or `mock` |
-| `EXTRACTOR_IMPL` | No | `anthropic`, `azure_openai`, or `mock` |
+| `EXTRACTOR_IMPL` | No | `transcript_only` now; `azure_openai` after a provider is approved; `mock` in tests |
 | `MAIL_SENDER_UPN` | Yes | Mailbox emails send from |
 | `AUTO_SEND_EMAIL` | No | Deprecated; explicit organiser approval is the send gate |
 | `POPIA_NOTICE_ENABLED` | No | `true` to send POPIA notice before processing |

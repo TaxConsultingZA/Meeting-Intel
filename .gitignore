@@ -1,4 +1,7 @@
 .env
+.auth-error.log
+.frontend-*.log
+.backend-*.log
 .venv/
 __pycache__/
 *.pyc

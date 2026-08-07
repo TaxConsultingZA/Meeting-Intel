@@ -50,6 +50,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [recipients, setRecipients] = useState<string[]>(initial.email_recipients ?? []);
 
   const data = meeting.extracted_json ?? {};
+  const isTranscriptOnly = data.extraction_mode === "transcript_only";
   const isReviewable = meeting.state === "awaiting_review";
   const isOrganizer = meeting.organizer_upn?.toLowerCase() === upn.toLowerCase();
   const isProcessing = (["queued", "downloading", "transcribing", "extracting"] as ProcessingState[]).includes(meeting.state);
@@ -173,6 +174,12 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </div>
           ) : (
             <>
+          {isTranscriptOnly && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-5 py-4 text-[13.5px] leading-6 text-blue-900">
+              <strong>Transcript ready.</strong> Structured AI summaries and action-item
+              extraction are currently disabled while the company selects an AI provider.
+            </div>
+          )}
           {data.objective && (
             <Section title="Meeting Objective">
               <p className="text-[13.5px] text-[#1a1a2e] leading-7">{data.objective}</p>
@@ -202,17 +209,19 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </Section>
           )}
 
-          <Section
-            title="Action Items"
-            hint={isReviewable && isOrganizer ? "Hover a row to edit" : "Only the organiser can edit before approval"}
-          >
-            <ActionItemsTable
-              items={meeting.action_items}
-              upn={accessToken}
-              canEdit={isReviewable && isOrganizer}
-              onUpdate={handleEditItem}
-            />
-          </Section>
+          {!isTranscriptOnly && (
+            <Section
+              title="Action Items"
+              hint={isReviewable && isOrganizer ? "Hover a row to edit" : "Only the organiser can edit before approval"}
+            >
+              <ActionItemsTable
+                items={meeting.action_items}
+                upn={accessToken}
+                canEdit={isReviewable && isOrganizer}
+                onUpdate={handleEditItem}
+              />
+            </Section>
+          )}
 
           {(data.deliverables?.length ?? 0) > 0 && (
             <Section title="Deliverables">

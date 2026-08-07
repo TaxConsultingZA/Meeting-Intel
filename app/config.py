@@ -1,5 +1,5 @@
 from functools import lru_cache
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,21 +11,38 @@ class Settings(BaseSettings):
     should never be committed — keep them in .env which is git-ignored.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        populate_by_name=True,
+    )
 
     # --- Microsoft Graph / Entra app registration (you have these) ---
-    tenant_id: str
-    client_id: str
-    client_secret: str
+    tenant_id: str = Field(
+        validation_alias=AliasChoices(
+            "AUTH_MICROSOFT_ENTRA_ID_TENANT_ID", "TENANT_ID"
+        )
+    )
+    client_id: str = Field(
+        validation_alias=AliasChoices("AUTH_MICROSOFT_ENTRA_ID_ID", "CLIENT_ID")
+    )
+    client_secret: str = Field(
+        validation_alias=AliasChoices(
+            "AUTH_MICROSOFT_ENTRA_ID_SECRET", "CLIENT_SECRET"
+        )
+    )
     graph_scope: str = "https://graph.microsoft.com/.default"
     graph_base: str = "https://graph.microsoft.com/v1.0"
 
-    # Authentication for this API. Production accepts only Microsoft Entra
-    # access tokens issued specifically for this API. ``hybrid`` is a local
-    # showcase mode: it keeps Entra login available while also accepting
-    # explicit Mock tokens for pre-registered demo accounts only.
-    auth_mode: str = "entra"  # entra | mock | hybrid
-    entra_api_audience: str = ""
+    # Production accepts only Microsoft Entra access tokens issued for this API.
+    # Mock remains available exclusively for isolated automated tests.
+    auth_mode: str = "entra"  # entra | mock
+    entra_api_audience: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AUTH_MICROSOFT_ENTRA_ID_API_ID", "ENTRA_API_AUDIENCE"
+        ),
+    )
     entra_required_scope: str = "access_as_user"
 
     # Restrict logins / processing to your domain
@@ -65,12 +82,9 @@ class Settings(BaseSettings):
     # --- AI layer ---
     graph_impl: str = "microsoft"          # microsoft | mock
     transcriber_impl: str = "assemblyai"    # mock | assemblyai
-    extractor_impl: str = "anthropic"       # mock | anthropic | azure_openai
+    extractor_impl: str = "transcript_only"  # transcript_only | mock | azure_openai
 
     assemblyai_api_key: str = ""
-
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-sonnet-4-6"
 
     # Azure OpenAI (optional fallback)
     azure_openai_endpoint: str = ""
@@ -87,8 +101,8 @@ class Settings(BaseSettings):
     # --- Behaviour ---
     enable_auto_reconcile: bool = False     # if true, start a background task at startup to scan OneDrives
     auto_send_email: bool = False           # v1: humans approve before send
-    popia_notice_enabled: bool = True       # send AI-processing notice to organizer on job start
-    emails_enabled: bool = True             # master switch — set to false to suppress all outbound mail
+    popia_notice_enabled: bool = True       # send processing notice to organizer on job start
+    emails_enabled: bool = False            # enable only after a controlled mail test
 
     # --- Registration ---
     # Comma-separated UPNs that are auto-registered as admins at startup.

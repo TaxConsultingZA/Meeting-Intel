@@ -115,7 +115,7 @@ class ApproveMeetingIn(BaseModel):
         return list(dict.fromkeys(v.strip().lower() for v in values if v.strip()))
 
 
-# ── Rich extraction schema (what Claude must return) ──────────────────────────
+# ── Optional rich extraction schema ───────────────────────────────────────────
 
 class ExtractedActionItem(BaseModel):
     """Action item as returned by the AI extractor.
@@ -187,6 +187,7 @@ class RichExtractionResult(BaseModel):
     This is serialised as-is into the ``Meeting.extracted_json`` JSONB column
     and later read by both the review UI and the email template builder.
     """
+    extraction_mode: str = "structured"
     objective: str = ""
     attendees: list[str] = []
     apologies: list[str] = []

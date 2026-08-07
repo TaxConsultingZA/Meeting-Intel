@@ -2,7 +2,13 @@
 import json
 import pytest
 from app.pipeline.transcribe import TranscriptSegment
-from app.pipeline.extract import _transcript_to_text, _parse_raw, MockExtractor, get_extractor
+from app.pipeline.extract import (
+    _transcript_to_text,
+    _parse_raw,
+    MockExtractor,
+    TranscriptOnlyExtractor,
+    get_extractor,
+)
 from app.models import Confidence
 
 
@@ -93,9 +99,27 @@ class TestMockExtractor:
 
 
 class TestGetExtractor:
-    def test_returns_mock_for_unknown_impl(self, monkeypatch):
+    def test_returns_mock_when_configured(self, monkeypatch):
         from app import config
         settings = config.get_settings()
         monkeypatch.setattr(settings, "extractor_impl", "mock")
         extractor = get_extractor()
         assert isinstance(extractor, MockExtractor)
+
+    async def test_transcript_only_returns_no_invented_notes(self, monkeypatch):
+        from app import config
+        settings = config.get_settings()
+        monkeypatch.setattr(settings, "extractor_impl", "transcript_only")
+        extractor = get_extractor()
+        assert isinstance(extractor, TranscriptOnlyExtractor)
+        result = await extractor.extract([SEG_A, SEG_B])
+        assert result.extraction_mode == "transcript_only"
+        assert result.summary == ""
+        assert result.action_items == []
+
+    def test_unknown_implementation_fails_closed(self, monkeypatch):
+        from app import config
+        settings = config.get_settings()
+        monkeypatch.setattr(settings, "extractor_impl", "not-real")
+        with pytest.raises(ValueError, match="Unsupported EXTRACTOR_IMPL"):
+            get_extractor()

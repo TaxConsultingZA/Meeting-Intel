@@ -26,32 +26,24 @@ async def current_user(
 ) -> str:
     """Authenticate the caller using a bearer token.
 
-    Production validates a Microsoft Entra access token for this API. Local
-    Mock mode accepts only the explicit ``Bearer mock:<company-upn>`` format.
-    Hybrid mode additionally requires that Mock identity to already exist in
-    the registered-user whitelist. The old spoofable ``x-user-upn`` header is
-    intentionally unsupported.
+    Production validates a Microsoft Entra access token for this API. Mock
+    tokens exist only for isolated automated tests. The old spoofable
+    ``x-user-upn`` header and Hybrid demo login are intentionally unsupported.
     """
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(401, "Bearer token required")
 
     token = credentials.credentials
-    if settings.auth_mode in {"mock", "hybrid"} and token.startswith("mock:"):
+    if settings.auth_mode == "mock" and token.startswith("mock:"):
         if settings.graph_impl != "mock":
-            raise HTTPException(500, "Mock and Hybrid demo authentication require GRAPH_IMPL=mock")
+            raise HTTPException(500, "Mock authentication requires GRAPH_IMPL=mock")
         upn = _domain_user(token.removeprefix("mock:"))
-        if settings.auth_mode == "hybrid":
-            registered = await db.scalar(
-                select(RegisteredUser).where(RegisteredUser.upn == upn)
-            )
-            if not registered:
-                raise HTTPException(403, "Demo account is not on the registered-user whitelist")
         return upn
 
     if settings.auth_mode == "mock":
         raise HTTPException(401, "Invalid local Mock token")
 
-    if settings.auth_mode not in {"entra", "hybrid"}:
+    if settings.auth_mode != "entra":
         raise HTTPException(500, "Unsupported AUTH_MODE")
 
     claims = validate_access_token(token)

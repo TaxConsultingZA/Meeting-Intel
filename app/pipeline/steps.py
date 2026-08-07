@@ -171,8 +171,8 @@ async def process_recording(
         4. Download the MP4 from OneDrive (streams to a temp file).
         5. Transcribe via AssemblyAI (diarized speaker labels).
         6. Email participants: "transcription started, ~15-20 min ETA".
-        7. Extract structured notes via Claude.
-        8. Persist action items and all participant UPNs.
+        7. Run the configured extractor (transcript-only until an AI is selected).
+        8. Persist any structured results and all participant UPNs.
         9. Set state to ``awaiting_review`` and email the organiser.
 
     Any unhandled exception sets state to ``failed`` and re-raises.

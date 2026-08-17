@@ -58,10 +58,6 @@ class Settings(BaseSettings):
     reconcile_secret: str = ""       # shared secret for the /reconcile endpoint
     subscription_secret: str = ""    # shared secret for the /subscriptions/ensure endpoint
 
-    # --- Azure Service Bus ---
-    servicebus_connection_string: str = ""
-    servicebus_queue_name: str = "meeting-jobs"
-
     # --- Database ---
     # Accepts Railway's postgres:// or postgresql:// and normalises to asyncpg driver
     database_url: str = "postgresql+asyncpg://meeting:meeting@localhost:5432/meeting_intel"

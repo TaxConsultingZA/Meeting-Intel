@@ -138,3 +138,101 @@ class TestReviewStateGate:
         with pytest.raises(HTTPException) as exc:
             _require_awaiting_review(meeting)
         assert exc.value.status_code == 409
+
+
+class TestApprovalDelivery:
+    @staticmethod
+    def _meeting():
+        from app.models import ProcessingState
+
+        meeting = MagicMock()
+        meeting.organizer_upn = "owner@taxconsulting.co.za"
+        meeting.attendees_raw = ["guest@taxconsulting.co.za"]
+        meeting.participants = []
+        meeting.action_items = [MagicMock(approved=False)]
+        meeting.state = ProcessingState.awaiting_review
+        meeting.id = "meeting-1"
+        meeting.email_delivery_status = None
+        meeting.email_delivery_fingerprint = None
+        meeting.email_delivery_error = None
+        meeting.email_delivery_attempts = 0
+        return meeting
+
+    async def test_mail_failure_remains_retryable(self, monkeypatch):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import ApproveMeetingIn
+        from app.models import ProcessingState
+
+        meeting = self._meeting()
+        db = AsyncMock()
+        monkeypatch.setattr(reviews.settings, "emails_enabled", True)
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        monkeypatch.setattr(reviews, "build_meeting_email", lambda _: ("Subject", "Body"))
+        monkeypatch.setattr(reviews.graph, "send_mail", AsyncMock(side_effect=RuntimeError("Graph failed")))
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.approve(
+                "meeting-1",
+                db=db,
+                upn="owner@taxconsulting.co.za",
+                body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"]),
+            )
+
+        assert exc.value.status_code == 502
+        assert meeting.state == ProcessingState.awaiting_review
+        assert meeting.action_items[0].approved is False
+        assert meeting.email_delivery_status == "failed"
+        assert meeting.email_delivery_attempts == 1
+        assert "Graph failed" in meeting.email_delivery_error
+        assert db.commit.await_count == 2
+
+    async def test_successful_mail_and_approval_commit_together(self, monkeypatch):
+        from app.api import reviews
+        from app.schemas import ApproveMeetingIn
+        from app.models import ProcessingState
+
+        meeting = self._meeting()
+        db = AsyncMock()
+        send_mail = AsyncMock()
+        monkeypatch.setattr(reviews.settings, "emails_enabled", True)
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        monkeypatch.setattr(reviews, "build_meeting_email", lambda _: ("Subject", "Body"))
+        monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
+
+        result = await reviews.approve(
+            "meeting-1",
+            db=db,
+            upn="owner@taxconsulting.co.za",
+            body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"]),
+        )
+
+        assert result["state"] == ProcessingState.sent
+        assert meeting.action_items[0].approved is True
+        send_mail.assert_awaited_once()
+        assert meeting.email_delivery_status == "sent"
+        assert meeting.email_delivery_attempts == 1
+        assert db.commit.await_count == 2
+
+    async def test_sending_state_blocks_ambiguous_resend(self, monkeypatch):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import ApproveMeetingIn
+
+        meeting = self._meeting()
+        meeting.email_delivery_status = "sending"
+        db = AsyncMock()
+        monkeypatch.setattr(reviews.settings, "emails_enabled", True)
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        monkeypatch.setattr(reviews, "build_meeting_email", lambda _: ("Subject", "Body"))
+        send_mail = AsyncMock()
+        monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.approve(
+                "meeting-1", db=db, upn="owner@taxconsulting.co.za",
+                body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"]),
+            )
+
+        assert exc.value.status_code == 409
+        send_mail.assert_not_awaited()

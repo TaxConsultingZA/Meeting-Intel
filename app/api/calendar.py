@@ -1,6 +1,9 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from ..db import get_db
 from ..graph import client as graph
+from ..services.sync_state import record_sync_result
 from .deps import require_subscribed
 
 router = APIRouter()
@@ -65,12 +68,15 @@ def _format_event(e: dict) -> dict:
 @router.get("/calendar/upcoming")
 async def upcoming_meetings(
     days: int = 7,
+    db: AsyncSession = Depends(get_db),
     upn: str = Depends(require_subscribed),
 ):
     """Return the user's upcoming online/Teams meetings for the next N days."""
     try:
         events = await graph.get_upcoming_calendar_events(upn, days=days)
     except Exception as e:
+        await record_sync_result(db, user_upn=upn, source="calendar", error=e)
         raise HTTPException(status_code=502, detail=f"Could not reach calendar: {e}")
+    await record_sync_result(db, user_upn=upn, source="calendar")
     active = [e for e in events if not (e.get("subject") or "").lower().startswith("canceled:")]
     return [_format_event(e) for e in active]

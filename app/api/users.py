@@ -1,7 +1,7 @@
 """User self-service API — lets the frontend check the caller's registration status."""
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,8 +10,8 @@ from ..config import get_settings
 from ..db import get_db
 from ..email_templates import build_welcome_email
 from ..graph import client as graph
-from ..models import RegisteredUser
-from ..schemas import RegisteredUserOut, SubscriptionOut
+from ..models import RegisteredUser, UserSyncState
+from ..schemas import RegisteredUserOut, SubscriptionOut, SyncStateOut
 from .deps import current_user
 
 log = logging.getLogger(__name__)
@@ -77,6 +77,38 @@ async def get_me(db: AsyncSession = Depends(get_db), upn: str = Depends(current_
         )
 
     return _to_out(user)
+
+
+@router.get("/users/me/sync-status", response_model=list[SyncStateOut])
+async def get_sync_status(
+    db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)
+):
+    rows = (await db.scalars(
+        select(UserSyncState)
+        .where(UserSyncState.user_upn == upn)
+        .order_by(UserSyncState.source)
+    )).all()
+    return [SyncStateOut(
+        source=row.source,
+        status=row.status,
+        last_attempted_at=row.last_attempted_at.isoformat() if row.last_attempted_at else None,
+        last_succeeded_at=row.last_succeeded_at.isoformat() if row.last_succeeded_at else None,
+        last_error=row.last_error,
+    ) for row in rows]
+
+
+@router.get("/users/me/photo")
+async def get_profile_photo(upn: str = Depends(current_user)):
+    """Return the Microsoft profile photo or 204 so clients can show initials."""
+    try:
+        photo, content_type = await graph.get_user_photo(upn)
+    except graph.ProfilePhotoNotFound:
+        return Response(status_code=204)
+    except Exception as exc:
+        log.warning("Could not load profile photo for %s: %s", upn, exc)
+        # A photo is decorative and must never block the signed-in experience.
+        return Response(status_code=204)
+    return Response(content=photo, media_type=content_type)
 
 
 @router.post("/users/me/subscription", response_model=SubscriptionOut)

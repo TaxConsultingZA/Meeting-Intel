@@ -5,7 +5,7 @@ import { Calendar, Users, ChevronRight, Upload, Mic, Video, Share2, History, Loc
 import StateBadge from "@/components/state-badge";
 import ImportModal from "@/components/import-modal";
 import { requestHistoricalAccess, shareMeeting } from "@/lib/api";
-import type { MeetingOut, ProcessingState, CalendarEvent } from "@/lib/types";
+import type { MeetingOut, ProcessingState, CalendarEvent, SyncState } from "@/lib/types";
 
 /** Convert a UPN like "jane.doe@taxconsulting.co.za" to a display name "Jane Doe". */
 function formatUpn(upn: string | null | undefined): string {
@@ -38,11 +38,33 @@ interface Props {
   upn: string;
   accessToken: string;
   isSubscribed: boolean;
+  syncStates: SyncState[];
+  loadErrors: string[];
 }
 
 type Tab = "upcoming" | "in_progress" | "review" | "old_meetings" | "historical" | "cancelled";
 
-export default function DashboardClient({ meetings, upcoming, historical: initialHistorical, upn, accessToken, isSubscribed }: Props) {
+function conciseMicrosoftError(error: string): string {
+  const lower = error.toLowerCase();
+  const source = lower.includes("onedrive") || lower.includes("/drive")
+    ? "OneDrive"
+    : lower.includes("calendar")
+      ? "Calendar"
+      : "Microsoft data";
+
+  if (lower.includes("403") || lower.includes("forbidden")) {
+    return `${source} permission is unavailable (Microsoft Graph returned 403).`;
+  }
+  if (lower.includes("401") || lower.includes("unauthorized")) {
+    return `${source} authorization is unavailable (Microsoft Graph returned 401).`;
+  }
+  if (lower.includes("404") || lower.includes("not found")) {
+    return `${source} could not be found (Microsoft Graph returned 404).`;
+  }
+  return error.length > 180 ? `${error.slice(0, 177)}...` : error;
+}
+
+export default function DashboardClient({ meetings, upcoming, historical: initialHistorical, upn, accessToken, isSubscribed, syncStates, loadErrors }: Props) {
   const [tab, setTab] = useState<Tab>("upcoming");
   const [showImport, setShowImport] = useState(false);
   const [historical, setHistorical] = useState<MeetingOut[]>(initialHistorical);
@@ -54,6 +76,14 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
   const pendingReview   = meetings.filter((m) => m.state === "awaiting_review");
   const oldMeetings     = meetings.filter((m) => m.state === "approved" || m.state === "sent");
   const cancelled       = meetings.filter((m) => m.state === "failed");
+  const persistedSyncErrors = syncStates
+    .filter((state) => state.status === "failed")
+    .map((state) => `${state.source === "onedrive" ? "OneDrive" : "Calendar"}: ${state.last_error ?? "Last sync failed"}`);
+  // Prefer errors from this page load. Stored sync failures are a fallback and
+  // must not duplicate the same Microsoft failure in the warning panel.
+  const microsoftErrors = Array.from(new Set(
+    (loadErrors.length > 0 ? loadErrors : persistedSyncErrors).map(conciseMicrosoftError),
+  ));
 
   async function handleRequestAccess(meetingId: string) {
     try {
@@ -74,6 +104,15 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
 
   return (
     <main className="max-w-5xl mx-auto px-6 py-7">
+      {microsoftErrors.length > 0 && (
+        <div role="alert" className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <p className="font-semibold">Microsoft data is temporarily unavailable</p>
+          <ul className="mt-1 list-disc space-y-1 pl-5 text-xs">
+            {microsoftErrors.map((error) => <li key={error}>{error}</li>)}
+          </ul>
+          <p className="mt-2 text-xs">No meetings are hidden as an empty result; try again after the permission or service issue is resolved.</p>
+        </div>
+      )}
       <div className="mb-6 flex items-start justify-between gap-4">
         <div>
           <h1 className="text-[22px] font-bold text-[#003366]">Meeting Intelligence</h1>

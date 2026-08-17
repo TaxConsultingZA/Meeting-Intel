@@ -1,4 +1,4 @@
-import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, AppNotification, RegisteredUser, BusinessUnit } from "./types";
+import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, AppNotification, RegisteredUser, BusinessUnit, SyncState } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -124,6 +124,11 @@ export async function getMe(upn: string): Promise<RegisteredUser | null> {
     if (e instanceof Error && e.message.startsWith("404")) return null;
     throw e;
   }
+}
+
+/** Return the last success/failure recorded for Calendar and OneDrive sync. */
+export async function getSyncStatus(accessToken: string): Promise<SyncState[]> {
+  return apiFetch<SyncState[]>("/users/me/sync-status", accessToken);
 }
 
 /** Explicitly opt the current user into automatic Calendar/OneDrive processing. */

@@ -1,12 +1,13 @@
 import os
 import tempfile
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..models import Meeting, ActionItem, MeetingParticipant, ProcessingState, RegisteredUser
 from ..graph import client as graph
+from ..utils.identity import normalize_upn, normalize_upns
 from .transcribe import get_transcriber
 from .extract import get_extractor
 
@@ -181,7 +182,7 @@ async def process_recording(
     if meeting is None:
         meta = await graph.get_drive_item(drive_id, drive_item_id)
         user_node = (meta.get("createdBy", {}).get("user", {}) or {})
-        organizer = (
+        organizer = normalize_upn(
             user_node.get("userPrincipalName")
             or user_node.get("email")
             or owner_upn          # fallback: whoever's drive this file lives in
@@ -194,6 +195,10 @@ async def process_recording(
         db.add(meeting)
         await db.commit()
         await db.refresh(meeting)
+
+    owner_upn = normalize_upn(owner_upn)
+    if meeting.organizer_upn:
+        meeting.organizer_upn = normalize_upn(meeting.organizer_upn)
 
     # Add owner as participant immediately so the meeting shows in the dashboard
     # during processing (participant rows are the visibility gate for /reviews/all).
@@ -213,11 +218,11 @@ async def process_recording(
             await db.commit()
 
     # Notify participants before any AI processing (POPIA Section 18).
-    extra = await graph.get_event_attendees(drive_id, drive_item_id)
+    extra = normalize_upns(await graph.get_event_attendees(drive_id, drive_item_id))
 
     # Persist the full attendee list so historical-access requests can be verified later,
     # even after the pipeline filters participants down to registered users only.
-    all_attendee_upns = list({*extra, *(p for p in [meeting.organizer_upn, owner_upn] if p)})
+    all_attendee_upns = normalize_upns([*extra, meeting.organizer_upn, owner_upn])
     if meeting.attendees_raw is None:
         meeting.attendees_raw = all_attendee_upns
         await db.commit()
@@ -227,6 +232,7 @@ async def process_recording(
     try:
         with tempfile.TemporaryDirectory() as tmp:
             meeting.state = ProcessingState.downloading
+            meeting.error = None
             await db.commit()
 
             # AssemblyAI accepts MP4 directly — no ffmpeg audio extraction needed
@@ -235,7 +241,7 @@ async def process_recording(
 
             meeting.state = ProcessingState.transcribing
             await db.commit()
-            all_upns = list({*extra, *(p for p in [meeting.organizer_upn, owner_upn] if p)})
+            all_upns = normalize_upns([*extra, meeting.organizer_upn, owner_upn])
             await _send_processing_started(meeting, all_upns)
             segments = await get_transcriber().transcribe(video_path)
             meeting.transcript = "\n".join(f"[{s.speaker}] {s.text}" for s in segments)
@@ -245,6 +251,9 @@ async def process_recording(
             result = await get_extractor().extract(segments)
             meeting.summary = result.summary
             meeting.extracted_json = result.model_dump()
+            # A job may be retried after a late notification failure. Replace
+            # extracted actions rather than duplicating the previous attempt.
+            await db.execute(delete(ActionItem).where(ActionItem.meeting_id == meeting.id))
             for ai in result.action_items:
                 db.add(ActionItem(
                     meeting_id=meeting.id,

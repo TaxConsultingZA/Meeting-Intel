@@ -156,6 +156,14 @@ export interface RegisteredUser {
   registered_at: string;
 }
 
+export interface SyncState {
+  source: "calendar" | "onedrive" | string;
+  status: "never" | "success" | "failed" | string;
+  last_attempted_at: string | null;
+  last_succeeded_at: string | null;
+  last_error: string | null;
+}
+
 /** A recording file visible in the user's OneDrive, with its current processing state if imported. */
 export interface AvailableRecording {
   drive_item_id: string;

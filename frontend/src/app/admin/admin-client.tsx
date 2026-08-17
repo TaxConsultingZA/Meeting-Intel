@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { UserPlus, Trash2, Shield, ShieldOff, Pencil } from "lucide-react";
+import { UserPlus, Trash2, Shield, Pencil } from "lucide-react";
 import { registerUser, removeUser, updateUser } from "@/lib/api";
 import type { RegisteredUser, BusinessUnit } from "@/lib/types";
 
@@ -318,7 +318,7 @@ function EditUserDialog({
   );
 }
 
-function Dialog({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+function Dialog({ title, children }: { title: string; children: React.ReactNode; onClose: () => void }) {
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-md">

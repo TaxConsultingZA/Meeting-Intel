@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
+import hashlib
+import json
 from fastapi import APIRouter, Body, Depends, HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,26 +15,32 @@ from ..schemas import (
 )
 from ..graph import client as graph
 from ..email_templates import build_meeting_email
+from ..utils.identity import normalize_upn, normalize_upns
 from .deps import current_user, require_registered  # noqa: F401 — re-exported; tests may import from here
 
 settings = get_settings()
 router = APIRouter()
 
 
-async def _authorize(db: AsyncSession, meeting_id, upn: str) -> Meeting:
+async def _authorize(
+    db: AsyncSession, meeting_id, upn: str, *, for_update: bool = False
+) -> Meeting:
     """Row-level authorisation: load a meeting and verify the caller is a participant.
 
     Raises 404 if the meeting doesn't exist, 403 if the caller has no participant
     row for it.  Returns the fully-loaded Meeting ORM object on success.
     """
-    m = await db.scalar(
+    query = (
         select(Meeting)
         .where(Meeting.id == meeting_id)
         .options(selectinload(Meeting.participants), selectinload(Meeting.action_items))
     )
+    if for_update:
+        query = query.with_for_update()
+    m = await db.scalar(query)
     if not m:
         raise HTTPException(404)
-    if not any(p.user_upn == upn for p in m.participants):
+    if not any(normalize_upn(p.user_upn) == upn for p in m.participants):
         raise HTTPException(403, "Not a participant of this meeting")
     return m
 
@@ -83,7 +91,7 @@ async def all_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(cu
     rows = (await db.scalars(
         select(Meeting)
         .join(MeetingParticipant)
-        .where(MeetingParticipant.user_upn == upn)
+        .where(func.lower(MeetingParticipant.user_upn) == upn)
         .options(selectinload(Meeting.participants), selectinload(Meeting.action_items))
     )).unique().all()
     return [_to_out(m) for m in rows]
@@ -96,10 +104,10 @@ async def pending(db: AsyncSession = Depends(get_db), upn: str = Depends(current
         .join(MeetingParticipant)
         .where(
             Meeting.state == ProcessingState.awaiting_review,
-            MeetingParticipant.user_upn == upn,
+            func.lower(MeetingParticipant.user_upn) == upn,
             or_(
                 MeetingParticipant.is_organizer.is_(True),
-                Meeting.organizer_upn == upn,
+                func.lower(Meeting.organizer_upn) == upn,
             ),
         )
     )).unique().all()
@@ -113,23 +121,21 @@ async def historical_meetings(db: AsyncSession = Depends(get_db), upn: str = Dep
     These are meetings where the caller's UPN appears in ``attendees_raw`` but they
     have no ``MeetingParticipant`` row.  The caller can request access to each one.
     """
-    from sqlalchemy import not_, exists, cast
-    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy import not_, exists
 
     participant_exists = exists().where(
         MeetingParticipant.meeting_id == Meeting.id,
-        MeetingParticipant.user_upn == upn,
+        func.lower(MeetingParticipant.user_upn) == upn,
     )
     rows = (await db.scalars(
         select(Meeting)
         .where(
             Meeting.attendees_raw.isnot(None),
-            Meeting.attendees_raw.contains(cast([upn], JSONB)),
             not_(participant_exists),
         )
         .options(selectinload(Meeting.participants), selectinload(Meeting.action_items))
     )).unique().all()
-    return [_to_out(m) for m in rows]
+    return [_to_out(m) for m in rows if upn in normalize_upns(m.attendees_raw)]
 
 
 @router.get("/reviews/{meeting_id}", response_model=MeetingOut)
@@ -168,9 +174,10 @@ async def edit_item(item_id: str, edit: ActionItemEdit,
 async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
                   upn: str = Depends(current_user),
                   body: ApproveMeetingIn = Body(default=ApproveMeetingIn())):
-    m = await _authorize(db, meeting_id, upn)
+    # Serialize concurrent approvals. Without this lock, two browser requests
+    # can both observe awaiting_review and send the same email twice.
+    m = await _authorize(db, meeting_id, upn, for_update=True)
     _require_organizer(m, upn)
-    _require_awaiting_review(m)
 
     known_recipients = {
         value.strip().lower()
@@ -187,26 +194,68 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
             f"Recipients were not part of this meeting: {', '.join(sorted(unknown))}",
         )
 
-    for a in m.action_items:
-        a.approved = True
-    m.state = ProcessingState.approved
-    m.approved_recipients = body.recipients
-    m.approved_by = upn
-    m.approved_at = datetime.now(timezone.utc)
-    await db.commit()
+    recipients = sorted(set(body.recipients))
+    subject, email_body = build_meeting_email(m)
+    fingerprint = hashlib.sha256(json.dumps(
+        {"meeting_id": str(m.id), "recipients": recipients, "subject": subject, "html": email_body},
+        sort_keys=True,
+    ).encode("utf-8")).hexdigest()
+
+    # Repeated delivery of the exact same approval is idempotent.
+    if m.email_delivery_status == "sent" and m.email_delivery_fingerprint == fingerprint:
+        return {"ok": True, "state": m.state, "already_sent": True}
+    if m.email_delivery_status == "sending":
+        raise HTTPException(
+            409,
+            "Email delivery is already in progress or its outcome is unknown; automatic resend is blocked",
+        )
+    _require_awaiting_review(m)
 
     # The explicit organiser approval is the send gate. AUTO_SEND_EMAIL is no
     # longer used here: selected recipients are never contacted before this POST.
-    if settings.emails_enabled and body.recipients and m.organizer_upn:
-        subject, email_body = build_meeting_email(m)
-        await graph.send_mail(
-            settings.mail_sender_upn or m.organizer_upn,
-            m.approved_recipients,
-            subject,
-            email_body,
-        )
-        m.state = ProcessingState.sent
+    # Send before committing approval so a Graph failure leaves the meeting in
+    # awaiting_review and the organiser can safely retry from the UI.
+    sent = False
+    if settings.emails_enabled and recipients and m.organizer_upn:
+        m.email_delivery_status = "sending"
+        m.email_delivery_fingerprint = fingerprint
+        m.email_delivery_error = None
+        m.email_delivery_attempts += 1
+        m.approved_recipients = recipients
+        # Persist the delivery claim before calling Graph. If the web process
+        # dies after Graph accepts the mail, a later request will be blocked
+        # instead of silently sending a duplicate.
         await db.commit()
+        try:
+            await graph.send_mail(
+                settings.mail_sender_upn or m.organizer_upn,
+                recipients,
+                subject,
+                email_body,
+            )
+        except Exception as exc:
+            m.email_delivery_status = "failed"
+            m.email_delivery_error = str(exc)[:1000]
+            await db.commit()
+            raise HTTPException(
+                502,
+                "Email delivery failed; the meeting remains awaiting review and can be retried",
+            ) from exc
+        m.email_delivery_status = "sent"
+        m.email_delivery_error = None
+        sent = True
+    else:
+        m.email_delivery_status = "not_required"
+        m.email_delivery_fingerprint = fingerprint
+        m.email_delivery_error = None
+
+    for a in m.action_items:
+        a.approved = True
+    m.state = ProcessingState.sent if sent else ProcessingState.approved
+    m.approved_recipients = recipients
+    m.approved_by = upn
+    m.approved_at = datetime.now(timezone.utc)
+    await db.commit()
 
     return {"ok": True, "state": m.state}
 
@@ -220,13 +269,13 @@ async def share_meeting(meeting_id: str, body: ShareMeetingIn,
     with ``access_type='shared'`` so the recipient sees the meeting in their dashboard.
     """
     m = await _authorize(db, meeting_id, upn)
-    if m.organizer_upn != upn:
+    if normalize_upn(m.organizer_upn) != upn:
         raise HTTPException(403, "Only the meeting organiser can share this transcript")
 
     already = await db.scalar(
         select(MeetingParticipant).where(
             MeetingParticipant.meeting_id == m.id,
-            MeetingParticipant.user_upn == body.recipient_upn,
+            func.lower(MeetingParticipant.user_upn) == body.recipient_upn,
         )
     )
     if already:
@@ -251,9 +300,6 @@ async def request_historical_access(meeting_id: str, db: AsyncSession = Depends(
     ``MeetingParticipant`` row with ``access_type='historical'`` immediately.
     No approval step required: being listed as an attendee is proof of presence.
     """
-    from sqlalchemy import cast
-    from sqlalchemy.dialects.postgresql import JSONB
-
     m = await db.scalar(
         select(Meeting)
         .where(Meeting.id == meeting_id)
@@ -262,14 +308,14 @@ async def request_historical_access(meeting_id: str, db: AsyncSession = Depends(
     if not m:
         raise HTTPException(404, "Meeting not found")
 
-    attendees = m.attendees_raw or []
+    attendees = normalize_upns(m.attendees_raw)
     if upn not in attendees:
         raise HTTPException(403, "You were not listed as an attendee of this meeting")
 
     already = await db.scalar(
         select(MeetingParticipant).where(
             MeetingParticipant.meeting_id == m.id,
-            MeetingParticipant.user_upn == upn,
+            func.lower(MeetingParticipant.user_upn) == upn,
         )
     )
     if already:

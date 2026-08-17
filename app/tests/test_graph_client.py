@@ -63,6 +63,30 @@ class TestGetUserDriveId:
             await get_user_drive_id(upn)
 
 
+class TestGetUserPhoto:
+    @respx.mock
+    async def test_returns_photo_bytes_and_content_type(self, monkeypatch):
+        from app.graph import client
+        monkeypatch.setattr(client.settings, "graph_impl", "microsoft")
+        upn = "alice@taxconsulting.co.za"
+        respx.get(f"{_BASE}/users/{upn}/photo/$value").mock(
+            return_value=httpx.Response(200, content=b"jpeg-data", headers={"content-type": "image/jpeg"})
+        )
+        with _mock_token():
+            content, content_type = await client.get_user_photo(upn)
+        assert content == b"jpeg-data"
+        assert content_type == "image/jpeg"
+
+    @respx.mock
+    async def test_missing_photo_uses_specific_exception(self, monkeypatch):
+        from app.graph import client
+        monkeypatch.setattr(client.settings, "graph_impl", "microsoft")
+        upn = "alice@taxconsulting.co.za"
+        respx.get(f"{_BASE}/users/{upn}/photo/$value").mock(return_value=httpx.Response(404))
+        with _mock_token(), pytest.raises(client.ProfilePhotoNotFound):
+            await client.get_user_photo(upn)
+
+
 class TestGetEventAttendees:
     @respx.mock
     async def test_parses_semicolon_separated_attendees(self):

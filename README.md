@@ -59,6 +59,24 @@ Email sent via Graph sendMail
   the organiser can edit action items and approve.
 - **Custom distribution** — approval records the exact selected recipient list,
   approving user, and timestamp.
+- **Durable processing queue** — API, webhook and reconciliation paths only
+  enqueue PostgreSQL jobs. A separate worker performs the long-running download
+  and transcription, so a web-process restart cannot silently discard work.
+- **Retryable approval** — if Graph email delivery fails, the meeting remains in
+  `awaiting_review`; no false approved state is committed and the organiser can retry.
+
+## Recording worker
+
+Run exactly one worker process alongside the FastAPI web service:
+
+```bash
+python -m app.queue.worker
+```
+
+For the temporary Railway environment, create a second service from the same
+repository and use that command as its start command. Give it the same backend
+environment variables, especially `DATABASE_URL`, Microsoft Graph credentials,
+and `ASSEMBLYAI_API_KEY`. The web service queues jobs; this worker consumes them.
 
 ## Microsoft Entra production setup
 

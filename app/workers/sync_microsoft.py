@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.db import SessionLocal
 from app.graph import client as graph
 from app.models import RegisteredUser, SyncedCalendarEvent
+from app.services.sync_state import record_sync_result
 
 
 def _graph_datetime(value: dict | None) -> datetime | None:
@@ -32,8 +33,10 @@ async def sync_calendar_events(days: int = 14) -> int:
     for upn in upns:
         try:
             events = await graph.get_upcoming_calendar_events(upn, days=days)
-        except Exception:
+        except Exception as exc:
             # One user's Graph failure must not block every other subscriber.
+            async with SessionLocal() as db:
+                await record_sync_result(db, user_upn=upn, source="calendar", error=exc)
             continue
         async with SessionLocal() as db:
             for raw in events:
@@ -56,4 +59,5 @@ async def sync_calendar_events(days: int = 14) -> int:
                 row.last_synced_at = datetime.now(timezone.utc)
                 synced += 1
             await db.commit()
+            await record_sync_result(db, user_upn=upn, source="calendar")
     return synced

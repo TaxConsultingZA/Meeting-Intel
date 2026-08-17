@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 
 // Import the pure helper functions directly by re-implementing them here
 // so tests aren't coupled to the React component's internal exports.

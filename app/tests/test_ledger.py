@@ -49,3 +49,19 @@ class TestClaimItem:
 
         result = await claim_item(mock_db, "item-3", None, etag=None, source="manual")
         assert result is True
+
+    async def test_concurrent_unique_insert_is_treated_as_duplicate(self):
+        from sqlalchemy.exc import IntegrityError
+        from app.services.ledger import claim_item
+
+        mock_db = AsyncMock()
+        mock_db.add = MagicMock()
+        mock_db.scalar.return_value = None
+        mock_db.commit.side_effect = IntegrityError("insert", {}, RuntimeError("duplicate"))
+
+        result = await claim_item(
+            mock_db, "same-item", "drive-1", etag=None, source="reconcile"
+        )
+
+        assert result is False
+        mock_db.rollback.assert_awaited_once()

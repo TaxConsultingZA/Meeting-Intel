@@ -1,6 +1,5 @@
 "use client";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import { ChevronLeft, Pencil, Check, X, CheckCircle2 } from "lucide-react";
@@ -20,9 +19,6 @@ import type {
   Confidence,
   ProcessingState,
   SpeakerHighlight,
-  DiscussionPoint,
-  Deliverable,
-  Risk,
 } from "@/lib/types";
 
 const SPEAKER_COLOURS = [
@@ -40,7 +36,6 @@ interface Props {
 }
 
 export default function MeetingDetailClient({ meeting: initial, upn, accessToken }: Props) {
-  const router = useRouter();
   const [meeting, setMeeting] = useState(initial);
   const [approving, setApproving] = useState(false);
   const [showModal, setShowModal] = useState(false);

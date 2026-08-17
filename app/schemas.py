@@ -49,6 +49,14 @@ class SubscriptionOut(BaseModel):
     subscribed_at: str | None
 
 
+class SyncStateOut(BaseModel):
+    source: str
+    status: str
+    last_attempted_at: str | None
+    last_succeeded_at: str | None
+    last_error: str | None
+
+
 class ShareMeetingIn(BaseModel):
     """Payload for POST /reviews/{id}/share — share a transcript with a colleague."""
     recipient_upn: str

@@ -4,8 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import get_db
-from ..services.ledger import claim_item
-from ..queue.bus import enqueue_job
+from ..services.jobs import enqueue_recording_job
 from ..models import RegisteredUser
 
 settings = get_settings()
@@ -54,8 +53,14 @@ async def graph_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         if not subscriber:
             continue
 
-        if await claim_item(db, drive_item_id, drive_id, etag, source="webhook"):
-            enqueue_job(drive_item_id, drive_id)
+        await enqueue_recording_job(
+            db,
+            drive_item_id=drive_item_id,
+            drive_id=drive_id,
+            owner_upn=subscriber.upn,
+            source="webhook",
+            etag=etag,
+        )
 
     # Always 202 fast — Graph times out if you process inline
     return Response(status_code=202)

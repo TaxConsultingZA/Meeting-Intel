@@ -36,13 +36,13 @@ def test_stale_webhook_for_unsubscribed_drive_is_ignored():
 
     db = AsyncMock()
     db.scalar = AsyncMock(return_value=None)
-    with patch("app.api.webhooks.claim_item", new_callable=AsyncMock) as claim:
+    with patch("app.api.webhooks.enqueue_recording_job", new_callable=AsyncMock) as enqueue:
         response = _client(db).post(
             "/webhooks/graph",
             json=_notification(webhooks.settings.webhook_client_state),
         )
     assert response.status_code == 202
-    claim.assert_not_awaited()
+    enqueue.assert_not_awaited()
 
 
 def test_subscribed_drive_notification_can_be_claimed_and_queued():
@@ -50,14 +50,21 @@ def test_subscribed_drive_notification_can_be_claimed_and_queued():
 
     db = AsyncMock()
     db.scalar = AsyncMock(return_value=MagicMock(is_subscribed=True))
-    with (
-        patch("app.api.webhooks.claim_item", new_callable=AsyncMock, return_value=True) as claim,
-        patch("app.api.webhooks.enqueue_job") as enqueue,
-    ):
+    with patch(
+        "app.api.webhooks.enqueue_recording_job",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as enqueue:
         response = _client(db).post(
             "/webhooks/graph",
             json=_notification(webhooks.settings.webhook_client_state),
         )
     assert response.status_code == 202
-    claim.assert_awaited_once()
-    enqueue.assert_called_once_with("item-456", "drive-123")
+    enqueue.assert_awaited_once_with(
+        db,
+        drive_item_id="item-456",
+        drive_id="drive-123",
+        owner_upn=db.scalar.return_value.upn,
+        source="webhook",
+        etag="etag",
+    )

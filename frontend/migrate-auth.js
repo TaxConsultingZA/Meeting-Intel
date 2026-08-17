@@ -1,5 +1,4 @@
 const { Pool } = require('pg');
-const fs = require('fs');
 
 const connectionString = (process.env.DATABASE_URL || '').replace("postgresql+asyncpg://", "postgresql://");
 const sql = require('fs').readFileSync('auth-tables.sql', 'utf8');

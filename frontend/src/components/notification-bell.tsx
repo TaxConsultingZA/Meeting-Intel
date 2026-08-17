@@ -57,9 +57,12 @@ export default function NotificationBell({ upn }: { upn: string }) {
   }, [upn]);
 
   useEffect(() => {
-    fetchAndDiff();
+    const initial = window.setTimeout(() => void fetchAndDiff(), 0);
     const interval = setInterval(fetchAndDiff, POLL_MS);
-    return () => clearInterval(interval);
+    return () => {
+      window.clearTimeout(initial);
+      clearInterval(interval);
+    };
   }, [fetchAndDiff]);
 
   // Close on outside click

@@ -6,6 +6,10 @@ from ..config import get_settings
 settings = get_settings()
 
 
+class ProfilePhotoNotFound(Exception):
+    """The user does not have a Microsoft profile photo."""
+
+
 def _mock_enabled() -> bool:
     """Return True only for the explicitly selected, fully local demo backend."""
     return settings.graph_impl == "mock"
@@ -56,6 +60,19 @@ async def get_user_drive_id(user_upn: str) -> str:
         r = await c.get(url, headers=_headers())
         r.raise_for_status()
         return r.json()["id"]
+
+
+async def get_user_photo(user_upn: str) -> tuple[bytes, str]:
+    """Fetch a user's Microsoft 365 profile photo using app permissions."""
+    if _mock_enabled():
+        raise ProfilePhotoNotFound
+    url = f"{settings.graph_base}/users/{user_upn}/photo/$value"
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.get(url, headers=_headers())
+        if r.status_code == 404:
+            raise ProfilePhotoNotFound
+        r.raise_for_status()
+        return r.content, r.headers.get("content-type", "image/jpeg")
 
 
 async def list_recordings_folder(drive_id: str) -> list[dict]:
@@ -182,8 +199,6 @@ async def get_upcoming_calendar_events(upn: str, days: int = 7) -> list[dict]:
     )
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.get(url, headers=_headers())
-        if r.status_code in (403, 404):
-            return []
         r.raise_for_status()
         events = r.json().get("value", [])
     return [e for e in events if e.get("isOnlineMeeting")]

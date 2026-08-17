@@ -1,4 +1,3 @@
-import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -6,11 +5,11 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..db import get_db, SessionLocal
-from ..models import ProcessedItem, Meeting, MeetingParticipant, ProcessingState
+from ..db import get_db
+from ..models import ProcessedItem, Meeting, ProcessingState
 from ..graph import client as graph
-from ..services.ledger import claim_item
-from ..pipeline.steps import process_recording
+from ..services.jobs import enqueue_recording_job, enqueue_retry_job
+from ..services.sync_state import record_sync_result
 from .deps import require_subscribed
 
 settings = get_settings()
@@ -20,6 +19,25 @@ router = APIRouter()
 class ImportRequest(BaseModel):
     drive_item_id: str
     drive_id: str
+
+
+async def _verify_owned_drive_item(upn: str, drive_id: str, drive_item_id: str) -> dict:
+    """Verify tenant-wide Graph identifiers against the signed-in user's drive."""
+    try:
+        owned_drive_id = await graph.get_user_drive_id(upn)
+        if drive_id != owned_drive_id:
+            raise HTTPException(403, "Recording does not belong to your OneDrive")
+        item = await graph.get_drive_item(owned_drive_id, drive_item_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Could not verify OneDrive recording: {exc}") from exc
+
+    if item.get("id") and item["id"] != drive_item_id:
+        raise HTTPException(403, "Recording identity could not be verified")
+    if not str(item.get("name", "")).lower().endswith(".mp4"):
+        raise HTTPException(422, "Only MP4 recordings can be processed")
+    return item
 
 
 @router.get("/recordings/available")
@@ -32,7 +50,9 @@ async def available_recordings(
         drive_id = await graph.get_user_drive_id(upn)
         items = await graph.list_recordings_folder(drive_id)
     except Exception as e:
+        await record_sync_result(db, user_upn=upn, source="onedrive", error=e)
         raise HTTPException(status_code=502, detail=f"Could not reach OneDrive: {e}")
+    await record_sync_result(db, user_upn=upn, source="onedrive")
 
     if not items:
         return []
@@ -80,16 +100,18 @@ async def import_recording(
     upn: str = Depends(require_subscribed),
 ):
     """Trigger background processing of a new recording."""
-    claimed = await claim_item(db, req.drive_item_id, req.drive_id, etag=None, source="manual")
-    if not claimed:
+    item = await _verify_owned_drive_item(upn, req.drive_id, req.drive_item_id)
+    queued = await enqueue_recording_job(
+        db,
+        drive_item_id=req.drive_item_id,
+        drive_id=req.drive_id,
+        owner_upn=upn,
+        source="manual",
+        etag=item.get("eTag"),
+    )
+    if not queued:
         raise HTTPException(status_code=409, detail="Already imported or currently processing")
-
-    async def _run() -> None:
-        async with SessionLocal() as session:
-            await process_recording(session, req.drive_item_id, req.drive_id, owner_upn=upn)
-
-    asyncio.create_task(_run())
-    return {"ok": True}
+    return {"ok": True, "queued": True}
 
 
 @router.post("/recordings/reprocess")
@@ -109,16 +131,29 @@ async def reprocess_recording(
     if m.state not in (ProcessingState.failed, ProcessingState.queued):
         raise HTTPException(status_code=409, detail=f"Cannot reprocess: state is {m.state}")
 
-    if not any(p.user_upn == upn for p in m.participants):
-        db.add(MeetingParticipant(meeting_id=m.id, user_upn=upn, is_organizer=False))
+    is_organizer = (m.organizer_upn or "").lower() == upn or any(
+        p.user_upn.lower() == upn and p.is_organizer for p in m.participants
+    )
+    if not is_organizer:
+        raise HTTPException(403, "Only the meeting organiser can reprocess this recording")
+
+    ledger = await db.scalar(
+        select(ProcessedItem).where(ProcessedItem.drive_item_id == req.drive_item_id)
+    )
+    if not ledger or not ledger.drive_id:
+        raise HTTPException(409, "Original recording drive is unavailable")
+    await _verify_owned_drive_item(upn, ledger.drive_id, req.drive_item_id)
 
     m.state = ProcessingState.queued
     m.error = None
-    await db.commit()
-
-    async def _run() -> None:
-        async with SessionLocal() as session:
-            await process_recording(session, req.drive_item_id, req.drive_id, owner_upn=upn)
-
-    asyncio.create_task(_run())
-    return {"ok": True}
+    await db.flush()
+    queued = await enqueue_retry_job(
+        db,
+        drive_item_id=req.drive_item_id,
+        drive_id=ledger.drive_id,
+        owner_upn=upn,
+    )
+    if not queued:
+        await db.rollback()
+        raise HTTPException(409, "Recording is already queued or processing")
+    return {"ok": True, "queued": True}

@@ -1,6 +1,6 @@
 import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
-import { getAllMeetings, getUpcomingMeetings, getMe, getHistoricalMeetings } from "@/lib/api";
+import { getAllMeetings, getUpcomingMeetings, getMe, getHistoricalMeetings, getSyncStatus } from "@/lib/api";
 import Nav from "@/components/nav";
 import DashboardClient from "./dashboard-client";
 import PendingAccess from "@/components/pending-access";
@@ -20,12 +20,22 @@ export default async function DashboardPage() {
   if (!me) {
     return <PendingAccess userEmail={upn} />;
   }
-  const [meetings, upcoming, historical] = await Promise.all([
-    getAllMeetings(accessToken).catch(() => []),
+  async function load<T>(promise: Promise<T>, label: string, fallback: T) {
+    try {
+      return { data: await promise, error: null as string | null };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "Unknown error";
+      return { data: fallback, error: `${label}: ${detail}` };
+    }
+  }
+
+  const [meetingResult, upcomingResult, historicalResult, syncResult] = await Promise.all([
+    load(getAllMeetings(accessToken), "Meeting records could not be loaded", []),
     me.is_subscribed
-      ? getUpcomingMeetings(accessToken).catch(() => [])
-      : Promise.resolve([]),
-    getHistoricalMeetings(accessToken).catch(() => []),
+      ? load(getUpcomingMeetings(accessToken), "Calendar sync failed", [])
+      : Promise.resolve({ data: [], error: null }),
+    load(getHistoricalMeetings(accessToken), "Historical meetings could not be loaded", []),
+    load(getSyncStatus(accessToken), "Sync status could not be loaded", []),
   ]);
 
   return (
@@ -35,9 +45,11 @@ export default async function DashboardPage() {
         <SubscriptionGate userEmail={upn} accessToken={accessToken} />
       )}
       <DashboardClient
-        meetings={meetings}
-        upcoming={upcoming}
-        historical={historical}
+        meetings={meetingResult.data}
+        upcoming={upcomingResult.data}
+        historical={historicalResult.data}
+        syncStates={syncResult.data}
+        loadErrors={[meetingResult.error, upcomingResult.error, historicalResult.error, syncResult.error].filter((value): value is string => Boolean(value))}
         upn={upn}
         accessToken={accessToken}
         isSubscribed={me.is_subscribed}

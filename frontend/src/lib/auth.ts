@@ -1,4 +1,5 @@
 import NextAuth from "next-auth";
+import type { JWT } from "next-auth/jwt";
 import PostgresAdapter from "@auth/pg-adapter";
 import { Pool } from "pg";
 import { appendFileSync } from "node:fs";
@@ -49,7 +50,7 @@ function recordAuthError(error: Error) {
     appendFileSync(process.env.AUTH_ERROR_LOG, `${JSON.stringify(record)}\n`, "utf8");
   }
 }
-async function refreshAccessToken(token: any) {
+async function refreshAccessToken(token: JWT) {
   const response = await fetch(
     `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
     {
@@ -59,7 +60,7 @@ async function refreshAccessToken(token: any) {
         client_id: process.env.AUTH_MICROSOFT_ENTRA_ID_ID ?? "",
         client_secret: process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET ?? "",
         grant_type: "refresh_token",
-        refresh_token: token.refreshToken,
+        refresh_token: token.refreshToken ?? "",
         scope: `openid profile email offline_access api://${apiClientId}/access_as_user`,
       }),
     },
@@ -117,12 +118,15 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         },
       },
       token: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
-      profile(profile: any) {
+      profile(profile: Record<string, unknown>) {
+        const sub = typeof profile.sub === "string" ? profile.sub : "";
+        const preferredUsername =
+          typeof profile.preferred_username === "string" ? profile.preferred_username : "";
         return {
-          id: profile.sub,
-          name: profile.name || profile.preferred_username,
-          email: profile.email || profile.preferred_username,
-          image: profile.picture,
+          id: sub,
+          name: typeof profile.name === "string" ? profile.name : preferredUsername,
+          email: typeof profile.email === "string" ? profile.email : preferredUsername,
+          image: typeof profile.picture === "string" ? profile.picture : null,
         };
       },
     },

@@ -2,6 +2,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
+import Image from "next/image";
+import { useState } from "react";
 import { LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import NotificationBell from "@/components/notification-bell";
@@ -14,6 +16,7 @@ interface NavProps {
 
 export default function Nav({ userEmail, accessToken, isAdmin }: NavProps) {
   const path = usePathname();
+  const [showPhoto, setShowPhoto] = useState(true);
   const initials = userEmail
     .split("@")[0]
     .split(".")
@@ -57,8 +60,18 @@ export default function Nav({ userEmail, accessToken, isAdmin }: NavProps) {
           {userEmail}
         </span>
         <NotificationBell upn={accessToken} />
-        <div className="w-8 h-8 rounded-full bg-[#C9A52C] flex items-center justify-center text-[#003366] font-bold text-xs">
-          {initials}
+        <div className="relative w-8 h-8 overflow-hidden rounded-full bg-[#C9A52C] flex items-center justify-center text-[#003366] font-bold text-xs">
+          {showPhoto ? (
+            <Image
+              src="/api/profile-photo"
+              alt={`${userEmail} profile photo`}
+              fill
+              sizes="32px"
+              unoptimized
+              className="object-cover"
+              onError={() => setShowPhoto(false)}
+            />
+          ) : initials}
         </div>
         <button
           type="button"

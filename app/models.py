@@ -100,6 +100,26 @@ class RegisteredUser(Base):
     business_unit: Mapped["BusinessUnit | None"] = relationship(back_populates="users")
 
 
+class UserSyncState(Base):
+    """Last known Microsoft sync result for one user and one data source.
+
+    Keeping failures in PostgreSQL prevents a Graph permission or network error
+    from being presented to the user as a legitimate empty calendar/OneDrive.
+    """
+    __tablename__ = "user_sync_states"
+    __table_args__ = (UniqueConstraint("user_upn", "source", name="uq_user_sync_source"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    user_upn: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), default="never", server_default="never", nullable=False
+    )
+    last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 # --- Dedupe ledger -------------------------------------------------------
 # Both the webhook AND the reconciliation worker funnel through this.
 # Idempotency key = Graph drive item id. If a row exists, we skip.
@@ -119,6 +139,32 @@ class ProcessedItem(Base):
     etag: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source: Mapped[str] = mapped_column(String(32))  # "webhook" | "reconcile"
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class RecordingJob(Base):
+    """Durable recording-processing job stored in PostgreSQL.
+
+    The API only enqueues work.  A separate worker claims pending rows with
+    ``FOR UPDATE SKIP LOCKED`` so Railway restarts cannot silently discard an
+    in-flight recording as happened with in-process ``asyncio.create_task``.
+    """
+    __tablename__ = "recording_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    drive_item_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    drive_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    owner_upn: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending", server_default="pending", index=True, nullable=False
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, server_default="3", nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
 class SyncedCalendarEvent(Base):
@@ -171,6 +217,15 @@ class Meeting(Base):
     approved_recipients: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     approved_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Durable send state.  ``sending`` deliberately blocks automatic retries
+    # after a process crash because the external Graph outcome is then unknown;
+    # this is safer than emailing attendees twice.
+    email_delivery_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    email_delivery_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    email_delivery_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_delivery_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     action_items: Mapped[list["ActionItem"]] = relationship(

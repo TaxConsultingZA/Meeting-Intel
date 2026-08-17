@@ -14,8 +14,8 @@ from sqlalchemy import select
 from app.db import SessionLocal
 from app.graph import client as graph
 from app.models import RegisteredUser
-from app.services.ledger import claim_item
-from app.pipeline.steps import process_recording
+from app.services.jobs import enqueue_recording_job
+from app.services.sync_state import record_sync_result
 
 
 async def _get_subscribed_upns() -> set[str]:
@@ -65,24 +65,30 @@ async def reconcile() -> int:
             recordings = await graph.list_recordings_folder(drive_id)
         except Exception as e:
             print(f"  Skipping {upn}: {e}")
+            async with SessionLocal() as db:
+                await record_sync_result(db, user_upn=upn, source="onedrive", error=e)
             continue
+
+        async with SessionLocal() as db:
+            await record_sync_result(db, user_upn=upn, source="onedrive")
 
         for item in recordings:
             drive_item_id = item["id"]
             etag = item.get("eTag")
 
             async with SessionLocal() as db:
-                claimed = await claim_item(db, drive_item_id, drive_id, etag, source="reconcile")
+                queued = await enqueue_recording_job(
+                    db,
+                    drive_item_id=drive_item_id,
+                    drive_id=drive_id,
+                    owner_upn=upn,
+                    source="reconcile",
+                    etag=etag,
+                )
 
-            if claimed:
-                print(f"  Processing: {item['name']} (owner: {upn})")
-                try:
-                    async with SessionLocal() as db:
-                        await process_recording(db, drive_item_id, drive_id, owner_upn=upn)
-                    print(f"  Done: {item['name']}")
-                    found += 1
-                except Exception as e:
-                    print(f"  Failed: {item['name']} — {e}")
+            if queued:
+                print(f"  Queued: {item['name']} (owner: {upn})")
+                found += 1
 
     return found
 

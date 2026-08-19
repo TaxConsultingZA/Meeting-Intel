@@ -24,7 +24,10 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F0F2F5] flex items-center justify-center px-4">
+    <div
+      className="min-h-screen bg-cover bg-center bg-no-repeat flex items-center justify-center px-4"
+      style={{ backgroundImage: "url('/login-background.png')" }}
+    >
       <div className="bg-white rounded-lg border border-[#dde1e8] shadow-md overflow-hidden w-full max-w-sm">
         <div className="bg-[#003366] border-b-4 border-[#C9A52C] px-8 py-7 text-center">
           <div className="inline-flex items-center gap-3 mb-1">

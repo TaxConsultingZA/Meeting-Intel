@@ -190,7 +190,7 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
           { id: "upcoming"    as Tab, label: "Upcoming Meetings",         count: upcomingEvents.length                          },
           { id: "in_progress" as Tab, label: "In Progress",               count: inProgressEvents.length + pipelineActive.length },
           { id: "review"      as Tab, label: "Awaiting Review",           count: pendingReview.length                           },
-          { id: "old_meetings"as Tab, label: "Old Meetings & Transcripts", count: null                                          },
+          { id: "old_meetings"as Tab, label: "Old Meetings",               count: null                                          },
           { id: "historical"  as Tab, label: "Historical Access",         count: historical.length || null                     },
           { id: "cancelled"   as Tab, label: "Cancelled",                 count: cancelled.length || null                      },
         ]).map(({ id, label, count }) => (
@@ -248,7 +248,7 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
             </div>
       )}
 
-      {/* Old Meetings & Transcripts */}
+      {/* Old Meetings */}
       {tab === "old_meetings" && (
         oldMeetings.length === 0
           ? <EmptyState icon="📂" title="No completed meetings yet" sub="Approved and sent meetings will appear here." />

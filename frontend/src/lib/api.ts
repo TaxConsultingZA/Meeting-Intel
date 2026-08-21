@@ -75,6 +75,47 @@ export async function approveMeeting(
   });
 }
 
+export async function editMeetingTranscript(
+  meetingId: string,
+  transcript: string,
+  accessToken: string,
+): Promise<void> {
+  await apiFetch(`/reviews/${meetingId}/transcript`, accessToken, {
+    method: "PATCH",
+    body: JSON.stringify({ transcript }),
+  });
+}
+
+export async function saveSpeakerMappings(
+  meetingId: string,
+  mappings: Record<string, string | null>,
+  accessToken: string,
+): Promise<void> {
+  await apiFetch(`/reviews/${meetingId}/speaker-mappings`, accessToken, {
+    method: "PUT",
+    body: JSON.stringify({ mappings }),
+  });
+}
+
+export async function requestMeetingEditAccess(meetingId: string, accessToken: string) {
+  return apiFetch<{ ok: boolean; status: string }>(`/reviews/${meetingId}/edit-access`, accessToken, {
+    method: "POST",
+  });
+}
+
+export async function decideMeetingEditAccess(
+  meetingId: string,
+  requesterUpn: string,
+  approved: boolean,
+  accessToken: string,
+) {
+  return apiFetch<{ ok: boolean; status: string }>(
+    `/reviews/${meetingId}/edit-access/${encodeURIComponent(requesterUpn)}`,
+    accessToken,
+    { method: "PATCH", body: JSON.stringify({ approved }) },
+  );
+}
+
 /** Fetch the 30 most recent activity notifications for the current user. */
 export async function getNotifications(upn: string): Promise<AppNotification[]> {
   return apiFetch<AppNotification[]>("/notifications", upn);

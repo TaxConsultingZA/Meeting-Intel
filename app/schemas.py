@@ -1,4 +1,6 @@
-from pydantic import BaseModel, field_validator
+from datetime import datetime
+
+from pydantic import BaseModel, Field, field_validator
 from .models import Confidence, ProcessingState
 
 
@@ -94,6 +96,24 @@ class ActionItemEdit(BaseModel):
     confidence: Confidence | None = None
 
 
+class TranscriptEdit(BaseModel):
+    transcript: str
+
+
+class SpeakerMappingIn(BaseModel):
+    mappings: dict[str, str | None]
+
+
+class EditAccessDecisionIn(BaseModel):
+    approved: bool
+
+
+class EditAccessRequestOut(BaseModel):
+    requester_upn: str
+    status: str
+    requested_at: datetime | None = None
+
+
 class MeetingOut(BaseModel):
     """Full meeting representation returned by GET /reviews and GET /reviews/{id}."""
     id: str
@@ -104,8 +124,14 @@ class MeetingOut(BaseModel):
     organizer_upn: str | None = None
     extracted_json: dict | None = None
     error: str | None = None
-    email_recipients: list[str] = []
-    approved_recipients: list[str] = []
+    email_recipients: list[str] = Field(default_factory=list)
+    approved_recipients: list[str] = Field(default_factory=list)
+    is_organizer: bool = False
+    can_edit: bool = False
+    edit_access_status: str = "none"
+    edit_access_requests: list[EditAccessRequestOut] = Field(default_factory=list)
+    speaker_candidates: list[str] = Field(default_factory=list)
+    speaker_mappings: dict[str, str | None] = Field(default_factory=dict)
     action_items: list[ActionItemOut]
 
 

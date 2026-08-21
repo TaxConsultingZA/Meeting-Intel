@@ -1,10 +1,11 @@
 "use client";
 import Link from "next/link";
 import { useState } from "react";
-import { Calendar, Users, ChevronRight, Upload, Mic, Video, Share2, History, Lock } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Calendar, Users, ChevronRight, Upload, Mic, Video, Share2, History, Lock, Power } from "lucide-react";
 import StateBadge from "@/components/state-badge";
 import ImportModal from "@/components/import-modal";
-import { requestHistoricalAccess, shareMeeting } from "@/lib/api";
+import { requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
 import type { MeetingOut, ProcessingState, CalendarEvent, SyncState } from "@/lib/types";
 
 /** Convert a UPN like "jane.doe@taxconsulting.co.za" to a display name "Jane Doe". */
@@ -65,10 +66,25 @@ function conciseMicrosoftError(error: string): string {
 }
 
 export default function DashboardClient({ meetings, upcoming, historical: initialHistorical, upn, accessToken, isSubscribed, syncStates, loadErrors }: Props) {
+  const router = useRouter();
   const [tab, setTab] = useState<Tab>("upcoming");
   const [showImport, setShowImport] = useState(false);
   const [historical, setHistorical] = useState<MeetingOut[]>(initialHistorical);
   const [shareModal, setShareModal] = useState<{ meetingId: string; title: string } | null>(null);
+  const [unsubscribing, setUnsubscribing] = useState(false);
+
+  async function handleOptOut() {
+    if (!confirm("Turn off future Calendar and OneDrive processing? Existing meeting records will remain available.")) return;
+    setUnsubscribing(true);
+    try {
+      await unsubscribeCurrentUser(accessToken);
+      router.refresh();
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "Could not turn off processing");
+    } finally {
+      setUnsubscribing(false);
+    }
+  }
 
   const upcomingEvents  = upcoming.filter((e) => e.status === "upcoming");
   const inProgressEvents = upcoming.filter((e) => e.status === "in_progress");
@@ -120,15 +136,28 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
             Review and approve AI-extracted meeting notes before they are emailed to participants.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => isSubscribed && setShowImport(true)}
-          disabled={!isSubscribed}
-          title={isSubscribed ? "Process a past OneDrive recording" : "Opt in to process Calendar and OneDrive recordings"}
-          className="shrink-0 inline-flex items-center gap-2 bg-[#003366] hover:bg-[#0a4a8c] text-white text-[13px] font-semibold px-4 py-2 rounded-md transition-colors disabled:opacity-45 disabled:cursor-not-allowed"
-        >
-          <Upload size={15} /> {isSubscribed ? "Process Past Recording" : "Opt in to process recordings"}
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {isSubscribed && (
+            <button
+              type="button"
+              onClick={handleOptOut}
+              disabled={unsubscribing}
+              title="Stop future Calendar and OneDrive processing; keep existing records"
+              className="inline-flex items-center gap-2 rounded-md border border-[#003366] bg-white px-3 py-2 text-[13px] font-semibold text-[#003366] transition-colors hover:bg-blue-50 disabled:opacity-50"
+            >
+              <Power size={14} /> {unsubscribing ? "Turning off..." : "Opt out"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => isSubscribed && setShowImport(true)}
+            disabled={!isSubscribed}
+            title={isSubscribed ? "Process a past OneDrive recording" : "Opt in to process Calendar and OneDrive recordings"}
+            className="inline-flex items-center gap-2 rounded-md bg-[#003366] px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-[#0a4a8c] disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            <Upload size={15} /> {isSubscribed ? "Process Past Recording" : "Opt in to process recordings"}
+          </button>
+        </div>
       </div>
 
       {showImport && <ImportModal upn={accessToken} onClose={() => setShowImport(false)} />}

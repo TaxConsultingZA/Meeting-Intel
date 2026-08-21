@@ -11,7 +11,8 @@ from ..db import get_db
 from ..models import Meeting, ActionItem, MeetingParticipant, ProcessingState, RegisteredUser
 from ..schemas import (
     MeetingOut, ActionItemOut, ActionItemEdit, ShareMeetingIn, ApproveMeetingIn,
-    EmailPreviewOut,
+    EmailPreviewOut, TranscriptEdit, SpeakerMappingIn, EditAccessDecisionIn,
+    EditAccessRequestOut,
 )
 from ..graph import client as graph
 from ..email_templates import build_meeting_email
@@ -45,7 +46,13 @@ async def _authorize(
     return m
 
 
-def _to_out(m: Meeting) -> MeetingOut:
+def _participant_for(m: Meeting, upn: str | None) -> MeetingParticipant | None:
+    if not upn:
+        return None
+    return next((p for p in m.participants if normalize_upn(p.user_upn) == upn), None)
+
+
+def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
     """Convert a Meeting ORM instance to its Pydantic API output schema."""
     known_recipients = {
         value.strip().lower()
@@ -55,12 +62,32 @@ def _to_out(m: Meeting) -> MeetingOut:
     known_recipients.update(p.user_upn.lower() for p in m.participants)
     if m.organizer_upn:
         known_recipients.add(m.organizer_upn.lower())
+    caller = _participant_for(m, upn)
+    is_organizer = bool(upn) and (
+        normalize_upn(m.organizer_upn) == upn or bool(caller and caller.is_organizer)
+    )
+    extracted = m.extracted_json or {}
+    edit_requests = [
+        EditAccessRequestOut(
+            requester_upn=p.user_upn,
+            status=p.edit_access_status,
+            requested_at=p.edit_requested_at,
+        )
+        for p in m.participants
+        if p.edit_access_status == "pending"
+    ] if is_organizer else []
     return MeetingOut(
         id=str(m.id), title=m.title, state=m.state, summary=m.summary,
         transcript=m.transcript,
         organizer_upn=m.organizer_upn, extracted_json=m.extracted_json, error=m.error,
         email_recipients=sorted(known_recipients),
         approved_recipients=m.approved_recipients or [],
+        is_organizer=is_organizer,
+        can_edit=is_organizer or bool(caller and caller.edit_access_status == "approved"),
+        edit_access_status="organizer" if is_organizer else (caller.edit_access_status if caller else "none"),
+        edit_access_requests=edit_requests,
+        speaker_candidates=sorted(known_recipients),
+        speaker_mappings=extracted.get("speaker_mappings", {}),
         action_items=[
             ActionItemOut(
                 id=str(a.id), task=a.task, owner=a.owner,
@@ -81,6 +108,16 @@ def _require_organizer(m: Meeting, upn: str) -> None:
         raise HTTPException(403, "Only the meeting organiser can review and approve")
 
 
+def _require_editor(m: Meeting, upn: str) -> None:
+    try:
+        _require_organizer(m, upn)
+        return
+    except HTTPException:
+        participant = _participant_for(m, upn)
+        if not participant or participant.edit_access_status != "approved":
+            raise HTTPException(403, "Edit access must be approved by the meeting organiser")
+
+
 def _require_awaiting_review(m: Meeting) -> None:
     if m.state != ProcessingState.awaiting_review:
         raise HTTPException(409, "Meeting notes can only be changed while awaiting review")
@@ -94,7 +131,7 @@ async def all_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(cu
         .where(func.lower(MeetingParticipant.user_upn) == upn)
         .options(selectinload(Meeting.participants), selectinload(Meeting.action_items))
     )).unique().all()
-    return [_to_out(m) for m in rows]
+    return [_to_out(m, upn) for m in rows]
 
 
 @router.get("/reviews/pending", response_model=list[MeetingOut])
@@ -110,8 +147,9 @@ async def pending(db: AsyncSession = Depends(get_db), upn: str = Depends(current
                 func.lower(Meeting.organizer_upn) == upn,
             ),
         )
+        .options(selectinload(Meeting.participants), selectinload(Meeting.action_items))
     )).unique().all()
-    return [_to_out(m) for m in rows]
+    return [_to_out(m, upn) for m in rows]
 
 
 @router.get("/reviews/historical", response_model=list[MeetingOut])
@@ -135,14 +173,14 @@ async def historical_meetings(db: AsyncSession = Depends(get_db), upn: str = Dep
         )
         .options(selectinload(Meeting.participants), selectinload(Meeting.action_items))
     )).unique().all()
-    return [_to_out(m) for m in rows if upn in normalize_upns(m.attendees_raw)]
+    return [_to_out(m, upn) for m in rows if upn in normalize_upns(m.attendees_raw)]
 
 
 @router.get("/reviews/{meeting_id}", response_model=MeetingOut)
 async def get_meeting(meeting_id: str, db: AsyncSession = Depends(get_db),
                       upn: str = Depends(current_user)):
     m = await _authorize(db, meeting_id, upn)
-    return _to_out(m)
+    return _to_out(m, upn)
 
 
 @router.get("/reviews/{meeting_id}/email-preview", response_model=EmailPreviewOut)
@@ -161,13 +199,85 @@ async def edit_item(item_id: str, edit: ActionItemEdit,
     if not item:
         raise HTTPException(404)
     meeting = await _authorize(db, item.meeting_id, upn)
-    _require_organizer(meeting, upn)
+    _require_editor(meeting, upn)
     _require_awaiting_review(meeting)
     for field, val in edit.model_dump(exclude_unset=True).items():
         setattr(item, field, val)
     item.edited_by = upn
     await db.commit()
     return {"ok": True}
+
+
+@router.patch("/reviews/{meeting_id}/transcript")
+async def edit_transcript(meeting_id: str, body: TranscriptEdit,
+                          db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
+    meeting = await _authorize(db, meeting_id, upn)
+    _require_editor(meeting, upn)
+    _require_awaiting_review(meeting)
+    meeting.transcript = body.transcript
+    await db.commit()
+    return {"ok": True}
+
+
+@router.put("/reviews/{meeting_id}/speaker-mappings")
+async def save_speaker_mappings(meeting_id: str, body: SpeakerMappingIn,
+                                db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
+    meeting = await _authorize(db, meeting_id, upn)
+    _require_editor(meeting, upn)
+    _require_awaiting_review(meeting)
+    allowed = normalize_upns(meeting.attendees_raw)
+    allowed.update(normalize_upn(p.user_upn) for p in meeting.participants)
+    mappings: dict[str, str | None] = {}
+    for label, candidate in body.mappings.items():
+        clean_label = label.strip()
+        clean_candidate = normalize_upn(candidate) if candidate else None
+        if not clean_label.lower().startswith("speaker "):
+            raise HTTPException(422, f"Invalid speaker label: {clean_label}")
+        if clean_candidate and clean_candidate not in allowed:
+            raise HTTPException(422, f"Speaker mapping is not a meeting participant: {clean_candidate}")
+        mappings[clean_label] = clean_candidate
+    extracted = dict(meeting.extracted_json or {})
+    extracted["speaker_mappings"] = mappings
+    meeting.extracted_json = extracted
+    await db.commit()
+    return {"ok": True, "speaker_mappings": mappings}
+
+
+@router.post("/reviews/{meeting_id}/edit-access")
+async def request_edit_access(meeting_id: str, db: AsyncSession = Depends(get_db),
+                              upn: str = Depends(current_user)):
+    meeting = await _authorize(db, meeting_id, upn)
+    _require_awaiting_review(meeting)
+    try:
+        _require_organizer(meeting, upn)
+        return {"ok": True, "status": "organizer"}
+    except HTTPException:
+        pass
+    participant = _participant_for(meeting, upn)
+    if not participant:
+        raise HTTPException(403)
+    participant.edit_access_status = "pending"
+    participant.edit_requested_at = datetime.now(timezone.utc)
+    participant.edit_decided_at = None
+    participant.edit_decided_by = None
+    await db.commit()
+    return {"ok": True, "status": "pending"}
+
+
+@router.patch("/reviews/{meeting_id}/edit-access/{requester_upn}")
+async def decide_edit_access(meeting_id: str, requester_upn: str, body: EditAccessDecisionIn,
+                             db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
+    meeting = await _authorize(db, meeting_id, upn)
+    _require_organizer(meeting, upn)
+    _require_awaiting_review(meeting)
+    participant = _participant_for(meeting, normalize_upn(requester_upn))
+    if not participant or participant.is_organizer:
+        raise HTTPException(404, "Edit request not found")
+    participant.edit_access_status = "approved" if body.approved else "denied"
+    participant.edit_decided_at = datetime.now(timezone.utc)
+    participant.edit_decided_by = upn
+    await db.commit()
+    return {"ok": True, "status": participant.edit_access_status}
 
 
 @router.post("/reviews/{meeting_id}/approve")

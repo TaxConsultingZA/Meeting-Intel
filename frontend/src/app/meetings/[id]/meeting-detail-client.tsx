@@ -12,7 +12,15 @@ import {
 } from "@/components/ui/dialog";
 import StateBadge from "@/components/state-badge";
 import PipelineView from "./pipeline-view";
-import { editActionItem, approveMeeting, previewMeetingEmail } from "@/lib/api";
+import {
+  editActionItem,
+  approveMeeting,
+  previewMeetingEmail,
+  editMeetingTranscript,
+  saveSpeakerMappings,
+  requestMeetingEditAccess,
+  decideMeetingEditAccess,
+} from "@/lib/api";
 import type {
   MeetingOut,
   ActionItemOut,
@@ -43,11 +51,19 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [emailPreview, setEmailPreview] = useState<{ subject: string; html: string } | null>(null);
   const [previewingEmail, setPreviewingEmail] = useState(false);
   const [recipients, setRecipients] = useState<string[]>(initial.email_recipients ?? []);
+  const [transcriptDraft, setTranscriptDraft] = useState(initial.transcript ?? "");
+  const [editingTranscript, setEditingTranscript] = useState(false);
+  const [speakerMappings, setSpeakerMappings] = useState<Record<string, string | null>>(initial.speaker_mappings ?? {});
+  const [savingAccess, setSavingAccess] = useState(false);
 
   const data = meeting.extracted_json ?? {};
   const isTranscriptOnly = data.extraction_mode === "transcript_only";
   const isReviewable = meeting.state === "awaiting_review";
-  const isOrganizer = meeting.organizer_upn?.toLowerCase() === upn.toLowerCase();
+  const isOrganizer = meeting.is_organizer ?? meeting.organizer_upn?.toLowerCase() === upn.toLowerCase();
+  const canEdit = isReviewable && (meeting.can_edit || isOrganizer);
+  const speakerLabels = Array.from(
+    new Set(Array.from((meeting.transcript ?? "").matchAll(/\[(Speaker [^\]]+)\]/gi), (match) => match[1])),
+  );
   const isProcessing = (["queued", "downloading", "transcribing", "extracting"] as ProcessingState[]).includes(meeting.state);
 
   async function handleApprove() {
@@ -85,6 +101,53 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
       toast.error(`Preview failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setPreviewingEmail(false);
+    }
+  }
+
+  async function handleRequestEditAccess() {
+    setSavingAccess(true);
+    try {
+      const result = await requestMeetingEditAccess(meeting.id, accessToken);
+      setMeeting((current) => ({ ...current, edit_access_status: result.status as MeetingOut["edit_access_status"] }));
+      toast.success("Edit request sent to the meeting organiser.");
+    } catch (e) {
+      toast.error(`Request failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSavingAccess(false);
+    }
+  }
+
+  async function handleAccessDecision(requesterUpn: string, approved: boolean) {
+    try {
+      await decideMeetingEditAccess(meeting.id, requesterUpn, approved, accessToken);
+      setMeeting((current) => ({
+        ...current,
+        edit_access_requests: current.edit_access_requests.filter((request) => request.requester_upn !== requesterUpn),
+      }));
+      toast.success(approved ? "Edit access approved." : "Edit access declined.");
+    } catch (e) {
+      toast.error(`Decision failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  async function handleSaveTranscript() {
+    try {
+      await editMeetingTranscript(meeting.id, transcriptDraft, accessToken);
+      setMeeting((current) => ({ ...current, transcript: transcriptDraft }));
+      setEditingTranscript(false);
+      toast.success("Transcript saved.");
+    } catch (e) {
+      toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  async function handleSaveSpeakerMappings() {
+    try {
+      await saveSpeakerMappings(meeting.id, speakerMappings, accessToken);
+      setMeeting((current) => ({ ...current, speaker_mappings: speakerMappings }));
+      toast.success("Speaker names saved.");
+    } catch (e) {
+      toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -126,6 +189,30 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </div>
             <MetaRow label="Action Items" value={`${meeting.action_items.length} extracted`} />
             <div className="h-px bg-[#dde1e8]" />
+            {isReviewable && !isOrganizer && !meeting.can_edit && (
+              <button
+                type="button"
+                onClick={handleRequestEditAccess}
+                disabled={savingAccess || meeting.edit_access_status === "pending"}
+                className="w-full border border-[#C9A52C] text-[#003366] font-semibold py-2 rounded-md text-[12.5px] disabled:opacity-60"
+              >
+                {meeting.edit_access_status === "pending" ? "Edit request pending" : "Request edit access"}
+              </button>
+            )}
+            {isOrganizer && meeting.edit_access_requests.length > 0 && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
+                <p className="mb-2 text-xs font-bold text-[#003366]">Edit access requests</p>
+                {meeting.edit_access_requests.map((request) => (
+                  <div key={request.requester_upn} className="mb-2 last:mb-0">
+                    <p className="break-all text-xs text-[#374151]">{request.requester_upn}</p>
+                    <div className="mt-1 flex gap-2">
+                      <button onClick={() => handleAccessDecision(request.requester_upn, true)} className="text-xs font-semibold text-green-700">Approve</button>
+                      <button onClick={() => handleAccessDecision(request.requester_upn, false)} className="text-xs font-semibold text-red-700">Decline</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
             {isReviewable && isOrganizer && (
               <button
                 type="button"
@@ -207,12 +294,12 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           {!isTranscriptOnly && (
             <Section
               title="Action Items"
-              hint={isReviewable && isOrganizer ? "Hover a row to edit" : "Only the organiser can edit before approval"}
+              hint={canEdit ? "Hover a row to edit" : "Attendees can request edit access from the organiser"}
             >
               <ActionItemsTable
                 items={meeting.action_items}
                 upn={accessToken}
-                canEdit={isReviewable && isOrganizer}
+                canEdit={canEdit}
                 onUpdate={handleEditItem}
               />
             </Section>
@@ -259,13 +346,44 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </Section>
           )}
 
+          {speakerLabels.length > 0 && (
+            <Section title="Speaker Names" hint={canEdit ? "Match each detected voice to an Outlook attendee" : "Speaker names can be changed by approved editors"}>
+              <div className="space-y-3">
+                {speakerLabels.map((label) => (
+                  <label key={label} className="grid items-center gap-2 sm:grid-cols-[180px_1fr]">
+                    <span className="text-[13px] font-semibold text-[#003366]">{label}</span>
+                    <select
+                      disabled={!canEdit}
+                      value={speakerMappings[label] ?? ""}
+                      onChange={(event) => setSpeakerMappings((current) => ({ ...current, [label]: event.target.value || null }))}
+                      className="rounded-md border border-[#dde1e8] bg-white px-3 py-2 text-sm disabled:bg-[#f3f4f6]"
+                    >
+                      <option value="">Unknown / Guest</option>
+                      {meeting.speaker_candidates.map((candidate) => <option key={candidate} value={candidate}>{candidate}</option>)}
+                    </select>
+                  </label>
+                ))}
+                {canEdit && <button onClick={handleSaveSpeakerMappings} className="rounded-md bg-[#003366] px-4 py-2 text-sm font-semibold text-white">Save speaker names</button>}
+              </div>
+            </Section>
+          )}
+
           {meeting.transcript && (
             <Section title="Transcript">
-              <div className="max-h-96 overflow-y-auto rounded-md border border-[#dde1e8] bg-[#fafbfc] p-4">
-                <pre className="whitespace-pre-wrap font-sans text-[13px] leading-6 text-[#374151]">
-                  {meeting.transcript}
-                </pre>
-              </div>
+              {editingTranscript ? (
+                <div className="space-y-2">
+                  <textarea value={transcriptDraft} onChange={(event) => setTranscriptDraft(event.target.value)} className="min-h-80 w-full rounded-md border border-[#dde1e8] p-4 text-[13px] leading-6" />
+                  <div className="flex gap-2">
+                    <button onClick={handleSaveTranscript} className="rounded-md bg-[#003366] px-4 py-2 text-sm font-semibold text-white">Save transcript</button>
+                    <button onClick={() => { setTranscriptDraft(meeting.transcript ?? ""); setEditingTranscript(false); }} className="rounded-md border px-4 py-2 text-sm">Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="relative max-h-96 overflow-y-auto rounded-md border border-[#dde1e8] bg-[#fafbfc] p-4">
+                  {canEdit && <button onClick={() => setEditingTranscript(true)} className="absolute right-3 top-3 rounded border bg-white px-2 py-1 text-xs font-semibold text-[#003366]">Edit</button>}
+                  <pre className="whitespace-pre-wrap pr-12 font-sans text-[13px] leading-6 text-[#374151]">{meeting.transcript}</pre>
+                </div>
+              )}
             </Section>
           )}
 

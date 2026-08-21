@@ -255,6 +255,14 @@ class MeetingParticipant(Base):
     user_upn: Mapped[str] = mapped_column(String(255), index=True)
     is_organizer: Mapped[bool] = mapped_column(Boolean, default=False)
     access_type: Mapped[str] = mapped_column(String(20), default="participant", server_default="participant")
+    # View access and edit access are deliberately separate.  Attendees may
+    # ask the organiser for edit access without gaining approval/email rights.
+    edit_access_status: Mapped[str] = mapped_column(
+        String(20), default="none", server_default="none", nullable=False
+    )
+    edit_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    edit_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    edit_decided_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     meeting: Mapped["Meeting"] = relationship(back_populates="participants")
 

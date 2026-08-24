@@ -250,7 +250,24 @@ async def process_recording(
             await db.commit()
             result = await get_extractor().extract(segments)
             meeting.summary = result.summary
-            meeting.extracted_json = result.model_dump()
+            # Match the imported recording to the organiser's Outlook event. Doing
+            # this before the final commit ensures the review page receives the real
+            # meeting date, attendee list and speaker-name candidates.
+            try:
+                from app.services.recording_enrichment import enrich_recording_from_outlook
+
+                await enrich_recording_from_outlook(meeting, drive_id, drive_item_id)
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    "Could not match recording %s to an Outlook meeting", drive_item_id
+                )
+
+            # Preserve Outlook matching metadata collected before extraction.
+            extracted_json = dict(meeting.extracted_json or {})
+            extracted_json.update(result.model_dump())
+            meeting.extracted_json = extracted_json
             # A job may be retried after a late notification failure. Replace
             # extracted actions rather than duplicating the previous attempt.
             await db.execute(delete(ActionItem).where(ActionItem.meeting_id == meeting.id))

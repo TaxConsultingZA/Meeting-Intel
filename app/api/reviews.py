@@ -86,7 +86,10 @@ def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
         can_edit=is_organizer or bool(caller and caller.edit_access_status == "approved"),
         edit_access_status="organizer" if is_organizer else (caller.edit_access_status if caller else "none"),
         edit_access_requests=edit_requests,
-        speaker_candidates=sorted(known_recipients),
+        speaker_candidates=sorted(
+            set(known_recipients)
+            | set((m.extracted_json or {}).get("speaker_candidates") or [])
+        ),
         speaker_mappings=extracted.get("speaker_mappings", {}),
         action_items=[
             ActionItemOut(

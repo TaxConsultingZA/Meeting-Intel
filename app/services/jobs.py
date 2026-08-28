@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import RecordingJob
@@ -51,12 +52,16 @@ async def enqueue_retry_job(
     )
     if active:
         return False
-    db.add(RecordingJob(
+    statement = insert(RecordingJob).values(
         drive_item_id=drive_item_id,
         drive_id=drive_id,
         owner_upn=owner_upn,
         source="manual_retry",
         available_at=datetime.now(timezone.utc),
-    ))
+    ).on_conflict_do_nothing(
+        index_elements=[RecordingJob.drive_item_id],
+        index_where=RecordingJob.status.in_(ACTIVE_JOB_STATUSES),
+    ).returning(RecordingJob.id)
+    created_id = await db.scalar(statement)
     await db.commit()
-    return True
+    return created_id is not None

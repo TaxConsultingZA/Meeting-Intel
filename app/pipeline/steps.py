@@ -8,8 +8,8 @@ from ..config import get_settings
 from ..models import Meeting, ActionItem, MeetingParticipant, ProcessingState, RegisteredUser
 from ..graph import client as graph
 from ..utils.identity import normalize_upn, normalize_upns
-from .transcribe import get_transcriber
-from .extract import get_extractor
+from .transcribe import get_transcriber, TranscriptSegment
+from .extract import get_extractor, require_transcript, validate_extraction
 
 settings = get_settings()
 
@@ -179,6 +179,12 @@ async def process_recording(
     Any unhandled exception sets state to ``failed`` and re-raises.
     """
     meeting = await db.scalar(select(Meeting).where(Meeting.drive_item_id == drive_item_id))
+    if meeting is not None and meeting.state in (
+        ProcessingState.awaiting_review, ProcessingState.approved, ProcessingState.sent,
+    ):
+        # A crash after the final DB commit must not overwrite human review or
+        # repeat processing/notifications on the next job attempt.
+        return
     if meeting is None:
         meta = await graph.get_drive_item(drive_id, drive_item_id)
         user_node = (meta.get("createdBy", {}).get("user", {}) or {})
@@ -218,7 +224,8 @@ async def process_recording(
             await db.commit()
 
     # Notify participants before any AI processing (POPIA Section 18).
-    extra = normalize_upns(await graph.get_event_attendees(drive_id, drive_item_id))
+    extra = normalize_upns(meeting.attendees_raw if meeting.attendees_raw is not None
+                           else await graph.get_event_attendees(drive_id, drive_item_id))
 
     # Persist the full attendee list so historical-access requests can be verified later,
     # even after the pipeline filters participants down to registered users only.
@@ -227,28 +234,46 @@ async def process_recording(
         meeting.attendees_raw = all_attendee_upns
         await db.commit()
 
-    await _send_popia_notice(meeting, extra)
-
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            meeting.state = ProcessingState.downloading
             meeting.error = None
-            await db.commit()
+            transcript_segments = (meeting.extracted_json or {}).get("transcript_segments") or []
+            if meeting.transcript and meeting.transcript.strip():
+                # AI-only retries reuse durable transcription, avoiding another
+                # download/transcription charge. Never manufacture audio times.
+                segments = ([TranscriptSegment(**s) for s in transcript_segments]
+                            if transcript_segments else
+                            [TranscriptSegment("Transcript", meeting.transcript, 0, 0)])
+            else:
+                await _send_popia_notice(meeting, extra)
+                meeting.state = ProcessingState.downloading
+                await db.commit()
+                video_path = os.path.join(tmp, "rec.mp4")
+                await graph.download_drive_item(drive_id, drive_item_id, video_path)
+                meeting.state = ProcessingState.transcribing
+                await db.commit()
+                all_upns = normalize_upns([*extra, meeting.organizer_upn, owner_upn])
+                await _send_processing_started(meeting, all_upns)
+                segments = await get_transcriber().transcribe(video_path)
+                meeting.transcript = "\n".join(f"[{s.speaker}] {s.text}" for s in segments)
+                transcript_segments = [
+                    {"speaker": s.speaker, "text": s.text, "start": s.start, "end": s.end}
+                    for s in segments
+                ]
 
-            # AssemblyAI accepts MP4 directly — no ffmpeg audio extraction needed
-            video_path = os.path.join(tmp, "rec.mp4")
-            await graph.download_drive_item(drive_id, drive_item_id, video_path)
-
-            meeting.state = ProcessingState.transcribing
-            await db.commit()
-            all_upns = normalize_upns([*extra, meeting.organizer_upn, owner_upn])
-            await _send_processing_started(meeting, all_upns)
-            segments = await get_transcriber().transcribe(video_path)
-            meeting.transcript = "\n".join(f"[{s.speaker}] {s.text}" for s in segments)
-
+            require_transcript(segments)
+            # Commit raw text AND diarization before any provider call, including
+            # failures. Preserve the original text independently of review edits.
+            extracted_json = dict(meeting.extracted_json or {})
+            extracted_json.setdefault("raw_transcript", meeting.transcript)
+            extracted_json["transcript_segments"] = transcript_segments
+            meeting.extracted_json = extracted_json
             meeting.state = ProcessingState.extracting
             await db.commit()
-            result = await get_extractor().extract(segments)
+            result = validate_extraction(
+                await get_extractor().extract(segments),
+                transcript_only=settings.extractor_impl == "transcript_only",
+            )
             meeting.summary = result.summary
             # Match the imported recording to the organiser's Outlook event. Doing
             # this before the final commit ensures the review page receives the real
@@ -256,7 +281,8 @@ async def process_recording(
             try:
                 from app.services.recording_enrichment import enrich_recording_from_outlook
 
-                await enrich_recording_from_outlook(meeting, drive_id, drive_item_id)
+                if settings.graph_impl != "mock":
+                    await enrich_recording_from_outlook(meeting, drive_id, drive_item_id)
             except Exception:
                 import logging
 
@@ -267,6 +293,9 @@ async def process_recording(
             # Preserve Outlook matching metadata collected before extraction.
             extracted_json = dict(meeting.extracted_json or {})
             extracted_json.update(result.model_dump())
+            # Keep diarization timestamps for reviewer-only representative audio
+            # samples. The human-readable transcript deliberately remains plain text.
+            extracted_json["transcript_segments"] = transcript_segments
             meeting.extracted_json = extracted_json
             # A job may be retried after a late notification failure. Replace
             # extracted actions rather than duplicating the previous attempt.
@@ -281,6 +310,7 @@ async def process_recording(
                     confidence=ai.confidence,
                     source_quote=ai.source_quote,
                     raw=ai.model_dump(),
+                    approved=False,
                 ))
 
             all_participant_upns = set(extra)

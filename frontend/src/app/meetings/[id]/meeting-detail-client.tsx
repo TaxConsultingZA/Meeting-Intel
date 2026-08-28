@@ -1,8 +1,8 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ChevronLeft, Pencil, Check, X, CheckCircle2 } from "lucide-react";
+import { ChevronLeft, Pencil, Check, X, CheckCircle2, Loader2, Pause, Play } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -20,6 +20,8 @@ import {
   saveSpeakerMappings,
   requestMeetingEditAccess,
   decideMeetingEditAccess,
+  getSpeakerSample,
+  sendMeetingCopyToSelf,
 } from "@/lib/api";
 import type {
   MeetingOut,
@@ -55,6 +57,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [editingTranscript, setEditingTranscript] = useState(false);
   const [speakerMappings, setSpeakerMappings] = useState<Record<string, string | null>>(initial.speaker_mappings ?? {});
   const [savingAccess, setSavingAccess] = useState(false);
+  const [sendingSelfCopy, setSendingSelfCopy] = useState(false);
 
   const data = meeting.extracted_json ?? {};
   const isTranscriptOnly = data.extraction_mode === "transcript_only";
@@ -65,6 +68,9 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
     new Set(Array.from((meeting.transcript ?? "").matchAll(/\[(Speaker [^\]]+)\]/gi), (match) => match[1])),
   );
   const isProcessing = (["queued", "downloading", "transcribing", "extracting"] as ProcessingState[]).includes(meeting.state);
+  const canSendSelfCopy = !isOrganizer
+    && meeting.edit_access_status === "approved"
+    && (meeting.state === "approved" || meeting.state === "sent");
 
   async function handleApprove() {
     setApproving(true);
@@ -114,6 +120,18 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
       toast.error(`Request failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSavingAccess(false);
+    }
+  }
+
+  async function handleSendSelfCopy() {
+    setSendingSelfCopy(true);
+    try {
+      const result = await sendMeetingCopyToSelf(meeting.id, upn, accessToken);
+      toast.success(result.sent ? `A copy was sent to ${upn}.` : "Email delivery is disabled in this environment.");
+    } catch (error) {
+      toast.error(`Copy failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setSendingSelfCopy(false);
     }
   }
 
@@ -189,7 +207,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </div>
             <MetaRow label="Action Items" value={`${meeting.action_items.length} extracted`} />
             <div className="h-px bg-[#dde1e8]" />
-            {isReviewable && !isOrganizer && !meeting.can_edit && (
+            {isReviewable && meeting.can_request_edit_access && !meeting.can_edit && (
               <button
                 type="button"
                 onClick={handleRequestEditAccess}
@@ -220,6 +238,16 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                 className="w-full bg-[#C9A52C] hover:bg-[#e8c84a] text-[#003366] font-bold py-2.5 rounded-md text-[13.5px] transition-colors"
               >
                 ✓ Approve Meeting Notes
+              </button>
+            )}
+            {canSendSelfCopy && (
+              <button
+                type="button"
+                onClick={handleSendSelfCopy}
+                disabled={sendingSelfCopy}
+                className="w-full rounded-md border border-[#C9A52C] bg-[#fffbea] py-2.5 text-[13px] font-bold text-[#003366] disabled:opacity-60"
+              >
+                {sendingSelfCopy ? "Sending…" : "Email a copy to myself"}
               </button>
             )}
             <button
@@ -350,9 +378,17 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             <Section title="Speaker Names" hint={canEdit ? "Match each detected voice to an Outlook attendee" : "Speaker names can be changed by approved editors"}>
               <div className="space-y-3">
                 {speakerLabels.map((label) => (
-                  <label key={label} className="grid items-center gap-2 sm:grid-cols-[180px_1fr]">
+                  <div key={label} className="grid items-center gap-2 sm:grid-cols-[180px_auto_1fr]">
                     <span className="text-[13px] font-semibold text-[#003366]">{label}</span>
+                    {isOrganizer && (meeting.speaker_sample_labels ?? []).includes(label) && (
+                      <SpeakerSampleButton
+                        meetingId={meeting.id}
+                        speakerLabel={label}
+                        accessToken={accessToken}
+                      />
+                    )}
                     <select
+                      aria-label={`Name for ${label}`}
                       disabled={!canEdit}
                       value={speakerMappings[label] ?? ""}
                       onChange={(event) => setSpeakerMappings((current) => ({ ...current, [label]: event.target.value || null }))}
@@ -361,7 +397,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                       <option value="">Unknown / Guest</option>
                       {meeting.speaker_candidates.map((candidate) => <option key={candidate} value={candidate}>{candidate}</option>)}
                     </select>
-                  </label>
+                  </div>
                 ))}
                 {canEdit && <button onClick={handleSaveSpeakerMappings} className="rounded-md bg-[#003366] px-4 py-2 text-sm font-semibold text-white">Save speaker names</button>}
               </div>
@@ -405,7 +441,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
       </div>
 
       {/* Approve Modal */}
-      <Dialog open={showModal} onOpenChange={setShowModal}>
+      {isOrganizer && <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Approve Meeting Notes</DialogTitle>
@@ -466,7 +502,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </button>
           </DialogFooter>
         </DialogContent>
-      </Dialog>
+      </Dialog>}
 
       <Dialog open={showEmailPreview} onOpenChange={setShowEmailPreview}>
         <DialogContent className="max-w-5xl">
@@ -501,6 +537,68 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
 }
 
 /* ── Sub-components ── */
+
+function SpeakerSampleButton({
+  meetingId,
+  speakerLabel,
+  accessToken,
+}: {
+  meetingId: string;
+  speakerLabel: string;
+  accessToken: string;
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [playing, setPlaying] = useState(false);
+
+  useEffect(() => () => {
+    audioRef.current?.pause();
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+  }, []);
+
+  async function togglePlayback() {
+    if (audioRef.current) {
+      if (playing) {
+        audioRef.current.pause();
+        setPlaying(false);
+      } else {
+        await audioRef.current.play();
+        setPlaying(true);
+      }
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const blob = await getSpeakerSample(meetingId, speakerLabel, accessToken);
+      const objectUrl = URL.createObjectURL(blob);
+      const audio = new Audio(objectUrl);
+      objectUrlRef.current = objectUrl;
+      audioRef.current = audio;
+      audio.addEventListener("ended", () => setPlaying(false));
+      await audio.play();
+      setPlaying(true);
+    } catch (error) {
+      toast.error(`Audio sample failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={togglePlayback}
+      disabled={loading}
+      aria-label={`${playing ? "Pause" : "Play"} audio sample for ${speakerLabel}`}
+      className="inline-flex items-center gap-1.5 rounded-md border border-[#b8c7d9] bg-white px-2.5 py-2 text-xs font-semibold text-[#003366] hover:bg-[#f4f7fa] disabled:opacity-60"
+    >
+      {loading ? <Loader2 size={13} className="animate-spin" /> : playing ? <Pause size={13} /> : <Play size={13} />}
+      {loading ? "Loading…" : playing ? "Pause" : "Play sample"}
+    </button>
+  );
+}
 
 function Section({
   title,

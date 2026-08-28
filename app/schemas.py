@@ -128,10 +128,12 @@ class MeetingOut(BaseModel):
     approved_recipients: list[str] = Field(default_factory=list)
     is_organizer: bool = False
     can_edit: bool = False
+    can_request_edit_access: bool = False
     edit_access_status: str = "none"
     edit_access_requests: list[EditAccessRequestOut] = Field(default_factory=list)
     speaker_candidates: list[str] = Field(default_factory=list)
     speaker_mappings: dict[str, str | None] = Field(default_factory=dict)
+    speaker_sample_labels: list[str] = Field(default_factory=list)
     action_items: list[ActionItemOut]
 
 
@@ -147,6 +149,15 @@ class ApproveMeetingIn(BaseModel):
     @classmethod
     def normalise_recipients(cls, values: list[str]) -> list[str]:
         return list(dict.fromkeys(v.strip().lower() for v in values if v.strip()))
+
+
+class SendMeetingCopyIn(BaseModel):
+    recipient_upn: str
+
+    @field_validator("recipient_upn")
+    @classmethod
+    def normalise_recipient(cls, value: str) -> str:
+        return value.strip().lower()
 
 
 # ── Optional rich extraction schema ───────────────────────────────────────────

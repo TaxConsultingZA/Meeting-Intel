@@ -75,6 +75,18 @@ export async function approveMeeting(
   });
 }
 
+/** Send approved notes only to the approved attendee making the request. */
+export async function sendMeetingCopyToSelf(
+  meetingId: string,
+  recipientUpn: string,
+  accessToken: string,
+): Promise<{ ok: boolean; sent: boolean }> {
+  return apiFetch(`/reviews/${meetingId}/send-copy`, accessToken, {
+    method: "POST",
+    body: JSON.stringify({ recipient_upn: recipientUpn }),
+  });
+}
+
 export async function editMeetingTranscript(
   meetingId: string,
   transcript: string,
@@ -95,6 +107,23 @@ export async function saveSpeakerMappings(
     method: "PUT",
     body: JSON.stringify({ mappings }),
   });
+}
+
+/** Fetch a short reviewer-only representative clip for one diarized speaker. */
+export async function getSpeakerSample(
+  meetingId: string,
+  speakerLabel: string,
+  accessToken: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/reviews/${meetingId}/speaker-samples/${encodeURIComponent(speakerLabel)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => response.statusText);
+    throw new Error(`${response.status}: ${text}`);
+  }
+  return response.blob();
 }
 
 export async function requestMeetingEditAccess(meetingId: string, accessToken: string) {

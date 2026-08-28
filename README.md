@@ -67,7 +67,7 @@ Email sent via Graph sendMail
 
 ## Recording worker
 
-Run exactly one worker process alongside the FastAPI web service:
+Run a dedicated worker process alongside the FastAPI web service:
 
 ```bash
 python -m app.queue.worker
@@ -77,6 +77,15 @@ For the temporary Railway environment, create a second service from the same
 repository and use that command as its start command. Give it the same backend
 environment variables, especially `DATABASE_URL`, Microsoft Graph credentials,
 and `ASSEMBLYAI_API_KEY`. The web service queues jobs; this worker consumes them.
+
+The worker uses fenced heartbeat leases, `FOR UPDATE SKIP LOCKED` and an active
+recording unique index. Apply the reviewed queue migration before using the new
+worker; stop old worker versions first. Its session advisory locks require a
+direct/session-pooled PostgreSQL URL, not a transaction-pooled URL. Start with
+one replica until real PostgreSQL concurrent-worker and crash tests pass.
+
+For zero-network tests, limitations, and **resource requests only** (no deployment),
+see [the T6/T7 offline runbook](docs/t6-t7-offline-validation.md).
 
 ## Microsoft Entra production setup
 

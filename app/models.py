@@ -3,7 +3,8 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    String, Text, DateTime, ForeignKey, Enum as SAEnum, UniqueConstraint, Boolean, Integer
+    String, Text, DateTime, ForeignKey, Enum as SAEnum, UniqueConstraint, Boolean, Integer,
+    Index, text
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -149,6 +150,10 @@ class RecordingJob(Base):
     in-flight recording as happened with in-process ``asyncio.create_task``.
     """
     __tablename__ = "recording_jobs"
+    __table_args__ = (
+        Index("uq_recording_jobs_active_item", "drive_item_id", unique=True,
+              postgresql_where=text("status IN ('pending', 'processing')")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     drive_item_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
@@ -162,6 +167,7 @@ class RecordingJob(Base):
     max_attempts: Mapped[int] = mapped_column(Integer, default=3, server_default="3", nullable=False)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
@@ -265,6 +271,21 @@ class MeetingParticipant(Base):
     edit_decided_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     meeting: Mapped["Meeting"] = relationship(back_populates="participants")
+
+
+class MeetingEmailAudit(Base):
+    """Immutable-attribution log for participant self-copy delivery attempts."""
+    __tablename__ = "meeting_email_audits"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    meeting_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("meetings.id"), index=True)
+    actor_upn: Mapped[str] = mapped_column(String(255), index=True)
+    recipient_upn: Mapped[str] = mapped_column(String(255))
+    action: Mapped[str] = mapped_column(String(32), default="self_copy", server_default="self_copy")
+    status: Mapped[str] = mapped_column(String(20))
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
 class ActionItem(Base):

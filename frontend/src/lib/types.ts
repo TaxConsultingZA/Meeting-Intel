@@ -51,10 +51,12 @@ export interface MeetingOut {
   approved_recipients: string[];
   is_organizer: boolean;
   can_edit: boolean;
+  can_request_edit_access: boolean;
   edit_access_status: "none" | "pending" | "approved" | "denied" | "organizer";
   edit_access_requests: { requester_upn: string; status: string; requested_at: string | null }[];
   speaker_candidates: string[];
   speaker_mappings: Record<string, string | null>;
+  speaker_sample_labels: string[];
 }
 
 export interface ExtractedJson {
@@ -73,6 +75,12 @@ export interface ExtractedJson {
   next_meeting?: NextMeeting | null;
   summary?: string;
   speaker_mappings?: Record<string, string | null>;
+  transcript_segments?: Array<{
+    speaker: string;
+    text: string;
+    start: number;
+    end: number;
+  }>;
 }
 
 export interface SpeakerHighlight {

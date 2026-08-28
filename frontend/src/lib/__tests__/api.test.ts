@@ -55,6 +55,20 @@ describe("approveMeeting", () => {
   });
 });
 
+describe("sendMeetingCopyToSelf", () => {
+  it("posts only the caller's fixed self-copy recipient", async () => {
+    mockFetch.mockResolvedValueOnce(makeResponse({ ok: true, sent: true }));
+    const { sendMeetingCopyToSelf } = await import("../api");
+    await sendMeetingCopyToSelf("meeting-id", "alice@taxconsulting.co.za", "token-1");
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toContain("/reviews/meeting-id/send-copy");
+    expect((init as RequestInit).method).toBe("POST");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      recipient_upn: "alice@taxconsulting.co.za",
+    });
+  });
+});
+
 describe("previewMeetingEmail", () => {
   it("requests the exact email preview without sending", async () => {
     mockFetch.mockResolvedValueOnce(

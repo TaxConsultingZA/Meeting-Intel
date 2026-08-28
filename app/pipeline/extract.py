@@ -1,4 +1,6 @@
 import json
+import re
+import httpx
 from abc import ABC, abstractmethod
 from ..config import get_settings
 from ..schemas import RichExtractionResult, ExtractedActionItem
@@ -97,26 +99,42 @@ def _parse_raw(raw: str) -> RichExtractionResult:
     Strips markdown code fences (`` ```json ... ``` ``) that some models add
     even when instructed not to, then deserialises and maps to the schema.
     """
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("Extractor returned an empty response")
+    raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
     data = json.loads(raw.strip())
-    return RichExtractionResult(
-        objective=data.get("objective") or "",
-        meeting_time=data.get("meeting_time"),
-        attendees=data.get("attendees") or [],
-        apologies=data.get("apologies") or [],
-        platform=data.get("platform") or "Microsoft Teams",
-        speaker_highlights=data.get("speaker_highlights") or [],
-        discussion_points=data.get("discussion_points") or [],
-        action_items=[ExtractedActionItem(**i) for i in (data.get("action_items") or [])],
-        deliverables=data.get("deliverables") or [],
-        risks=data.get("risks") or [],
-        next_steps=data.get("next_steps") or [],
-        next_meeting=data.get("next_meeting"),
-        summary=data.get("summary") or "",
-    )
+    if not isinstance(data, dict):
+        raise ValueError("Extractor response must be a JSON object")
+    # The prompt permits null for empty sections, not arbitrary falsy values.
+    for name in ("attendees", "apologies", "speaker_highlights", "discussion_points",
+                 "action_items", "deliverables", "risks", "next_steps"):
+        if data.get(name, []) is None:
+            data[name] = []
+    return validate_extraction(data)
+
+
+def require_transcript(segments: list[TranscriptSegment]) -> None:
+    if not segments or not any(s.text.strip() for s in segments):
+        raise ValueError("Transcript is empty; extraction cannot proceed")
+
+
+def validate_extraction(value, *, transcript_only: bool = False) -> RichExtractionResult:
+    # Revalidate even model instances returned by adapters (including test doubles).
+    if isinstance(value, RichExtractionResult):
+        value = value.model_dump()
+    result = RichExtractionResult.model_validate(value)
+    expected_mode = "transcript_only" if transcript_only else "structured"
+    if result.extraction_mode != expected_mode:
+        raise ValueError("Unexpected extraction mode")
+    if not transcript_only and not result.summary.strip():
+        raise ValueError("Structured extraction requires a nonempty summary")
+    if any(not (item.action or item.task).strip() for item in result.action_items):
+        raise ValueError("Extracted action items require nonempty task text")
+    return result
 
 
 class Extractor(ABC):
@@ -132,10 +150,15 @@ class MockExtractor(Extractor):
     """Stub extractor that returns hard-coded results — used in local dev/tests."""
 
     async def extract(self, segments: list[TranscriptSegment]) -> RichExtractionResult:
+        require_transcript(segments)
         return RichExtractionResult(
             objective="To review the SARS compliance report and confirm client numbers.",
             attendees=["Speaker A", "Speaker B", "Sarah"],
             platform="Microsoft Teams",
+            speaker_highlights=[
+                {"speaker": "Speaker A", "key_points": ["Requested the compliance report and confirmed ownership."]},
+                {"speaker": "Speaker B", "key_points": ["Plans to finish the report in early June."]},
+            ],
             discussion_points=[
                 {"topic": "SARS Compliance Report", "summary": "Speaker B to finalise the report by early June.", "outcome": "Report deadline confirmed."},
             ],
@@ -158,7 +181,8 @@ class MockExtractor(Extractor):
                 ),
             ],
             deliverables=[],
-            risks=[],
+            risks=[{"item": "Client numbers are unconfirmed", "impact": "Report completion may be delayed",
+                    "resolution": "Confirm the numbers before finalising", "owner": "Sarah"}],
             next_steps=["Sarah to send client numbers by end of week.", "Speaker B to circulate draft report for review."],
             next_meeting=None,
             summary="Team discussed the SARS compliance report and client number confirmation.",
@@ -173,6 +197,7 @@ class TranscriptOnlyExtractor(Extractor):
     """
 
     async def extract(self, segments: list[TranscriptSegment]) -> RichExtractionResult:
+        require_transcript(segments)
         return RichExtractionResult(extraction_mode="transcript_only")
 
 
@@ -183,6 +208,7 @@ class AzureOpenAIExtractor(Extractor):
     """
 
     async def extract(self, segments: list[TranscriptSegment]) -> RichExtractionResult:
+        require_transcript(segments)
         from openai import AsyncAzureOpenAI
         client = AsyncAzureOpenAI(
             azure_endpoint=settings.azure_openai_endpoint,
@@ -200,10 +226,54 @@ class AzureOpenAIExtractor(Extractor):
         return _parse_raw(resp.choices[0].message.content)
 
 
+class GeminiExtractor(Extractor):
+    """Opt-in REST adapter; no SDK, network call at import, or default model.
+
+    Transport is mocked in all tests. Live API/model compatibility and company
+    authorisation still require administrator verification before enabling.
+    """
+
+    async def extract(self, segments: list[TranscriptSegment]) -> RichExtractionResult:
+        require_transcript(segments)
+        if not settings.gemini_api_key.strip():
+            raise ValueError("GEMINI_API_KEY is required for the Gemini extractor")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", settings.gemini_model):
+            raise ValueError("GEMINI_MODEL must be an explicitly configured model name")
+        if not settings.gemini_enabled:
+            raise ValueError("Gemini requests are disabled; GEMINI_ENABLED requires explicit authorisation")
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent",
+                    headers={"x-goog-api-key": settings.gemini_api_key},
+                    json={
+                        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                        "contents": [{"role": "user", "parts": [{"text": _transcript_to_text(segments)}]}],
+                        "generationConfig": {"responseMimeType": "application/json"},
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+        except httpx.HTTPError as exc:
+            # Do not persist provider response bodies, request headers, or keys.
+            raise RuntimeError("Gemini transport request failed") from exc
+        except ValueError as exc:
+            raise ValueError("Gemini returned invalid response JSON") from exc
+        try:
+            candidate = data["candidates"][0]
+            if candidate.get("finishReason") != "STOP":
+                raise ValueError("Gemini response was blocked or incomplete")
+            raw = "".join(part.get("text", "") for part in candidate["content"]["parts"]
+                          if not part.get("thought"))
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
+            raise ValueError("Gemini returned an empty or malformed response") from exc
+        return _parse_raw(raw)
+
+
 def get_extractor() -> Extractor:
     """Factory: return the configured extraction backend.
 
-    Controlled by ``EXTRACTOR_IMPL`` (``transcript_only`` | ``azure_openai`` | ``mock``).
+    Controlled by EXTRACTOR_IMPL: transcript_only | azure_openai | mock | gemini.
     """
     if settings.extractor_impl == "transcript_only":
         return TranscriptOnlyExtractor()
@@ -211,4 +281,6 @@ def get_extractor() -> Extractor:
         return AzureOpenAIExtractor()
     if settings.extractor_impl == "mock":
         return MockExtractor()
+    if settings.extractor_impl == "gemini":
+        return GeminiExtractor()
     raise ValueError(f"Unsupported EXTRACTOR_IMPL: {settings.extractor_impl}")

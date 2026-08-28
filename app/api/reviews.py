@@ -1,18 +1,25 @@
 from datetime import datetime, timezone
+import asyncio
 import hashlib
 import json
-from fastapi import APIRouter, Body, Depends, HTTPException
+import os
+import subprocess
+import tempfile
+from fastapi import APIRouter, Body, Depends, HTTPException, Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import get_db
-from ..models import Meeting, ActionItem, MeetingParticipant, ProcessingState, RegisteredUser
+from ..models import (
+    Meeting, ActionItem, MeetingEmailAudit, MeetingParticipant, ProcessingState, ProcessedItem,
+    RegisteredUser,
+)
 from ..schemas import (
     MeetingOut, ActionItemOut, ActionItemEdit, ShareMeetingIn, ApproveMeetingIn,
     EmailPreviewOut, TranscriptEdit, SpeakerMappingIn, EditAccessDecisionIn,
-    EditAccessRequestOut,
+    EditAccessRequestOut, SendMeetingCopyIn,
 )
 from ..graph import client as graph
 from ..email_templates import build_meeting_email
@@ -21,6 +28,15 @@ from .deps import current_user, require_registered  # noqa: F401 — re-exported
 
 settings = get_settings()
 router = APIRouter()
+
+
+def is_local_test_meeting(meeting) -> bool:
+    # Keep the no-delivery safeguard for any legacy fixture rows. The retired
+    # seed tool and local-file audio path are intentionally no longer supported.
+    return (
+        str(getattr(meeting, "drive_item_id", "")).startswith("meeting-intel-test-")
+        and bool((getattr(meeting, "extracted_json", None) or {}).get("local_test_data"))
+    )
 
 
 async def _authorize(
@@ -52,13 +68,20 @@ def _participant_for(m: Meeting, upn: str | None) -> MeetingParticipant | None:
     return next((p for p in m.participants if normalize_upn(p.user_upn) == upn), None)
 
 
+def _is_attendee_participant(m: Meeting, participant: MeetingParticipant | None) -> bool:
+    """Distinguish real attendees from users who only received shared view access."""
+    if not participant:
+        return False
+    participant_upn = normalize_upn(participant.user_upn)
+    return (
+        getattr(participant, "access_type", None) in {"participant", "historical"}
+        or participant_upn in normalize_upns(m.attendees_raw)
+    )
+
+
 def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
     """Convert a Meeting ORM instance to its Pydantic API output schema."""
-    known_recipients = {
-        value.strip().lower()
-        for value in (m.attendees_raw or [])
-        if isinstance(value, str) and "@" in value
-    }
+    known_recipients = set(normalize_upns(m.attendees_raw))
     known_recipients.update(p.user_upn.lower() for p in m.participants)
     if m.organizer_upn:
         known_recipients.add(m.organizer_upn.lower())
@@ -67,6 +90,24 @@ def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
         normalize_upn(m.organizer_upn) == upn or bool(caller and caller.is_organizer)
     )
     extracted = m.extracted_json or {}
+    raw_candidates = extracted.get("speaker_candidates") or []
+    speaker_candidates = set(known_recipients)
+    for candidate in raw_candidates:
+        if isinstance(candidate, str):
+            value = normalize_upn(candidate) or candidate.strip()
+        elif isinstance(candidate, dict):
+            value = normalize_upn(candidate.get("email")) or str(candidate.get("name") or "").strip()
+        else:
+            value = ""
+        if value:
+            speaker_candidates.add(value)
+    sample_labels = []
+    if is_organizer:
+        sample_labels = list(dict.fromkeys(
+            str(segment.get("speaker") or "").strip()
+            for segment in (extracted.get("transcript_segments") or [])
+            if isinstance(segment, dict) and str(segment.get("speaker") or "").strip()
+        ))
     edit_requests = [
         EditAccessRequestOut(
             requester_upn=p.user_upn,
@@ -83,14 +124,19 @@ def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
         email_recipients=sorted(known_recipients),
         approved_recipients=m.approved_recipients or [],
         is_organizer=is_organizer,
-        can_edit=is_organizer or bool(caller and caller.edit_access_status == "approved"),
+        can_edit=is_organizer or bool(
+            _is_attendee_participant(m, caller) and caller.edit_access_status == "approved"
+        ),
+        can_request_edit_access=bool(
+            not is_organizer
+            and _is_attendee_participant(m, caller)
+            and caller.edit_access_status in {"none", "pending", "denied"}
+        ),
         edit_access_status="organizer" if is_organizer else (caller.edit_access_status if caller else "none"),
         edit_access_requests=edit_requests,
-        speaker_candidates=sorted(
-            set(known_recipients)
-            | set((m.extracted_json or {}).get("speaker_candidates") or [])
-        ),
+        speaker_candidates=sorted(speaker_candidates),
         speaker_mappings=extracted.get("speaker_mappings", {}),
+        speaker_sample_labels=sample_labels,
         action_items=[
             ActionItemOut(
                 id=str(a.id), task=a.task, owner=a.owner,
@@ -117,13 +163,77 @@ def _require_editor(m: Meeting, upn: str) -> None:
         return
     except HTTPException:
         participant = _participant_for(m, upn)
-        if not participant or participant.edit_access_status != "approved":
+        if (
+            not _is_attendee_participant(m, participant)
+            or participant.edit_access_status != "approved"
+        ):
             raise HTTPException(403, "Edit access must be approved by the meeting organiser")
+
+
+def _require_approved_attendee(m: Meeting, upn: str) -> MeetingParticipant:
+    """Allow approved non-organizer editors without granting review authority."""
+    participant = _participant_for(m, upn)
+    if (
+        not _is_attendee_participant(m, participant)
+        or participant.is_organizer
+        or normalize_upn(m.organizer_upn) == upn
+        or participant.edit_access_status != "approved"
+    ):
+        raise HTTPException(403, "Approved attendee access is required")
+    return participant
 
 
 def _require_awaiting_review(m: Meeting) -> None:
     if m.state != ProcessingState.awaiting_review:
         raise HTTPException(409, "Meeting notes can only be changed while awaiting review")
+
+
+def _speaker_sample_window(m: Meeting, speaker_label: str) -> tuple[float, float] | None:
+    """Pick the longest diarized utterance for a short, representative sample."""
+    matches: list[tuple[float, float]] = []
+    for segment in (m.extracted_json or {}).get("transcript_segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        if str(segment.get("speaker") or "").strip().casefold() != speaker_label.strip().casefold():
+            continue
+        try:
+            start = max(0.0, float(segment["start"]))
+            end = float(segment["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end > start:
+            matches.append((start, end))
+    if not matches:
+        return None
+    start, end = max(matches, key=lambda pair: pair[1] - pair[0])
+    sample_start = max(0.0, start - 0.25)
+    return sample_start, min(end + 0.25, sample_start + 12.0)
+
+
+async def _build_speaker_sample(
+    drive_id: str, drive_item_id: str, start: float, end: float
+) -> bytes:
+    """Download the source recording and render a compact mono MP3 excerpt."""
+    from imageio_ffmpeg import get_ffmpeg_exe
+
+    with tempfile.TemporaryDirectory(prefix="meeting-intel-sample-") as tmp:
+        source_path = os.path.join(tmp, "recording.mp4")
+        sample_path = os.path.join(tmp, "sample.mp3")
+        await graph.download_drive_item(drive_id, drive_item_id, source_path)
+        command = [
+            get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", f"{start:.3f}", "-i", source_path,
+            "-t", f"{end - start:.3f}", "-vn", "-ac", "1", "-ar", "22050",
+            "-codec:a", "libmp3lame", "-b:a", "64k", sample_path,
+        ]
+        try:
+            await asyncio.to_thread(
+                subprocess.run, command, check=True, capture_output=True, timeout=180
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise HTTPException(502, "Could not create the speaker audio sample") from exc
+        with open(sample_path, "rb") as sample_file:
+            return sample_file.read()
 
 
 @router.get("/reviews/all", response_model=list[MeetingOut])
@@ -246,6 +356,36 @@ async def save_speaker_mappings(meeting_id: str, body: SpeakerMappingIn,
     return {"ok": True, "speaker_mappings": mappings}
 
 
+@router.get("/reviews/{meeting_id}/speaker-samples/{speaker_label}")
+async def speaker_sample(meeting_id: str, speaker_label: str,
+                         db: AsyncSession = Depends(get_db),
+                         upn: str = Depends(current_user)):
+    """Return a short voice sample. Only the meeting reviewer may listen."""
+    meeting = await _authorize(db, meeting_id, upn)
+    _require_organizer(meeting, upn)
+    window = _speaker_sample_window(meeting, speaker_label)
+    if not window:
+        raise HTTPException(404, "No timed transcript segment exists for this speaker")
+
+    source = await db.scalar(
+        select(ProcessedItem).where(ProcessedItem.drive_item_id == meeting.drive_item_id)
+    )
+    if not source or not source.drive_id:
+        raise HTTPException(404, "The source recording is no longer available")
+
+    audio = await _build_speaker_sample(
+        source.drive_id, meeting.drive_item_id, window[0], window[1]
+    )
+    return Response(
+        content=audio,
+        media_type="audio/mpeg",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": "inline",
+        },
+    )
+
+
 @router.post("/reviews/{meeting_id}/edit-access")
 async def request_edit_access(meeting_id: str, db: AsyncSession = Depends(get_db),
                               upn: str = Depends(current_user)):
@@ -257,8 +397,12 @@ async def request_edit_access(meeting_id: str, db: AsyncSession = Depends(get_db
     except HTTPException:
         pass
     participant = _participant_for(meeting, upn)
-    if not participant:
-        raise HTTPException(403)
+    if not _is_attendee_participant(meeting, participant):
+        raise HTTPException(403, "Only attendees of this meeting may request edit access")
+    if participant.edit_access_status == "pending":
+        return {"ok": True, "status": "pending"}
+    if participant.edit_access_status == "approved":
+        raise HTTPException(409, "Edit access has already been approved")
     participant.edit_access_status = "pending"
     participant.edit_requested_at = datetime.now(timezone.utc)
     participant.edit_decided_at = None
@@ -270,12 +414,18 @@ async def request_edit_access(meeting_id: str, db: AsyncSession = Depends(get_db
 @router.patch("/reviews/{meeting_id}/edit-access/{requester_upn}")
 async def decide_edit_access(meeting_id: str, requester_upn: str, body: EditAccessDecisionIn,
                              db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
-    meeting = await _authorize(db, meeting_id, upn)
+    meeting = await _authorize(db, meeting_id, upn, for_update=True)
     _require_organizer(meeting, upn)
     _require_awaiting_review(meeting)
     participant = _participant_for(meeting, normalize_upn(requester_upn))
-    if not participant or participant.is_organizer:
+    if (
+        not _is_attendee_participant(meeting, participant)
+        or participant.is_organizer
+        or normalize_upn(participant.user_upn) == normalize_upn(meeting.organizer_upn)
+    ):
         raise HTTPException(404, "Edit request not found")
+    if participant.edit_access_status != "pending":
+        raise HTTPException(409, "Only pending edit requests can be decided")
     participant.edit_access_status = "approved" if body.approved else "denied"
     participant.edit_decided_at = datetime.now(timezone.utc)
     participant.edit_decided_by = upn
@@ -292,11 +442,7 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
     m = await _authorize(db, meeting_id, upn, for_update=True)
     _require_organizer(m, upn)
 
-    known_recipients = {
-        value.strip().lower()
-        for value in (m.attendees_raw or [])
-        if isinstance(value, str) and "@" in value
-    }
+    known_recipients = set(normalize_upns(m.attendees_raw))
     known_recipients.update(p.user_upn.lower() for p in m.participants)
     if m.organizer_upn:
         known_recipients.add(m.organizer_upn.lower())
@@ -329,7 +475,7 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
     # Send before committing approval so a Graph failure leaves the meeting in
     # awaiting_review and the organiser can safely retry from the UI.
     sent = False
-    if settings.emails_enabled and recipients and m.organizer_upn:
+    if settings.emails_enabled and not is_local_test_meeting(m) and recipients and m.organizer_upn:
         m.email_delivery_status = "sending"
         m.email_delivery_fingerprint = fingerprint
         m.email_delivery_error = None
@@ -371,6 +517,50 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
     await db.commit()
 
     return {"ok": True, "state": m.state}
+
+
+@router.post("/reviews/{meeting_id}/send-copy")
+async def send_copy_to_self(meeting_id: str, body: SendMeetingCopyIn,
+                            db: AsyncSession = Depends(get_db),
+                            upn: str = Depends(current_user)):
+    """Send approved notes to an approved attendee's own verified company UPN."""
+    meeting = await _authorize(db, meeting_id, upn)
+    _require_approved_attendee(meeting, upn)
+    if body.recipient_upn != upn:
+        raise HTTPException(403, "Approved attendees may only send a copy to themselves")
+    if meeting.state not in {ProcessingState.approved, ProcessingState.sent}:
+        raise HTTPException(409, "A personal copy is available only after organiser approval")
+
+    sender = settings.mail_sender_upn or meeting.organizer_upn
+    if not sender:
+        raise HTTPException(409, "No sender is configured for this meeting")
+
+    delivery_enabled = settings.emails_enabled and not is_local_test_meeting(meeting)
+    audit = MeetingEmailAudit(
+        meeting_id=meeting.id,
+        actor_upn=upn,
+        recipient_upn=upn,
+        action="self_copy",
+        status="sending" if delivery_enabled else "disabled",
+    )
+    db.add(audit)
+    await db.commit()
+    if not delivery_enabled:
+        return {"ok": True, "sent": False}
+
+    subject, email_body = build_meeting_email(meeting)
+    try:
+        await graph.send_mail(sender, [upn], subject, email_body)
+    except Exception as exc:
+        audit.status = "failed"
+        audit.error = str(exc)[:1000]
+        await db.commit()
+        raise HTTPException(502, "Personal copy delivery failed") from exc
+
+    audit.status = "sent"
+    audit.error = None
+    await db.commit()
+    return {"ok": True, "sent": True}
 
 
 @router.post("/reviews/{meeting_id}/share")

@@ -118,6 +118,254 @@ class TestOrganizerReviewGate:
         assert exc.value.status_code == 403
 
 
+class TestEditAccessWorkflow:
+    @staticmethod
+    def _meeting(*, access_type="participant", status="none"):
+        from app.models import ProcessingState
+
+        participant = MagicMock(
+            user_upn="guest@taxconsulting.co.za",
+            is_organizer=False,
+            access_type=access_type,
+            edit_access_status=status,
+            edit_requested_at=None,
+            edit_decided_at=None,
+            edit_decided_by=None,
+        )
+        meeting = MagicMock(
+            id="meeting-1",
+            organizer_upn="owner@taxconsulting.co.za",
+            attendees_raw=["owner@taxconsulting.co.za", "guest@taxconsulting.co.za"],
+            participants=[participant],
+            state=ProcessingState.awaiting_review,
+        )
+        return meeting, participant
+
+    async def test_real_attendee_can_request_access(self, monkeypatch):
+        from app.api import reviews
+
+        meeting, participant = self._meeting()
+        db = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        result = await reviews.request_edit_access(
+            "meeting-1", db=db, upn="guest@taxconsulting.co.za"
+        )
+
+        assert result == {"ok": True, "status": "pending"}
+        assert participant.edit_access_status == "pending"
+        assert participant.edit_requested_at is not None
+        db.commit.assert_awaited_once()
+
+    async def test_shared_viewer_who_did_not_attend_cannot_request(self, monkeypatch):
+        from fastapi import HTTPException
+        from app.api import reviews
+
+        meeting, _ = self._meeting(access_type="shared")
+        meeting.attendees_raw = ["owner@taxconsulting.co.za"]
+        db = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.request_edit_access(
+                "meeting-1", db=db, upn="guest@taxconsulting.co.za"
+            )
+
+        assert exc.value.status_code == 403
+        db.commit.assert_not_awaited()
+
+    async def test_pending_request_is_idempotent(self, monkeypatch):
+        from app.api import reviews
+
+        meeting, _ = self._meeting(status="pending")
+        db = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        result = await reviews.request_edit_access(
+            "meeting-1", db=db, upn="guest@taxconsulting.co.za"
+        )
+
+        assert result["status"] == "pending"
+        db.commit.assert_not_awaited()
+
+    async def test_organizer_can_approve_pending_request(self, monkeypatch):
+        from app.api import reviews
+        from app.schemas import EditAccessDecisionIn
+
+        meeting, participant = self._meeting(status="pending")
+        db = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        result = await reviews.decide_edit_access(
+            "meeting-1", "guest@taxconsulting.co.za",
+            EditAccessDecisionIn(approved=True), db=db,
+            upn="owner@taxconsulting.co.za",
+        )
+
+        assert result["status"] == "approved"
+        assert participant.edit_decided_by == "owner@taxconsulting.co.za"
+        db.commit.assert_awaited_once()
+
+    async def test_organizer_can_reject_pending_request(self, monkeypatch):
+        from app.api import reviews
+        from app.schemas import EditAccessDecisionIn
+
+        meeting, participant = self._meeting(status="pending")
+        db = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        result = await reviews.decide_edit_access(
+            "meeting-1", "guest@taxconsulting.co.za",
+            EditAccessDecisionIn(approved=False), db=db,
+            upn="owner@taxconsulting.co.za",
+        )
+
+        assert result["status"] == "denied"
+        assert participant.edit_access_status == "denied"
+
+    async def test_organizer_cannot_approve_without_pending_request(self, monkeypatch):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import EditAccessDecisionIn
+
+        meeting, _ = self._meeting(status="none")
+        db = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.decide_edit_access(
+                "meeting-1", "guest@taxconsulting.co.za",
+                EditAccessDecisionIn(approved=True), db=db,
+                upn="owner@taxconsulting.co.za",
+            )
+
+        assert exc.value.status_code == 409
+        db.commit.assert_not_awaited()
+
+    async def test_non_organizer_cannot_decide_request(self, monkeypatch):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import EditAccessDecisionIn
+
+        meeting, _ = self._meeting(status="pending")
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.decide_edit_access(
+                "meeting-1", "guest@taxconsulting.co.za",
+                EditAccessDecisionIn(approved=True), db=AsyncMock(),
+                upn="guest@taxconsulting.co.za",
+            )
+
+        assert exc.value.status_code == 403
+
+    async def test_approved_attendee_can_edit_transcript(self, monkeypatch):
+        from app.api import reviews
+        from app.schemas import TranscriptEdit
+
+        meeting, _ = self._meeting(status="approved")
+        db = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        result = await reviews.edit_transcript(
+            "meeting-1", TranscriptEdit(transcript="Updated"), db=db,
+            upn="guest@taxconsulting.co.za",
+        )
+
+        assert result == {"ok": True}
+        assert meeting.transcript == "Updated"
+        db.commit.assert_awaited_once()
+
+    async def test_unapproved_attendee_cannot_edit_transcript(self, monkeypatch):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import TranscriptEdit
+
+        meeting, _ = self._meeting(status="pending")
+        db = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.edit_transcript(
+                "meeting-1", TranscriptEdit(transcript="Bypass"), db=db,
+                upn="guest@taxconsulting.co.za",
+            )
+
+        assert exc.value.status_code == 403
+        db.commit.assert_not_awaited()
+
+    async def test_approved_attendee_cannot_approve_or_group_email(self, monkeypatch):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import ApproveMeetingIn
+
+        meeting, _ = self._meeting(status="approved")
+        meeting.action_items = []
+        db = AsyncMock()
+        send_mail = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.approve(
+                "meeting-1", db=db, upn="guest@taxconsulting.co.za",
+                body=ApproveMeetingIn(recipients=[
+                    "owner@taxconsulting.co.za", "guest@taxconsulting.co.za"
+                ]),
+            )
+
+        assert exc.value.status_code == 403
+        send_mail.assert_not_awaited()
+        db.commit.assert_not_awaited()
+
+
+class TestSpeakerSamples:
+    @staticmethod
+    def _meeting():
+        meeting = MagicMock()
+        meeting.organizer_upn = "owner@taxconsulting.co.za"
+        meeting.participants = []
+        meeting.extracted_json = {
+            "transcript_segments": [
+                {"speaker": "Speaker A", "text": "Short", "start": 2.0, "end": 4.0},
+                {"speaker": "Speaker A", "text": "Representative", "start": 10.0, "end": 30.0},
+                {"speaker": "Speaker B", "text": "Other", "start": 31.0, "end": 35.0},
+            ]
+        }
+        return meeting
+
+    def test_uses_longest_segment_and_caps_sample_at_twelve_seconds(self):
+        from app.api.reviews import _speaker_sample_window
+
+        assert _speaker_sample_window(self._meeting(), "speaker a") == (9.75, 21.75)
+
+    def test_unknown_speaker_has_no_sample(self):
+        from app.api.reviews import _speaker_sample_window
+
+        assert _speaker_sample_window(self._meeting(), "Speaker C") is None
+
+    async def test_non_organizer_cannot_fetch_sample(self, monkeypatch):
+        from fastapi import HTTPException
+        from app.api import reviews
+
+        meeting = self._meeting()
+        meeting.participants = [
+            MagicMock(user_upn="guest@taxconsulting.co.za", is_organizer=False)
+        ]
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        build_sample = AsyncMock(return_value=b"audio")
+        monkeypatch.setattr(reviews, "_build_speaker_sample", build_sample)
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.speaker_sample(
+                "meeting-1", "Speaker A", db=AsyncMock(),
+                upn="guest@taxconsulting.co.za",
+            )
+
+        assert exc.value.status_code == 403
+        build_sample.assert_not_awaited()
+
+
 class TestReviewStateGate:
     def test_awaiting_review_is_editable(self):
         from app.api.reviews import _require_awaiting_review
@@ -235,4 +483,149 @@ class TestApprovalDelivery:
             )
 
         assert exc.value.status_code == 409
+        send_mail.assert_not_awaited()
+
+    async def test_local_test_meeting_never_sends_real_email(self, monkeypatch):
+        from app.api import reviews
+        from app.schemas import ApproveMeetingIn
+        from app.models import ProcessingState
+
+        meeting = self._meeting()
+        meeting.drive_item_id = "meeting-intel-test-t2-speaker-audio"
+        meeting.extracted_json = {"local_test_data": True}
+        db = AsyncMock()
+        send_mail = AsyncMock()
+        monkeypatch.setattr(reviews.settings, "emails_enabled", True)
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        monkeypatch.setattr(reviews, "build_meeting_email", lambda _: ("Subject", "Body"))
+        monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
+
+        result = await reviews.approve(
+            "meeting-1", db=db, upn="owner@taxconsulting.co.za",
+            body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"]),
+        )
+
+        assert result["state"] == ProcessingState.approved
+        send_mail.assert_not_awaited()
+
+
+class TestApprovedAttendeeSelfCopy:
+    @staticmethod
+    def _meeting(status="approved"):
+        from app.models import ProcessingState
+
+        participant = MagicMock(
+            user_upn="guest@taxconsulting.co.za",
+            is_organizer=False,
+            access_type="participant",
+            edit_access_status=status,
+        )
+        meeting = MagicMock(
+            id="meeting-1",
+            organizer_upn="owner@taxconsulting.co.za",
+            attendees_raw=["owner@taxconsulting.co.za", "guest@taxconsulting.co.za"],
+            participants=[participant],
+            state=ProcessingState.sent,
+        )
+        return meeting
+
+    @staticmethod
+    def _db():
+        db = MagicMock()
+        db.commit = AsyncMock()
+        return db
+
+    async def test_direct_api_request_cannot_target_another_recipient(self, monkeypatch):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import SendMeetingCopyIn
+
+        meeting = self._meeting()
+        db = self._db()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        send_mail = AsyncMock()
+        monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.send_copy_to_self(
+                "meeting-1",
+                SendMeetingCopyIn(recipient_upn="other@taxconsulting.co.za"),
+                db=db,
+                upn="guest@taxconsulting.co.za",
+            )
+
+        assert exc.value.status_code == 403
+        send_mail.assert_not_awaited()
+        db.add.assert_not_called()
+
+    async def test_unapproved_attendee_cannot_send_copy(self, monkeypatch):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import SendMeetingCopyIn
+
+        meeting = self._meeting(status="pending")
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.send_copy_to_self(
+                "meeting-1",
+                SendMeetingCopyIn(recipient_upn="guest@taxconsulting.co.za"),
+                db=self._db(),
+                upn="guest@taxconsulting.co.za",
+            )
+
+        assert exc.value.status_code == 403
+
+    async def test_sends_only_to_caller_and_records_audit(self, monkeypatch):
+        from app.api import reviews
+        from app.schemas import SendMeetingCopyIn
+
+        meeting = self._meeting()
+        db = self._db()
+        send_mail = AsyncMock()
+        monkeypatch.setattr(reviews.settings, "emails_enabled", True)
+        monkeypatch.setattr(reviews.settings, "mail_sender_upn", "notes@taxconsulting.co.za")
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        monkeypatch.setattr(reviews, "build_meeting_email", lambda _: ("Subject", "Body"))
+        monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
+
+        result = await reviews.send_copy_to_self(
+            "meeting-1",
+            SendMeetingCopyIn(recipient_upn=" GUEST@taxconsulting.co.za "),
+            db=db,
+            upn="guest@taxconsulting.co.za",
+        )
+
+        assert result == {"ok": True, "sent": True}
+        send_mail.assert_awaited_once_with(
+            "notes@taxconsulting.co.za", ["guest@taxconsulting.co.za"], "Subject", "Body"
+        )
+        audit = db.add.call_args.args[0]
+        assert audit.actor_upn == "guest@taxconsulting.co.za"
+        assert audit.recipient_upn == "guest@taxconsulting.co.za"
+        assert audit.status == "sent"
+        assert db.commit.await_count == 2
+
+    async def test_local_test_meeting_never_sends_self_copy(self, monkeypatch):
+        from app.api import reviews
+        from app.schemas import SendMeetingCopyIn
+
+        meeting = self._meeting()
+        meeting.drive_item_id = "meeting-intel-test-t3-self-copy"
+        meeting.extracted_json = {"local_test_data": True}
+        db = self._db()
+        send_mail = AsyncMock()
+        monkeypatch.setattr(reviews.settings, "emails_enabled", True)
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
+
+        result = await reviews.send_copy_to_self(
+            "meeting-1",
+            SendMeetingCopyIn(recipient_upn="guest@taxconsulting.co.za"),
+            db=db,
+            upn="guest@taxconsulting.co.za",
+        )
+
+        assert result == {"ok": True, "sent": False}
+        assert db.add.call_args.args[0].status == "disabled"
         send_mail.assert_not_awaited()

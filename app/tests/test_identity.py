@@ -12,3 +12,10 @@ def test_normalize_upns_deduplicates_and_ignores_invalid_values():
         None,
         "not-an-email",
     ]) == ["jane.doe@taxconsulting.co.za"]
+
+
+def test_normalize_upns_reads_graph_email_address_objects():
+    assert normalize_upns([
+        {"emailAddress": {"name": "Jane Doe", "address": "Jane.Doe@TaxConsulting.co.za"}},
+        {"name": "John", "email": "john@taxconsulting.co.za"},
+    ]) == ["jane.doe@taxconsulting.co.za", "john@taxconsulting.co.za"]

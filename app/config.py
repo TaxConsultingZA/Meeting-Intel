@@ -78,7 +78,17 @@ class Settings(BaseSettings):
     # --- AI layer ---
     graph_impl: str = "microsoft"          # microsoft | mock
     transcriber_impl: str = "assemblyai"    # mock | assemblyai
-    extractor_impl: str = "transcript_only"  # transcript_only | mock | azure_openai
+    extractor_impl: str = "transcript_only"  # transcript_only | mock | azure_openai | gemini
+
+    # Disabled unless an administrator explicitly authorises external AI use.
+    gemini_enabled: bool = False
+    gemini_api_key: str = ""
+    gemini_model: str = ""
+
+    worker_poll_seconds: float = Field(default=3, gt=0)
+    worker_lease_seconds: float = Field(default=120, gt=0)
+    worker_heartbeat_seconds: float = Field(default=20, gt=0)
+    worker_shutdown_seconds: float = Field(default=30, ge=0)
 
     assemblyai_api_key: str = ""
 

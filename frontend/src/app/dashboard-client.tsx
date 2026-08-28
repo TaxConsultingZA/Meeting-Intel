@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { Calendar, Users, ChevronRight, Upload, Mic, Video, Share2, History, Lock, Power } from "lucide-react";
 import StateBadge from "@/components/state-badge";
 import LocalDateTime, { useUserTimeZone } from "@/components/local-date-time";
-import RecordingJobs from "@/components/recording-jobs";
 import { formatEventTime } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
 import { getAllMeetings, requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
@@ -153,8 +152,6 @@ export default function DashboardClient({ meetings: initialMeetings, upcoming, h
       </div>
 
       {showImport && <ImportModal upn={accessToken} onClose={() => setShowImport(false)} />}
-
-      <RecordingJobs token={accessToken} onChanged={async () => setMeetings(await getAllMeetings(accessToken))} />
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-7">

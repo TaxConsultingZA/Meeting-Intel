@@ -14,5 +14,5 @@ export function useUserTimeZone() {
 
 export default function LocalDateTime({ value }: { value?: string | null }) {
   const zone = useUserTimeZone();
-  return <span title={zone ?? undefined}>{zone ? formatDateTime(value, zone) : "—"}</span>;
+  return <span>{zone ? formatDateTime(value, zone) : "—"}</span>;
 }

@@ -28,7 +28,7 @@ export function formatDateTime(value: string | null | undefined, zone: string): 
   if (!date) return value || "—"; // Preserve descriptive/unknown old meeting dates.
   return new Intl.DateTimeFormat("en-ZA", {
     timeZone: zone, day: "2-digit", month: "short", year: "numeric",
-    hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
   }).format(date);
 }
 

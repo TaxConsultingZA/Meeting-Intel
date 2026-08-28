@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { formatDateTime, formatEventTime, parseInstant, resolveTimeZone } from "../time";
 
 describe("user timezone rendering", () => {
+  it.each([
+    ["Asia/Shanghai", "17 Jul 2026, 15:02"],
+    ["Africa/Johannesburg", "17 Jul 2026, 09:02"],
+    ["UTC", "17 Jul 2026, 07:02"],
+  ])("shows local date and time without technical labels for %s", (zone, expected) => {
+    expect(formatDateTime("2026-07-17T07:02:00Z", zone)).toBe(expected);
+  });
   it("converts UTC to South Africa, including date rollover", () => {
     const result = formatDateTime("2026-08-27T23:30:00Z", "Africa/Johannesburg");
     expect(result).toContain("28"); expect(result).toContain("01:30");

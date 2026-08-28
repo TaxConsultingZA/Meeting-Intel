@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import select, text
 from .api import webhooks, reviews, subscriptions, recordings, calendar, notifications, admin, users
+from .api import recording_jobs
 from .config import get_settings
 from .db import engine, SessionLocal
 from .models import Base, BusinessUnit, RegisteredUser, BUSINESS_UNITS
@@ -132,6 +133,7 @@ app.include_router(webhooks.router, tags=["webhooks"])
 app.include_router(reviews.router, tags=["reviews"])
 app.include_router(subscriptions.router, tags=["subscriptions"])
 app.include_router(recordings.router, tags=["recordings"])
+app.include_router(recording_jobs.router, tags=["recordings"])
 app.include_router(calendar.router, tags=["calendar"])
 app.include_router(notifications.router, tags=["notifications"])
 app.include_router(admin.router)

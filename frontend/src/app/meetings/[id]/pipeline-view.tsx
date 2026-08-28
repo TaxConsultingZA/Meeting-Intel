@@ -5,7 +5,7 @@ const STEPS: { state: ProcessingState; label: string; detail: string }[] = [
   { state: "queued",       label: "Recording Detected",   detail: "New file found in OneDrive Recordings folder" },
   { state: "downloading",  label: "Downloading",          detail: "Streaming MP4 from SharePoint to processing environment" },
   { state: "transcribing", label: "Transcribing",         detail: "AssemblyAI · Diarized speaker detection" },
-  { state: "extracting",   label: "Saving Transcript",    detail: "Finalising the transcript for organiser review" },
+  { state: "extracting",   label: "Processing / Extracting", detail: "Preparing transcript and configured extraction results for review" },
 ];
 
 const ORDER: ProcessingState[] = ["queued", "downloading", "transcribing", "extracting"];

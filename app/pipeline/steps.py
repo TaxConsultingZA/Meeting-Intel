@@ -10,6 +10,7 @@ from ..graph import client as graph
 from ..utils.identity import normalize_upn, normalize_upns
 from .transcribe import get_transcriber, TranscriptSegment
 from .extract import get_extractor, require_transcript, validate_extraction
+from ..services.job_control import guarded_commit, JobCancelled, public_job_error
 
 settings = get_settings()
 
@@ -160,7 +161,8 @@ async def _send_popia_notice(meeting: Meeting, extra_recipients: list[str]) -> N
 
 
 async def process_recording(
-    db: AsyncSession, drive_item_id: str, drive_id: str, owner_upn: str | None = None
+    db: AsyncSession, drive_item_id: str, drive_id: str, owner_upn: str | None = None,
+    *, job_id=None, lease_token=None,
 ) -> None:
     """Run the full pipeline for a single recording and persist the results.
 
@@ -178,6 +180,11 @@ async def process_recording(
 
     Any unhandled exception sets state to ``failed`` and re-raises.
     """
+    async def commit(*, complete=False):
+        await guarded_commit(db, job_id, lease_token, complete=complete)
+
+    if job_id is not None:
+        await commit()
     meeting = await db.scalar(select(Meeting).where(Meeting.drive_item_id == drive_item_id))
     if meeting is not None and meeting.state in (
         ProcessingState.awaiting_review, ProcessingState.approved, ProcessingState.sent,
@@ -199,7 +206,7 @@ async def process_recording(
             organizer_upn=organizer,
         )
         db.add(meeting)
-        await db.commit()
+        await commit()
         await db.refresh(meeting)
 
     owner_upn = normalize_upn(owner_upn)
@@ -221,7 +228,7 @@ async def process_recording(
                 user_upn=owner_upn,
                 is_organizer=(owner_upn == meeting.organizer_upn),
             ))
-            await db.commit()
+            await commit()
 
     # Notify participants before any AI processing (POPIA Section 18).
     extra = normalize_upns(meeting.attendees_raw if meeting.attendees_raw is not None
@@ -232,7 +239,7 @@ async def process_recording(
     all_attendee_upns = normalize_upns([*extra, meeting.organizer_upn, owner_upn])
     if meeting.attendees_raw is None:
         meeting.attendees_raw = all_attendee_upns
-        await db.commit()
+        await commit()
 
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -247,11 +254,11 @@ async def process_recording(
             else:
                 await _send_popia_notice(meeting, extra)
                 meeting.state = ProcessingState.downloading
-                await db.commit()
+                await commit()
                 video_path = os.path.join(tmp, "rec.mp4")
                 await graph.download_drive_item(drive_id, drive_item_id, video_path)
                 meeting.state = ProcessingState.transcribing
-                await db.commit()
+                await commit()
                 all_upns = normalize_upns([*extra, meeting.organizer_upn, owner_upn])
                 await _send_processing_started(meeting, all_upns)
                 segments = await get_transcriber().transcribe(video_path)
@@ -269,11 +276,12 @@ async def process_recording(
             extracted_json["transcript_segments"] = transcript_segments
             meeting.extracted_json = extracted_json
             meeting.state = ProcessingState.extracting
-            await db.commit()
+            await commit()
             result = validate_extraction(
                 await get_extractor().extract(segments),
                 transcript_only=settings.extractor_impl == "transcript_only",
             )
+            await commit()  # Stop here if cancellation arrived during extraction.
             meeting.summary = result.summary
             # Match the imported recording to the organiser's Outlook event. Doing
             # this before the final commit ensures the review page receives the real
@@ -293,6 +301,8 @@ async def process_recording(
             # Preserve Outlook matching metadata collected before extraction.
             extracted_json = dict(meeting.extracted_json or {})
             extracted_json.update(result.model_dump())
+            if meeting.recorded_at:
+                extracted_json["meeting_time"] = meeting.recorded_at.isoformat()
             # Keep diarization timestamps for reviewer-only representative audio
             # samples. The human-readable transcript deliberately remains plain text.
             extracted_json["transcript_segments"] = transcript_segments
@@ -341,11 +351,14 @@ async def process_recording(
                     ))
 
             meeting.state = ProcessingState.awaiting_review
-            await db.commit()
+            await commit(complete=True)
             await _send_ready_for_review(meeting, len(participant_upns))
 
+    except JobCancelled:
+        await db.rollback()
+        raise
     except Exception as e:
         meeting.state = ProcessingState.failed
-        meeting.error = str(e)[:2000]
-        await db.commit()
+        meeting.error = public_job_error(e)
+        await commit()
         raise

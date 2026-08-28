@@ -5,6 +5,7 @@ from ..db import get_db
 from ..graph import client as graph
 from ..services.sync_state import record_sync_result
 from .deps import require_subscribed
+from ..utils.timezones import parse_graph_datetime, utc_iso
 
 router = APIRouter()
 
@@ -20,14 +21,10 @@ def _event_status(start_str: str | None, end_str: str | None) -> str:
         return "upcoming"
     now = datetime.now(timezone.utc)
     try:
-        start = datetime.fromisoformat(start_str.rstrip("0").rstrip(".") if "." in start_str else start_str)
-        if start.tzinfo is None:
-            start = start.replace(tzinfo=timezone.utc)
-        end_dt = None
-        if end_str:
-            end_dt = datetime.fromisoformat(end_str.rstrip("0").rstrip(".") if "." in end_str else end_str)
-            if end_dt.tzinfo is None:
-                end_dt = end_dt.replace(tzinfo=timezone.utc)
+        start = parse_graph_datetime(start_str)
+        end_dt = parse_graph_datetime(end_str)
+        if start is None:
+            return "upcoming"
         if start <= now and (end_dt is None or now <= end_dt):
             return "in_progress"
     except Exception:
@@ -47,13 +44,15 @@ def _format_event(e: dict) -> dict:
         for a in (e.get("attendees") or [])
         if a.get("emailAddress", {}).get("address")
     ]
-    start = (e.get("start") or {}).get("dateTime")
-    end = (e.get("end") or {}).get("dateTime")
+    start = utc_iso(e.get("start"))
+    end = utc_iso(e.get("end"))
     return {
         "event_id": e.get("id"),
         "subject": e.get("subject") or "Untitled Meeting",
         "start": start,
-        "start_tz": (e.get("start") or {}).get("timeZone", "UTC"),
+        "start_tz": "UTC",
+        "source_timezone": (e.get("start") or {}).get("timeZone"),
+        "original_timezone": e.get("originalStartTimeZone"),
         "end": end,
         "organizer_name": organizer.get("name"),
         "organizer_email": organizer.get("address"),

@@ -9,6 +9,7 @@ from typing import Any
 from app.graph import client as graph
 from app.graph.calendar_match import events_between
 from app.services.meeting_matching import event_people, match_calendar_event, recording_datetime
+from app.utils.timezones import parse_graph_datetime
 
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 async def enrich_recording_from_outlook(meeting: Any, drive_id: str, drive_item_id: str) -> None:
     item = await graph.get_drive_item(drive_id, drive_item_id)
-    recorded_at = recording_datetime(item)
+    recorded_at = recording_datetime(item.get("name", ""), item)
     if recorded_at and not meeting.recorded_at:
         meeting.recorded_at = recorded_at
 
@@ -25,12 +26,13 @@ async def enrich_recording_from_outlook(meeting: Any, drive_id: str, drive_item_
         return
 
     events = await events_between(organizer, recorded_at - timedelta(days=2), recorded_at + timedelta(days=2))
-    event = match_calendar_event(item, events)
+    event = match_calendar_event(item.get("name", ""), recorded_at, events)
     if not event:
         logger.info("No Outlook event matched OneDrive recording %s", drive_item_id)
         return
 
-    people = event_people(event)
+    emails, names = event_people(event)
+    people = [{"email": email, "name": names.get(email, email)} for email in emails]
     candidates: list[dict[str, str]] = []
     seen: set[str] = set()
     for person in people:
@@ -42,7 +44,7 @@ async def enrich_recording_from_outlook(meeting: Any, drive_id: str, drive_item_
             candidates.append({"name": name or email, "email": email})
 
     subject = (event.get("subject") or "").strip()
-    event_start = recording_datetime({"createdDateTime": (event.get("start") or {}).get("dateTime")})
+    event_start = parse_graph_datetime(event.get("start"))
     if subject:
         meeting.title = subject
     if event_start:
@@ -58,7 +60,8 @@ async def enrich_recording_from_outlook(meeting: Any, drive_id: str, drive_item_
         {
             "outlook_event_id": event.get("id"),
             "meeting_time": meeting.recorded_at.isoformat() if meeting.recorded_at else None,
-            "attendees": candidates,
+            "attendees": [person["name"] for person in people],
+            "meeting_timezone": (event.get("start") or {}).get("timeZone"),
             "speaker_candidates": candidates,
         }
     )

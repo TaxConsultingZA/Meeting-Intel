@@ -117,6 +117,7 @@ class EditAccessRequestOut(BaseModel):
 class MeetingOut(BaseModel):
     """Full meeting representation returned by GET /reviews and GET /reviews/{id}."""
     id: str
+    recorded_at: datetime | None = None
     title: str | None
     state: ProcessingState
     summary: str | None

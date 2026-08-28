@@ -10,6 +10,7 @@ from ..models import ProcessedItem, Meeting, ProcessingState
 from ..graph import client as graph
 from ..services.jobs import enqueue_recording_job, enqueue_retry_job
 from ..services.sync_state import record_sync_result
+from ..services.job_control import public_job_error
 from .deps import require_subscribed
 
 settings = get_settings()
@@ -88,7 +89,7 @@ async def available_recordings(
             "already_imported": iid in already,
             "meeting_id": str(m.id) if m else None,
             "meeting_state": m.state if m else None,
-            "meeting_error": m.error if m else None,
+            "meeting_error": public_job_error(m.error) if m else None,
         })
     return result
 

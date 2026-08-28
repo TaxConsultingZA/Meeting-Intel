@@ -11,8 +11,11 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import StateBadge from "@/components/state-badge";
+import LocalDateTime from "@/components/local-date-time";
+import RecordingJobs from "@/components/recording-jobs";
 import PipelineView from "./pipeline-view";
 import {
+  getMeeting,
   editActionItem,
   approveMeeting,
   previewMeetingEmail,
@@ -71,6 +74,12 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const canSendSelfCopy = !isOrganizer
     && meeting.edit_access_status === "approved"
     && (meeting.state === "approved" || meeting.state === "sent");
+
+  useEffect(() => {
+    if (!isProcessing) return;
+    const timer = setInterval(() => { void getMeeting(initial.id, accessToken).then(setMeeting).catch(() => {}); }, 5000);
+    return () => clearInterval(timer);
+  }, [initial.id, accessToken, isProcessing]);
 
   async function handleApprove() {
     setApproving(true);
@@ -193,7 +202,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </h2>
           </div>
           <div className="px-4 py-4 flex flex-col gap-3">
-            <MetaRow label="Date"       value={data.meeting_time ?? "—"} />
+            <div><span className="text-xs text-gray-500">Date</span><p className="text-sm"><LocalDateTime value={meeting.recorded_at ?? data.meeting_time} /></p></div>
             <MetaRow label="Platform"   value={data.platform ?? "Microsoft Teams"} />
             <MetaRow label="Organiser"  value={meeting.organizer_upn ?? "—"} />
             <MetaRow label="Attendees"  value={data.attendees?.join(", ") ?? "—"} />
@@ -205,6 +214,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               <span className="text-[11px] font-semibold text-[#6b7280] uppercase tracking-wide">Status</span>
               <div className="mt-1"><StateBadge state={meeting.state} /></div>
             </div>
+            <RecordingJobs token={accessToken} meetingId={meeting.id} onChanged={async () => setMeeting(await getMeeting(meeting.id, accessToken))} />
             <MetaRow label="Action Items" value={`${meeting.action_items.length} extracted`} />
             <div className="h-px bg-[#dde1e8]" />
             {isReviewable && meeting.can_request_edit_access && !meeting.can_edit && (
@@ -265,6 +275,8 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
         <div className="flex flex-col gap-4">
           {isProcessing ? (
             <PipelineView state={meeting.state} />
+          ) : meeting.state === "cancelled" ? (
+            <div className="rounded-lg border bg-white p-5"><h2 className="font-semibold">Recording cancelled</h2><p>Saved meeting information and transcript have been kept.</p>{meeting.transcript && <pre className="whitespace-pre-wrap mt-3 text-sm">{meeting.transcript}</pre>}</div>
           ) : meeting.state === "failed" ? (
             <div className="bg-white rounded-lg border border-red-200 shadow-sm overflow-hidden">
               <div className="bg-red-600 border-b-[3px] border-[#C9A52C] px-5 py-4">

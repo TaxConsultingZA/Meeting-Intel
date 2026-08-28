@@ -18,6 +18,7 @@ from ..config import get_settings
 from ..db import SessionLocal, engine
 from ..models import Meeting, ProcessingState, RecordingJob
 from ..pipeline.steps import process_recording
+from ..services.job_control import public_job_error
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ def _lock_key(drive_item_id: str) -> int:
 def _retry_or_fail(job, error: Exception) -> None:
     job.locked_at = None
     job.lease_token = None
-    job.last_error = str(error)[:4000]
+    job.last_error = public_job_error(error)
     if job.attempts < job.max_attempts:
         job.status = "pending"
         job.available_at = _now() + timedelta(
@@ -54,7 +55,15 @@ async def _mark_meeting_interrupted(db, job):
         Meeting.state.in_((ProcessingState.queued, ProcessingState.downloading,
                           ProcessingState.transcribing, ProcessingState.extracting,
                           ProcessingState.failed)),
-    ).values(state=ProcessingState.failed, error=job.last_error[:2000]))
+    ).values(state=ProcessingState.cancelled if job.status == "cancelled" else ProcessingState.failed,
+             error=job.last_error[:2000]))
+
+
+def _cancel(job):
+    job.status = "cancelled"
+    job.lease_token = None
+    job.locked_at = None
+    job.last_error = public_job_error("cancelled")
 
 
 async def _recover_interrupted_jobs() -> None:
@@ -71,7 +80,10 @@ async def _recover_interrupted_jobs() -> None:
             # A slow heartbeat must not reclaim a pipeline still holding its lock.
             if await db.scalar(text("SELECT pg_try_advisory_xact_lock(:key)"),
                                {"key": _lock_key(job.drive_item_id)}):
-                _retry_or_fail(job, RuntimeError("Worker lease expired; interrupted attempt"))
+                if job.cancel_requested_at:
+                    _cancel(job)
+                else:
+                    _retry_or_fail(job, RuntimeError("Worker lease expired; interrupted attempt"))
                 await _mark_meeting_interrupted(db, job)
         await db.commit()
 
@@ -108,7 +120,8 @@ def _owned(job_id, lease_token):
 
 async def _renew(job_id, lease_token) -> bool:
     async with SessionLocal() as db:
-        renewed = await db.scalar(update(RecordingJob).where(*_owned(job_id, lease_token))
+        renewed = await db.scalar(update(RecordingJob).where(*_owned(job_id, lease_token),
+                                  RecordingJob.cancel_requested_at.is_(None))
                                   .values(locked_at=_now()).returning(RecordingJob.id))
         await db.commit()
         return renewed is not None
@@ -120,7 +133,10 @@ async def _finish(job_id, lease_token, error: Exception | None = None) -> None:
                               .with_for_update())
         if job is None:
             return  # Superseded workers must not finish another worker's lease.
-        if error is None:
+        if job.cancel_requested_at:
+            _cancel(job)
+            await _mark_meeting_interrupted(db, job)
+        elif error is None:
             job.status = "completed"
             job.last_error = None
             job.locked_at = None
@@ -165,7 +181,8 @@ async def _heartbeat(job_id, token):
 
 async def _process(job):
     async with SessionLocal() as db:
-        await process_recording(db, job.drive_item_id, job.drive_id, owner_upn=job.owner_upn)
+        await process_recording(db, job.drive_item_id, job.drive_id, owner_upn=job.owner_upn,
+                                job_id=job.id, lease_token=job.lease_token)
 
 
 async def _execute(job):
@@ -221,11 +238,17 @@ async def run_worker(stop_event: asyncio.Event | None = None) -> None:
     stop = stop_event if stop_event is not None else asyncio.Event()
     restore = _install_stop_handlers(stop) if stop_event is None else lambda: None
     try:
+        async with SessionLocal() as db:
+            await db.execute(text("SELECT 1"))
+        logger.info("Worker connected to PostgreSQL; recording processing enabled=%s", settings.recording_processing_enabled)
         while not stop.is_set():
             try:
                 await _recover_interrupted_jobs()
                 if stop.is_set():
                     break
+                if not settings.recording_processing_enabled:
+                    await _idle(stop)
+                    continue
                 job = await _claim_next()
                 if job is None:
                     await _idle(stop)

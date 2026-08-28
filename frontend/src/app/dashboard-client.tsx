@@ -1,11 +1,14 @@
 "use client";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Calendar, Users, ChevronRight, Upload, Mic, Video, Share2, History, Lock, Power } from "lucide-react";
 import StateBadge from "@/components/state-badge";
+import LocalDateTime, { useUserTimeZone } from "@/components/local-date-time";
+import RecordingJobs from "@/components/recording-jobs";
+import { formatEventTime } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
-import { requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
+import { getAllMeetings, requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
 import type { MeetingOut, ProcessingState, CalendarEvent, SyncState } from "@/lib/types";
 
 /** Convert a UPN like "jane.doe@taxconsulting.co.za" to a display name "Jane Doe". */
@@ -15,22 +18,6 @@ function formatUpn(upn: string | null | undefined): string {
 }
 
 const PIPELINE_STATES: ProcessingState[] = ["queued", "downloading", "transcribing", "extracting"];
-
-/** Format a calendar event's start/end ISO strings into human-friendly date label, time range, and duration. */
-function formatEventTime(start: string | null, end: string | null) {
-  if (!start) return { dateLabel: "—", timeRange: "—", duration: "" };
-  const s = new Date(start);
-  const e = end ? new Date(end) : null;
-  const now = new Date();
-  const isToday = s.toDateString() === now.toDateString();
-  const isTomorrow = s.toDateString() === new Date(now.getTime() + 86400000).toDateString();
-  const dateLabel = isToday ? "Today" : isTomorrow ? "Tomorrow"
-    : s.toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" });
-  const fmt = (d: Date) => d.toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" });
-  const timeRange = `${fmt(s)}${e ? ` – ${fmt(e)}` : ""}`;
-  const duration = e ? `${Math.round((e.getTime() - s.getTime()) / 60000)} min` : "";
-  return { dateLabel, timeRange, duration };
-}
 
 interface Props {
   meetings: MeetingOut[];
@@ -65,8 +52,13 @@ function conciseMicrosoftError(error: string): string {
   return error.length > 180 ? `${error.slice(0, 177)}...` : error;
 }
 
-export default function DashboardClient({ meetings, upcoming, historical: initialHistorical, upn, accessToken, isSubscribed, syncStates, loadErrors }: Props) {
+export default function DashboardClient({ meetings: initialMeetings, upcoming, historical: initialHistorical, upn, accessToken, isSubscribed, syncStates, loadErrors }: Props) {
   const router = useRouter();
+  const [meetings, setMeetings] = useState(initialMeetings);
+  useEffect(() => {
+    const timer = setInterval(() => { void getAllMeetings(accessToken).then(setMeetings).catch(() => {}); }, 10000);
+    return () => clearInterval(timer);
+  }, [accessToken]);
   const [tab, setTab] = useState<Tab>("upcoming");
   const [showImport, setShowImport] = useState(false);
   const [historical, setHistorical] = useState<MeetingOut[]>(initialHistorical);
@@ -91,7 +83,7 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
   const pipelineActive  = meetings.filter((m) => PIPELINE_STATES.includes(m.state));
   const pendingReview   = meetings.filter((m) => m.state === "awaiting_review");
   const oldMeetings     = meetings.filter((m) => m.state === "approved" || m.state === "sent");
-  const cancelled       = meetings.filter((m) => m.state === "failed");
+  const cancelled       = meetings.filter((m) => m.state === "failed" || m.state === "cancelled");
   const persistedSyncErrors = syncStates
     .filter((state) => state.status === "failed")
     .map((state) => `${state.source === "onedrive" ? "OneDrive" : "Calendar"}: ${state.last_error ?? "Last sync failed"}`);
@@ -162,6 +154,8 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
 
       {showImport && <ImportModal upn={accessToken} onClose={() => setShowImport(false)} />}
 
+      <RecordingJobs token={accessToken} onChanged={async () => setMeetings(await getAllMeetings(accessToken))} />
+
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-7">
         {stats.map((s) => (
@@ -192,7 +186,7 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
           { id: "review"      as Tab, label: "Awaiting Review",           count: pendingReview.length                           },
           { id: "old_meetings"as Tab, label: "Old Meetings",               count: null                                          },
           { id: "historical"  as Tab, label: "Historical Access",         count: historical.length || null                     },
-          { id: "cancelled"   as Tab, label: "Cancelled",                 count: cancelled.length || null                      },
+          { id: "cancelled"   as Tab, label: "Failed / Cancelled",                 count: cancelled.length || null                      },
         ]).map(({ id, label, count }) => (
           <button
             key={id}
@@ -270,7 +264,7 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
                         </Link>
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px] whitespace-nowrap">
-                        {m.extracted_json?.meeting_time ?? "—"}
+                        {<LocalDateTime value={m.recorded_at ?? m.extracted_json?.meeting_time} />}
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px]">
                         {formatUpn(m.organizer_upn) || "—"}
@@ -335,7 +329,7 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
                         </span>
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px] whitespace-nowrap">
-                        {m.extracted_json?.meeting_time ?? "—"}
+                        {<LocalDateTime value={m.recorded_at ?? m.extracted_json?.meeting_time} />}
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px]">
                         {formatUpn(m.organizer_upn) || "—"}
@@ -359,7 +353,7 @@ export default function DashboardClient({ meetings, upcoming, historical: initia
       {/* Cancelled */}
       {tab === "cancelled" && (
         cancelled.length === 0
-          ? <EmptyState icon="🚫" title="No cancelled meetings" sub="Meetings that failed processing will appear here." />
+          ? <EmptyState icon="🚫" title="No failed or cancelled recordings" sub="Failed and explicitly cancelled recordings appear here." />
           : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {cancelled.map((m) => <MeetingCard key={m.id} meeting={m} />)}
             </div>
@@ -392,7 +386,7 @@ function MeetingCard({ meeting: m }: { meeting: MeetingOut }) {
         <div className="flex flex-col gap-1.5 mb-3">
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             <span className="flex items-center gap-1 text-[#6b7280] text-[12.5px]">
-              <Calendar size={12} className="shrink-0" /> {m.extracted_json?.meeting_time ?? "—"}
+              <Calendar size={12} className="shrink-0" /> {<LocalDateTime value={m.recorded_at ?? m.extracted_json?.meeting_time} />}
             </span>
             <span className="flex items-center gap-1 text-[#6b7280] text-[12.5px]">
               <Users size={12} className="shrink-0" /> {m.extracted_json?.attendees?.length ?? 0} participants
@@ -418,7 +412,8 @@ function MeetingCard({ meeting: m }: { meeting: MeetingOut }) {
 /** Card component for a calendar event not yet recorded/imported.
  *  Shows a pulsing "Live" badge when the meeting is currently in progress. */
 function CalendarCard({ event: ev, inProgress }: { event: CalendarEvent; inProgress?: boolean }) {
-  const { dateLabel, timeRange, duration } = formatEventTime(ev.start, ev.end);
+  const zone = useUserTimeZone();
+  const { dateLabel, timeRange, duration } = zone ? formatEventTime(ev.start, ev.end, zone) : { dateLabel: "—", timeRange: "—", duration: "" };
   return (
     <div className={`bg-white rounded-lg border shadow-sm overflow-hidden hover:shadow-md transition-all ${inProgress ? "border-indigo-300 hover:border-indigo-500" : "border-[#dde1e8] hover:border-[#003366]"}`}>
       <div className={`border-b-[3px] border-[#C9A52C] px-4 py-3.5 flex items-start justify-between gap-2 ${inProgress ? "bg-indigo-700" : "bg-[#003366]"}`}>

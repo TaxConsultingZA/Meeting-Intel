@@ -3,20 +3,16 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { X, FolderOpen, Loader2, CheckCircle2, Download, RefreshCw, AlertCircle, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
-import { getAvailableRecordings, importRecording, reprocessRecording } from "@/lib/api";
+import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
+import LocalDateTime from "./local-date-time";
+import StateBadge from "./state-badge";
+import { JobControls } from "./recording-jobs";
 import type { AvailableRecording, ProcessingState } from "@/lib/types";
 
 function formatBytes(bytes: number | null): string {
   if (!bytes) return "—";
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("en-ZA", {
-    day: "2-digit", month: "short", year: "numeric",
-  });
 }
 
 const STATE_LABEL: Record<ProcessingState, string> = {
@@ -28,6 +24,7 @@ const STATE_LABEL: Record<ProcessingState, string> = {
   approved: "Approved",
   sent: "Sent",
   failed: "Failed",
+  cancelled: "Cancelled", cancel_requested: "Cancel requested", processing: "Processing", completed: "Completed",
 };
 
 const IN_PROGRESS: ProcessingState[] = ["queued", "downloading", "transcribing", "extracting"];
@@ -42,14 +39,13 @@ export default function ImportModal({ upn, onClose }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<Set<string>>(new Set());
-  const [justImported, setJustImported] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await getAvailableRecordings(upn);
-      setRecordings(data);
+      const [data, jobs] = await Promise.all([getAvailableRecordings(upn), getRecordingJobs(upn)]);
+      setRecordings(data.map(rec => ({ ...rec, job: jobs.find(job => job.drive_item_id === rec.drive_item_id) })));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load recordings");
     } finally {
@@ -62,11 +58,19 @@ export default function ImportModal({ upn, onClose }: Props) {
     return () => window.clearTimeout(timer);
   }, [load]);
 
+  const refreshJobs = useCallback(async () => {
+    const jobs = await getRecordingJobs(upn);
+    setRecordings(previous => previous.map(rec => ({ ...rec, job: jobs.find(job => job.drive_item_id === rec.drive_item_id) })));
+  }, [upn]);
+  useEffect(() => {
+    const timer = setInterval(() => { void refreshJobs().catch(() => setError("Recording status could not be refreshed.")); }, 5000);
+    return () => clearInterval(timer);
+  }, [refreshJobs]);
+
   async function handleImport(rec: AvailableRecording) {
     setBusy((prev) => new Set(prev).add(rec.drive_item_id));
     try {
       await importRecording(rec.drive_item_id, rec.drive_id, upn);
-      setJustImported((prev) => new Set(prev).add(rec.drive_item_id));
       toast.success(`"${rec.name.replace(/\.mp4$/i, "")}" queued for processing`);
       await load();
     } catch (e) {
@@ -101,7 +105,14 @@ export default function ImportModal({ upn, onClose }: Props) {
       );
     }
 
-    if (!rec.already_imported || justImported.has(rec.drive_item_id)) {
+    if (rec.job) {
+      return <div className="flex items-center justify-end gap-3">
+        <JobControls job={rec.job} token={upn} onChanged={refreshJobs} />
+        {rec.job.meeting_id && <Link href={`/meetings/${rec.job.meeting_id}`} onClick={onClose} className="text-xs text-blue-800 underline">View</Link>}
+      </div>;
+    }
+
+    if (!rec.already_imported) {
       return (
         <button
           type="button"
@@ -219,13 +230,13 @@ export default function ImportModal({ upn, onClose }: Props) {
                       )}
                     </td>
                     <td className="px-4 py-3 border-b border-[#dde1e8] text-[#6b7280] text-[12.5px] whitespace-nowrap">
-                      {formatDate(rec.created_at)}
+                      <LocalDateTime value={rec.created_at} />
                     </td>
                     <td className="px-4 py-3 border-b border-[#dde1e8] text-[#6b7280] text-[12.5px] whitespace-nowrap">
                       {formatBytes(rec.size)}
                     </td>
                     <td className="px-4 py-3 border-b border-[#dde1e8] text-[12.5px]">
-                      {rec.meeting_state ? (
+                      {rec.job ? <StateBadge state={rec.job.phase} /> : rec.meeting_state ? (
                         <span className={`font-medium ${rec.meeting_state === "failed" ? "text-red-600" : rec.meeting_state === "awaiting_review" ? "text-amber-600" : "text-[#6b7280]"}`}>
                           {STATE_LABEL[rec.meeting_state]}
                         </span>

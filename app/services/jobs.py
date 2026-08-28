@@ -63,5 +63,8 @@ async def enqueue_retry_job(
         index_where=RecordingJob.status.in_(ACTIVE_JOB_STATUSES),
     ).returning(RecordingJob.id)
     created_id = await db.scalar(statement)
+    if created_id is None:
+        await db.rollback()
+        return False
     await db.commit()
     return created_id is not None

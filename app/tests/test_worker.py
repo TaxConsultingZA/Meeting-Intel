@@ -13,13 +13,14 @@ from sqlalchemy.schema import CreateIndex
 from app.models import RecordingJob
 from app.queue import worker
 from app.services import jobs
+from app.services.job_control import public_job_error
 
 
 def job(**overrides):
     values = dict(id=uuid.uuid4(), drive_item_id="offline-recording", drive_id="drive",
                   owner_upn="owner@example.test", status="processing", attempts=1,
                   max_attempts=3, lease_token=uuid.uuid4(), locked_at=worker._now(),
-                  available_at=worker._now(), last_error=None)
+                  available_at=worker._now(), last_error=None, cancel_requested_at=None)
     values.update(overrides)
     return SimpleNamespace(**values)
 
@@ -36,6 +37,12 @@ def session(monkeypatch):
 
 def sql(statement):
     return str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+
+@pytest.fixture(autouse=True)
+def offline_worker_start(monkeypatch):
+    session(monkeypatch)
+    monkeypatch.setattr(worker.settings, "recording_processing_enabled", True)
 
 
 async def test_claim_marks_processing_increments_attempt_and_commits(monkeypatch):
@@ -70,7 +77,7 @@ async def test_finish_success_retry_and_permanent_failure(monkeypatch, attempts,
     before = worker._now()
     await worker._finish(row.id, token, error)
     assert row.status == expected and row.lease_token is None and row.locked_at is None
-    assert (row.last_error == "AI failed") if error else (row.last_error is None)
+    assert (row.last_error == public_job_error(error)) if error else (row.last_error is None)
     if expected == "pending":
         assert row.available_at >= before + timedelta(seconds=15)
     claim_sql = sql(db.scalar.call_args.args[0])
@@ -136,7 +143,11 @@ async def test_concurrent_retry_insert_conflict_contract(monkeypatch, created):
     statement = sql(db.scalar.call_args.args[0])
     assert "ON CONFLICT (drive_item_id) WHERE" in statement
     assert "DO NOTHING RETURNING" in statement
-    db.commit.assert_awaited_once()
+    if created:
+        db.commit.assert_awaited_once()
+    else:
+        db.rollback.assert_awaited_once()
+        db.commit.assert_not_awaited()
 
 
 async def test_retry_already_active_does_not_insert(monkeypatch):

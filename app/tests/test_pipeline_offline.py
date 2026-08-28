@@ -94,6 +94,33 @@ async def test_empty_transcription_fails_before_ai(monkeypatch, pipeline):
     provider.extract.assert_not_awaited()
 
 
+async def test_cancel_during_extraction_preserves_raw_without_final_writes(monkeypatch, pipeline):
+    p = pipeline
+    cancelled = False
+    original_extractor = extract.MockExtractor()
+
+    async def extraction(segments):
+        nonlocal cancelled
+        result = await original_extractor.extract(segments)
+        cancelled = True
+        return result
+
+    async def fence(db, *args, **kwargs):
+        if cancelled:
+            raise steps.JobCancelled("Cancelled during extraction")
+        await db.commit()
+
+    monkeypatch.setattr(steps, "get_extractor", lambda: SimpleNamespace(extract=extraction))
+    monkeypatch.setattr(steps, "guarded_commit", fence)
+    with pytest.raises(steps.JobCancelled):
+        await run(p)
+    assert p.snapshots[-1][0] == ProcessingState.extracting
+    assert p.snapshots[-1][2]["raw_transcript"]
+    p.db.execute.assert_not_awaited()  # No action replacement or final result.
+    p.db.rollback.assert_awaited_once()
+    p.mail.assert_not_awaited()
+
+
 @pytest.mark.parametrize("state", [ProcessingState.awaiting_review, ProcessingState.approved, ProcessingState.sent])
 async def test_retry_after_final_commit_is_noop_preserving_human_work(pipeline, state):
     p = pipeline
@@ -123,7 +150,7 @@ async def test_provider_exception_reaches_job_retry_or_failure(monkeypatch, pipe
     monkeypatch.setattr(steps, "get_extractor", lambda: SimpleNamespace(extract=AsyncMock(side_effect=RuntimeError("AI unavailable"))))
     row = SimpleNamespace(id=uuid.uuid4(), drive_item_id="offline-item", drive_id="offline-drive",
                           owner_upn="owner@example.test", lease_token=uuid.uuid4(), status="processing",
-                          attempts=attempts, max_attempts=3)
+                          attempts=attempts, max_attempts=3, cancel_requested_at=None)
     queue_db = MagicMock()
     queue_db.scalar = AsyncMock(return_value=row)
     queue_db.execute = AsyncMock()
@@ -145,5 +172,5 @@ async def test_provider_exception_reaches_job_retry_or_failure(monkeypatch, pipe
     monkeypatch.setattr(worker, "_process", process)
     await worker._execute(row)
     assert p.meeting.state == ProcessingState.failed and p.meeting.transcript
-    assert row.status == expected and row.last_error == "AI unavailable"
+    assert row.status == expected and "failed" in row.last_error
     p.mail.assert_not_awaited()

@@ -1,0 +1,13 @@
+.env*
+.next/
+.vercel/
+node_modules/
+test-results/
+playwright-report/
+coverage/
+*.tsbuildinfo
+AGENTS.md
+CLAUDE.md
+test-db.js
+check-tables.js
+migrate-auth.js

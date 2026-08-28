@@ -7,34 +7,15 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
+from app.utils.timezones import parse_graph_datetime
 
 
 _STAMP = re.compile(r"(?P<date>20\d{6})[_-](?P<time>\d{6})")
 
 
-def parse_graph_datetime(value: Any) -> datetime | None:
-    if isinstance(value, dict):
-        value = value.get("dateTime")
-    if not value or not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed
-    except ValueError:
-        return None
-
-
 def recording_datetime(name: str, metadata: dict | None = None) -> datetime | None:
-    match = _STAMP.search(name or "")
-    if match:
-        try:
-            return datetime.strptime(
-                match.group("date") + match.group("time"), "%Y%m%d%H%M%S"
-            ).replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
+    # Filename stamps have no reliable zone. Prefer Graph's offset-bearing
+    # metadata rather than guessing that the recorder's local clock was UTC.
     metadata = metadata or {}
     file_system = metadata.get("fileSystemInfo") or {}
     return parse_graph_datetime(
@@ -82,6 +63,8 @@ def match_calendar_event(
                 time_score = 25
             else:
                 time_score = -60
+        if not event_start or recorded_at is None or hours > 30:
+            continue
         score = title_score + time_score
         if best is None or score > best[0]:
             best = (score, event)

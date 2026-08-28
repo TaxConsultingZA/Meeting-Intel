@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     worker_lease_seconds: float = Field(default=120, gt=0)
     worker_heartbeat_seconds: float = Field(default=20, gt=0)
     worker_shutdown_seconds: float = Field(default=30, ge=0)
+    # Staging must not consume real recordings merely because the worker starts.
+    recording_processing_enabled: bool = False
 
     assemblyai_api_key: str = ""
 

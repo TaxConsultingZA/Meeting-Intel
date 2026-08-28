@@ -193,12 +193,12 @@ async def get_upcoming_calendar_events(upn: str, days: int = 7) -> list[dict]:
         f"{settings.graph_base}/users/{upn}/calendarView"
         f"?startDateTime={now.strftime(fmt)}"
         f"&endDateTime={end.strftime(fmt)}"
-        f"&$select=id,subject,start,end,organizer,attendees,isOnlineMeeting,onlineMeetingProvider,location"
+        f"&$select=id,subject,start,end,originalStartTimeZone,organizer,attendees,isOnlineMeeting,onlineMeetingProvider,location"
         f"&$orderby=start/dateTime"
         f"&$top=50"
     )
     async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.get(url, headers=_headers())
+        r = await c.get(url, headers={**_headers(), "Prefer": 'outlook.timezone="UTC"'})
         r.raise_for_status()
         events = r.json().get("value", [])
     return [e for e in events if e.get("isOnlineMeeting")]

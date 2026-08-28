@@ -7,17 +7,11 @@ from app.db import SessionLocal
 from app.graph import client as graph
 from app.models import RegisteredUser, SyncedCalendarEvent
 from app.services.sync_state import record_sync_result
+from app.utils.timezones import parse_graph_datetime
 
 
 def _graph_datetime(value: dict | None) -> datetime | None:
-    text = (value or {}).get("dateTime")
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
+    return parse_graph_datetime(value)
 
 
 async def sync_calendar_events(days: int = 14) -> int:

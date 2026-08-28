@@ -24,3 +24,7 @@ frontend/AGENTS.md
 *.log
 *.stdout
 *.stderr
+artifacts/
+.pytest_tmp/
+.pytest_tmp_run*/
+.vercel/

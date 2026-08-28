@@ -1,6 +1,18 @@
-import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, AppNotification, RegisteredUser, BusinessUnit, SyncState } from "./types";
+import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, AppNotification, RegisteredUser, BusinessUnit, SyncState, RecordingJobOut } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+
+export function getRecordingJobs(token: string, meetingId?: string): Promise<RecordingJobOut[]> {
+  return apiFetch(`/recordings/jobs${meetingId ? `?meeting_id=${encodeURIComponent(meetingId)}` : ""}`, token);
+}
+
+export function retryRecordingJob(jobId: string, token: string) {
+  return apiFetch<{ ok: boolean; status: string }>(`/recordings/jobs/${encodeURIComponent(jobId)}/retry`, token, { method: "POST" });
+}
+
+export function cancelRecordingJob(jobId: string, token: string) {
+  return apiFetch<{ ok: boolean; status: string }>(`/recordings/jobs/${encodeURIComponent(jobId)}/cancel`, token, { method: "POST" });
+}
 
 /**
  * Base fetch wrapper for all backend API calls.

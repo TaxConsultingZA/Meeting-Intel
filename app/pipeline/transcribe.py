@@ -1,11 +1,13 @@
 import asyncio
 import time
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import httpx
 
 from ..config import get_settings
+from ..services.job_control import JobCancelled
 
 settings = get_settings()
 
@@ -81,10 +83,12 @@ class AssemblyAITranscriber(Transcriber):
         r.raise_for_status()
         return r.json()["id"]
 
-    def _poll(self, transcript_id: str) -> dict:
+    def _poll(self, transcript_id: str, stop: threading.Event | None = None) -> dict:
         """Poll until the transcript is complete or errored."""
         url = f"{_ASSEMBLYAI_BASE}/v2/transcript/{transcript_id}"
         while True:
+            if stop and stop.is_set():
+                raise JobCancelled("Cancellation requested")
             r = httpx.get(url, headers=self._headers(), timeout=30)
             r.raise_for_status()
             data = r.json()
@@ -92,20 +96,29 @@ class AssemblyAITranscriber(Transcriber):
                 return data
             if data["status"] == "error":
                 raise RuntimeError(f"AssemblyAI error: {data.get('error')}")
-            time.sleep(5)
+            if stop:
+                stop.wait(5)
+            else:
+                time.sleep(5)
 
-    def _transcribe_sync(self, audio_path: str) -> list[TranscriptSegment]:
+    def _transcribe_sync(self, audio_path: str, stop: threading.Event | None = None) -> list[TranscriptSegment]:
         """Synchronous orchestration: upload → submit → poll → parse.
 
         Run via ``loop.run_in_executor`` so it doesn't block the event loop
         during the long transcription wait (typically several minutes).
         """
+        if stop and stop.is_set():
+            raise JobCancelled("Cancellation requested before upload")
         print(f"  Uploading to AssemblyAI...", flush=True)
         upload_url = self._upload(audio_path)
+        if stop and stop.is_set():
+            raise JobCancelled("Cancellation requested after upload")
         print(f"  Submitting transcription job...", flush=True)
         transcript_id = self._submit(upload_url)
+        if stop and stop.is_set():
+            raise JobCancelled("Cancellation requested after submit")
         print(f"  Polling (id={transcript_id})...", flush=True)
-        data = self._poll(transcript_id)
+        data = self._poll(transcript_id, stop) if stop else self._poll(transcript_id)
         utterances = data.get("utterances") or []
         return [
             TranscriptSegment(
@@ -119,7 +132,18 @@ class AssemblyAITranscriber(Transcriber):
 
     async def transcribe(self, audio_path: str) -> list[TranscriptSegment]:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._transcribe_sync, audio_path)
+        stop = threading.Event()
+        pending = loop.run_in_executor(None, self._transcribe_sync, audio_path, stop)
+        try:
+            return await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            stop.set()
+            # Keep cancel-requested until the in-flight HTTP call/thread drains.
+            try:
+                await asyncio.shield(pending)
+            except JobCancelled:
+                pass
+            raise
 
 
 def get_transcriber() -> Transcriber:

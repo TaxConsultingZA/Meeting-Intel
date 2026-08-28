@@ -10,7 +10,11 @@ export type ProcessingState =
   | "awaiting_review"
   | "approved"
   | "sent"
-  | "failed";
+  | "failed"
+  | "cancelled"
+  | "cancel_requested"
+  | "processing"
+  | "completed";
 
 /** Confidence level the AI extractor assigns to each identified action item. */
 export type Confidence = "high" | "medium" | "low";
@@ -38,6 +42,7 @@ export interface ActionItemEdit {
 /** Full meeting representation returned by the reviews API. */
 export interface MeetingOut {
   id: string;
+  recorded_at?: string | null;
   title: string | null;
   state: ProcessingState;
   summary: string | null;
@@ -181,6 +186,7 @@ export interface SyncState {
 
 /** A recording file visible in the user's OneDrive, with its current processing state if imported. */
 export interface AvailableRecording {
+  job?: RecordingJobOut;
   drive_item_id: string;
   drive_id: string;
   name: string;
@@ -190,4 +196,19 @@ export interface AvailableRecording {
   meeting_id: string | null;
   meeting_state: ProcessingState | null;
   meeting_error: string | null;
+}
+
+export interface RecordingJobOut {
+  job_id: string;
+  drive_item_id: string;
+  meeting_id: string | null;
+  title: string | null;
+  status: string;
+  phase: ProcessingState;
+  attempts: number;
+  max_attempts: number;
+  error: string | null;
+  can_retry: boolean;
+  can_cancel: boolean;
+  processing_enabled: boolean;
 }

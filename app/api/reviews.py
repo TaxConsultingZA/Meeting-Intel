@@ -24,6 +24,7 @@ from ..schemas import (
 from ..graph import client as graph
 from ..email_templates import build_meeting_email
 from ..utils.identity import normalize_upn, normalize_upns
+from ..services.job_control import public_job_error
 from .deps import current_user, require_registered  # noqa: F401 — re-exported; tests may import from here
 
 settings = get_settings()
@@ -120,7 +121,8 @@ def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
     return MeetingOut(
         id=str(m.id), title=m.title, state=m.state, summary=m.summary,
         transcript=m.transcript,
-        organizer_upn=m.organizer_upn, extracted_json=m.extracted_json, error=m.error,
+        organizer_upn=m.organizer_upn, extracted_json=m.extracted_json, error=public_job_error(m.error),
+        recorded_at=m.recorded_at,
         email_recipients=sorted(known_recipients),
         approved_recipients=m.approved_recipients or [],
         is_organizer=is_organizer,

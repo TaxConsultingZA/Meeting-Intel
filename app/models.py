@@ -38,6 +38,7 @@ class ProcessingState(str, enum.Enum):
     approved = "approved"
     sent = "sent"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 class Confidence(str, enum.Enum):
@@ -168,6 +169,7 @@ class RecordingJob(Base):
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)

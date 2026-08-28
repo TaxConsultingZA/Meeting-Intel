@@ -11,4 +11,4 @@ COPY . .
 
 # Default entrypoint: API server
 # Override CMD in Container Apps Job to run: python -m app.workers.reconcile
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "if [ \"$SERVICE_ROLE\" = worker ]; then exec python -m app.queue.worker; else exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}; fi"]

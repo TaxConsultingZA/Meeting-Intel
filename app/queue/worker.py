@@ -89,16 +89,28 @@ async def _recover_interrupted_jobs() -> None:
 
 
 async def _claim_next() -> RecordingJob | None:
+    only_job_id = settings.process_only_job_id.strip()
+    if only_job_id:
+        try:
+            target_filters = (RecordingJob.id == uuid.UUID(only_job_id),)
+        except ValueError:
+            logger.warning("PROCESS_ONLY_JOB_ID is not a valid UUID; worker will remain idle")
+            return None
+    else:
+        target_filters = ()
+
     async with SessionLocal() as db:
         await db.execute(update(RecordingJob).where(
             RecordingJob.status == "pending",
             RecordingJob.attempts >= RecordingJob.max_attempts,
+            *target_filters,
         ).values(status="failed", last_error="Maximum attempts exhausted"))
         job = await db.scalar(
             select(RecordingJob).where(
                 RecordingJob.status == "pending",
                 RecordingJob.attempts < RecordingJob.max_attempts,
                 RecordingJob.available_at <= _now(),
+                *target_filters,
             ).order_by(RecordingJob.created_at).with_for_update(skip_locked=True).limit(1)
         )
         if job is not None:

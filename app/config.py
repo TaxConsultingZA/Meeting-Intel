@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     worker_shutdown_seconds: float = Field(default=30, ge=0)
     # Staging must not consume real recordings merely because the worker starts.
     recording_processing_enabled: bool = False
+    process_only_job_id: str = ""
 
     assemblyai_api_key: str = ""
 

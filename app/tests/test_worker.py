@@ -43,6 +43,7 @@ def sql(statement):
 def offline_worker_start(monkeypatch):
     session(monkeypatch)
     monkeypatch.setattr(worker.settings, "recording_processing_enabled", True)
+    monkeypatch.setattr(worker.settings, "process_only_job_id", "")
 
 
 async def test_claim_marks_processing_increments_attempt_and_commits(monkeypatch):
@@ -57,8 +58,47 @@ async def test_claim_marks_processing_increments_attempt_and_commits(monkeypatch
     assert "recording_jobs.status = 'pending'" in statement
     assert "recording_jobs.attempts < recording_jobs.max_attempts" in statement
     assert "recording_jobs.available_at <=" in statement
+    assert "recording_jobs.id =" not in statement
     db.commit.assert_awaited_once()
     db.expunge.assert_called_once_with(row)
+
+
+async def test_claim_allowlist_selects_target_even_with_older_pending_job(monkeypatch):
+    db = session(monkeypatch)
+    target = job(status="pending", attempts=0, lease_token=None)
+    older = job(status="pending", attempts=3, max_attempts=3, lease_token=None)
+    monkeypatch.setattr(worker.settings, "process_only_job_id", str(target.id))
+    db.scalar.return_value = target
+
+    assert await worker._claim_next() is target
+
+    claim_statement = sql(db.scalar.call_args.args[0])
+    exhausted_statement = sql(db.execute.call_args.args[0])
+    assert str(target.id) in claim_statement
+    assert str(target.id) in exhausted_statement
+    assert target.status == "processing"
+    assert older.status == "pending" and older.attempts == 3 and older.lease_token is None
+
+
+@pytest.mark.parametrize("unavailable_reason", ["missing", "completed", "cancelled", "not_yet_available"])
+async def test_claim_allowlist_never_falls_back_when_target_is_unavailable(
+    monkeypatch, unavailable_reason,
+):
+    db = session(monkeypatch)
+    target_id = uuid.uuid4()
+    monkeypatch.setattr(worker.settings, "process_only_job_id", str(target_id))
+    db.scalar.return_value = None
+
+    assert await worker._claim_next() is None
+
+    db.scalar.assert_awaited_once()
+    claim_statement = sql(db.scalar.call_args.args[0])
+    exhausted_statement = sql(db.execute.call_args.args[0])
+    assert str(target_id) in claim_statement
+    assert str(target_id) in exhausted_statement
+    assert "recording_jobs.status = 'pending'" in claim_statement
+    assert "recording_jobs.attempts < recording_jobs.max_attempts" in claim_statement
+    assert "recording_jobs.available_at <=" in claim_statement
 
 
 async def test_empty_queue_returns_none(monkeypatch):

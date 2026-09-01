@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Calendar, Users, ChevronRight, Upload, Mic, Video, Share2, History, Lock, Power } from "lucide-react";
 import StateBadge from "@/components/state-badge";
 import LocalDateTime, { useUserTimeZone } from "@/components/local-date-time";
-import { formatEventTime } from "@/lib/time";
+import { formatEventTime, parseInstant } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
 import { getAllMeetings, requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
 import type { MeetingOut, ProcessingState, CalendarEvent, SyncState } from "@/lib/types";
@@ -77,7 +77,12 @@ export default function DashboardClient({ meetings: initialMeetings, upcoming, h
     }
   }
 
-  const upcomingEvents  = upcoming.filter((e) => e.status === "upcoming");
+  const now = Date.now();
+  const upcomingEvents  = upcoming.filter((e) => {
+    if (e.status !== "upcoming") return false;
+    const end = parseInstant(e.end);
+    return !end || end.getTime() > now;
+  });
   const inProgressEvents = upcoming.filter((e) => e.status === "in_progress");
   const pipelineActive  = meetings.filter((m) => PIPELINE_STATES.includes(m.state));
   const pendingReview   = meetings.filter((m) => m.state === "awaiting_review");

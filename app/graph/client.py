@@ -187,11 +187,12 @@ async def get_upcoming_calendar_events(upn: str, days: int = 7) -> list[dict]:
         }]
 
     now = datetime.now(timezone.utc)
+    start = now - timedelta(days=7)
     end = now + timedelta(days=days)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     url = (
         f"{settings.graph_base}/users/{upn}/calendarView"
-        f"?startDateTime={now.strftime(fmt)}"
+        f"?startDateTime={start.strftime(fmt)}"
         f"&endDateTime={end.strftime(fmt)}"
         f"&$select=id,subject,start,end,originalStartTimeZone,organizer,attendees,isOnlineMeeting,onlineMeetingProvider,location"
         f"&$orderby=start/dateTime"

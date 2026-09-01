@@ -2,6 +2,7 @@
 import pytest
 import respx
 import httpx
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 _BASE = "https://graph.microsoft.com/v1.0"
@@ -120,6 +121,47 @@ class TestGetEventAttendees:
             result = await get_event_attendees("drive-1", "item-1")
         assert "notanemail" not in result
         assert len(result) == 2
+
+
+class TestGetUpcomingCalendarEvents:
+    @respx.mock
+    async def test_queries_previous_seven_days_and_keeps_future_window(self, monkeypatch):
+        from app.graph import client
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+
+        monkeypatch.setattr(client.settings, "graph_impl", "microsoft")
+        monkeypatch.setattr(client, "datetime", FixedDateTime)
+        upn = "demo.user@taxconsulting.co.za"
+        route = respx.get(f"{_BASE}/users/{upn}/calendarView").mock(
+            return_value=httpx.Response(200, json={"value": [
+                {
+                    "id": "stand-by",
+                    "subject": "Stand by",
+                    "start": {"dateTime": "2026-08-28T14:00:00Z", "timeZone": "UTC"},
+                    "end": {"dateTime": "2026-08-28T14:30:00Z", "timeZone": "UTC"},
+                    "isOnlineMeeting": True,
+                },
+                {
+                    "id": "future-meeting",
+                    "subject": "Future meeting",
+                    "start": {"dateTime": "2026-09-03T09:00:00Z", "timeZone": "UTC"},
+                    "end": {"dateTime": "2026-09-03T09:30:00Z", "timeZone": "UTC"},
+                    "isOnlineMeeting": True,
+                },
+            ]})
+        )
+
+        with _mock_token():
+            rows = await client.get_upcoming_calendar_events(upn, days=7)
+
+        params = route.calls.last.request.url.params
+        assert params["startDateTime"] == "2026-08-25T12:00:00Z"
+        assert params["endDateTime"] == "2026-09-08T12:00:00Z"
+        assert [row["id"] for row in rows] == ["stand-by", "future-meeting"]
 
 
 class TestLocalMockGraph:

@@ -14,10 +14,14 @@ def _mock_token():
 
 class TestListRecordingsFolder:
     @respx.mock
-    async def test_returns_mp4_files_only(self):
+    async def test_root_recordings_folder_returns_mp4_files_only(self):
         from app.graph.client import list_recordings_folder
-        url = f"{_BASE}/drives/drive-123/root:/Recordings:/children"
-        respx.get(url).mock(return_value=httpx.Response(200, json={
+        search_url = f"{_BASE}/drives/drive-123/root/search(q='Recordings')"
+        children_url = f"{_BASE}/drives/drive-123/items/root-recordings/children"
+        respx.get(search_url).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "root-recordings", "name": "Recordings", "folder": {}}]
+        }))
+        respx.get(children_url).mock(return_value=httpx.Response(200, json={
             "value": [
                 {"id": "f1", "name": "meeting.mp4"},
                 {"id": "f2", "name": "notes.docx"},
@@ -32,13 +36,95 @@ class TestListRecordingsFolder:
         assert "recording2.mp4" in names
 
     @respx.mock
-    async def test_returns_empty_list_on_404(self):
+    async def test_finds_documents_recordings_folder(self):
         from app.graph.client import list_recordings_folder
-        url = f"{_BASE}/drives/drive-xyz/root:/Recordings:/children"
-        respx.get(url).mock(return_value=httpx.Response(404))
+        search_url = f"{_BASE}/drives/drive-xyz/root/search(q='Recordings')"
+        children_url = f"{_BASE}/drives/drive-xyz/items/doc-recordings/children"
+        respx.get(search_url).mock(return_value=httpx.Response(200, json={
+            "value": [{
+                "id": "doc-recordings",
+                "name": "Recordings",
+                "folder": {},
+                "parentReference": {"path": "/drive/root:/Documents"},
+            }]
+        }))
+        respx.get(children_url).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "f1", "name": "meeting.mp4"}]
+        }))
         with _mock_token():
             result = await list_recordings_folder("drive-xyz")
+        assert [item["name"] for item in result] == ["meeting.mp4"]
+
+    @respx.mock
+    async def test_subfolder_only_recordings_folder_is_found(self):
+        from app.graph.client import list_recordings_folder
+        search_url = f"{_BASE}/drives/drive-sub/root/search(q='Recordings')"
+        children_url = f"{_BASE}/drives/drive-sub/items/nested-recordings/children"
+        respx.get(search_url).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "nested-recordings", "name": "Recordings", "folder": {}}]
+        }))
+        respx.get(children_url).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "nested-mp4", "name": "nested-meeting.mp4"}]
+        }))
+        with _mock_token():
+            result = await list_recordings_folder("drive-sub")
+        assert [item["id"] for item in result] == ["nested-mp4"]
+
+    @respx.mock
+    async def test_returns_empty_list_when_no_recordings_folder_exists(self):
+        from app.graph.client import list_recordings_folder
+        url = f"{_BASE}/drives/drive-empty/root/search(q='Recordings')"
+        respx.get(url).mock(return_value=httpx.Response(200, json={"value": []}))
+        with _mock_token():
+            result = await list_recordings_folder("drive-empty")
         assert result == []
+
+    @respx.mock
+    async def test_search_pagination_finds_folder_on_later_page(self):
+        from app.graph.client import list_recordings_folder
+        search_url = f"{_BASE}/drives/drive-paged/root/search(q='Recordings')"
+        next_url = f"{_BASE}/drives/drive-paged/root/search(q='Recordings')&$skipToken=next"
+        children_url = f"{_BASE}/drives/drive-paged/items/later-folder/children"
+        respx.get(search_url).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "near-match", "name": "Recordings archive", "folder": {}}],
+            "@odata.nextLink": next_url,
+        }))
+        respx.get(next_url).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "later-folder", "name": "Recordings", "folder": {}}]
+        }))
+        respx.get(children_url).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "later-mp4", "name": "meeting.mp4"}]
+        }))
+        with _mock_token():
+            result = await list_recordings_folder("drive-paged")
+        assert [item["id"] for item in result] == ["later-mp4"]
+
+    @respx.mock
+    async def test_lists_all_matching_folders_and_pages_their_children(self):
+        from app.graph.client import list_recordings_folder
+        search_url = f"{_BASE}/drives/drive-many/root/search(q='Recordings')"
+        first_children_url = f"{_BASE}/drives/drive-many/items/folder-1/children"
+        second_children_url = f"{_BASE}/drives/drive-many/items/folder-2/children"
+        children_next_url = f"{_BASE}/drives/drive-many/items/folder-1/children-page-2"
+        respx.get(search_url).mock(return_value=httpx.Response(200, json={
+            "value": [
+                {"id": "folder-1", "name": "Recordings", "folder": {}},
+                {"id": "folder-2", "name": "Recordings", "folder": {}},
+            ]
+        }))
+        respx.get(first_children_url).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "mp4-1", "name": "first.mp4"}],
+            "@odata.nextLink": children_next_url,
+        }))
+        respx.get(children_next_url).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "mp4-2", "name": "second.mp4"}]
+        }))
+        respx.get(second_children_url).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "mp4-3", "name": "third.mp4"}]
+        }))
+        with _mock_token():
+            result = await list_recordings_folder("drive-many")
+        assert [item["id"] for item in result] == ["mp4-1", "mp4-2", "mp4-3"]
 
 
 class TestGetUserDriveId:

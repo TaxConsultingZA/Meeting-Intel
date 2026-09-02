@@ -76,8 +76,12 @@ async def get_user_photo(user_upn: str) -> tuple[bytes, str]:
 
 
 async def list_recordings_folder(drive_id: str) -> list[dict]:
-    """List mp4 files in the Recordings folder of the given drive.
-    Returns [] if the folder doesn't exist yet (new user with no recordings)."""
+    """List mp4 files in every Recordings folder in the given drive.
+
+    Graph searches the drive hierarchy server-side, so discovery does not walk
+    every folder.  Exact-name and folder-facet checks avoid treating ordinary
+    search matches as recording folders.
+    """
     if _mock_enabled():
         return [{
             "id": f"{drive_id}::recording-past-untranscribed",
@@ -87,13 +91,47 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
             "eTag": '"mock-etag-past-1"',
         }]
 
-    url = f"{settings.graph_base}/drives/{drive_id}/root:/Recordings:/children"
+    search_url = (
+        f"{settings.graph_base}/drives/{drive_id}"
+        "/root/search(q='Recordings')"
+    )
+    recording_folders: list[dict] = []
     async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.get(url, headers=_headers())
-        if r.status_code == 404:
-            return []
-        r.raise_for_status()
-        return [i for i in r.json().get("value", []) if i.get("name", "").endswith(".mp4")]
+        url: str | None = search_url
+        while url:
+            r = await c.get(url, headers=_headers())
+            r.raise_for_status()
+            data = r.json()
+            recording_folders.extend(
+                item for item in data.get("value", [])
+                if item.get("name", "").casefold() == "recordings"
+                and item.get("folder") is not None
+            )
+            url = data.get("@odata.nextLink")
+
+        recordings_by_id: dict[str, dict] = {}
+        seen_folder_ids: set[str] = set()
+        for folder in recording_folders:
+            folder_id = folder.get("id")
+            if not folder_id or folder_id in seen_folder_ids:
+                continue
+            seen_folder_ids.add(folder_id)
+            url = (
+                f"{settings.graph_base}/drives/{drive_id}"
+                f"/items/{folder_id}/children"
+            )
+            while url:
+                r = await c.get(url, headers=_headers())
+                if r.status_code == 404:
+                    break
+                r.raise_for_status()
+                data = r.json()
+                for item in data.get("value", []):
+                    if item.get("name", "").endswith(".mp4") and item.get("id"):
+                        recordings_by_id[item["id"]] = item
+                url = data.get("@odata.nextLink")
+
+    return list(recordings_by_id.values())
 
 
 async def get_drive_item(drive_id: str, item_id: str) -> dict:

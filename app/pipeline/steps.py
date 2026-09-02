@@ -290,7 +290,12 @@ async def process_recording(
                 from app.services.recording_enrichment import enrich_recording_from_outlook
 
                 if settings.graph_impl != "mock":
-                    await enrich_recording_from_outlook(meeting, drive_id, drive_item_id)
+                    matching_upns = list(await db.scalars(
+                        select(RegisteredUser.upn).where(RegisteredUser.is_subscribed.is_(True))
+                    ))
+                    await enrich_recording_from_outlook(
+                        meeting, drive_id, drive_item_id, candidate_upns=matching_upns
+                    )
             except Exception:
                 import logging
 

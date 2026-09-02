@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -43,32 +43,35 @@ def match_calendar_event(
     recorded_at: datetime | None,
     events: list[dict],
 ) -> dict | None:
-    """Return the most plausible event without guessing across unrelated dates."""
+    """Return a nearby, title-compatible event or decline to guess."""
     recording_title = _normalise(clean_recording_title(recording_name))
     best: tuple[float, dict] | None = None
     for event in events:
         event_start = parse_graph_datetime(event.get("start"))
+        event_end = parse_graph_datetime(event.get("end"))
         event_title = _normalise(event.get("subject") or "")
-        title_score = SequenceMatcher(None, recording_title, event_title).ratio() * 60
-        time_score = 0.0
-        if recorded_at and event_start:
-            left = recorded_at.astimezone(timezone.utc)
-            right = event_start.astimezone(timezone.utc)
-            hours = abs((left - right).total_seconds()) / 3600
-            if hours <= 3:
-                time_score = 60
-            elif hours <= 12:
-                time_score = 45
-            elif hours <= 30:
-                time_score = 25
-            else:
-                time_score = -60
-        if not event_start or recorded_at is None or hours > 30:
+        title_similarity = SequenceMatcher(None, recording_title, event_title).ratio()
+        if title_similarity < 0.5 or not event_start or recorded_at is None:
             continue
-        score = title_score + time_score
+
+        instant = recorded_at.astimezone(timezone.utc)
+        start = event_start.astimezone(timezone.utc)
+        end = (event_end or event_start).astimezone(timezone.utc)
+        if end < start:
+            end = start
+        if instant < start:
+            distance = start - instant
+        elif instant > end:
+            distance = instant - end
+        else:
+            distance = timedelta(0)
+        if distance > timedelta(hours=3):
+            continue
+
+        score = title_similarity * 100 - distance.total_seconds() / 3600
         if best is None or score > best[0]:
             best = (score, event)
-    return best[1] if best and best[0] >= 35 else None
+    return best[1] if best else None
 
 
 def event_people(event: dict | None) -> tuple[list[str], dict[str, str]]:

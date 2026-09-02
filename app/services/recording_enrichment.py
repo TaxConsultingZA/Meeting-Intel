@@ -15,7 +15,12 @@ from app.utils.timezones import parse_graph_datetime
 logger = logging.getLogger(__name__)
 
 
-async def enrich_recording_from_outlook(meeting: Any, drive_id: str, drive_item_id: str) -> None:
+async def enrich_recording_from_outlook(
+    meeting: Any,
+    drive_id: str,
+    drive_item_id: str,
+    candidate_upns: list[str] | None = None,
+) -> None:
     item = await graph.get_drive_item(drive_id, drive_item_id)
     recorded_at = recording_datetime(item.get("name", ""), item)
     if recorded_at and not meeting.recorded_at:
@@ -25,8 +30,22 @@ async def enrich_recording_from_outlook(meeting: Any, drive_id: str, drive_item_
     if not organizer or not recorded_at:
         return
 
-    events = await events_between(organizer, recorded_at - timedelta(days=2), recorded_at + timedelta(days=2))
+    window_start = recorded_at - timedelta(days=2)
+    window_end = recorded_at + timedelta(days=2)
+    events = await events_between(organizer, window_start, window_end)
     event = match_calendar_event(item.get("name", ""), recorded_at, events)
+    if not event:
+        seen = {organizer}
+        for upn in candidate_upns or []:
+            upn = (upn or "").strip().lower()
+            if not upn or upn in seen:
+                continue
+            seen.add(upn)
+            try:
+                events.extend(await events_between(upn, window_start, window_end))
+            except Exception:
+                logger.warning("Could not read fallback Outlook calendar for recording match")
+        event = match_calendar_event(item.get("name", ""), recorded_at, events)
     if not event:
         logger.info("No Outlook event matched OneDrive recording %s", drive_item_id)
         return

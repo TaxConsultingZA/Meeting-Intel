@@ -146,6 +146,107 @@ class TestListRecordingsFolder:
         assert result == []
         assert blocked_route.called is False
 
+    @respx.mock
+    async def test_optional_discovered_folder_403_preserves_root_recordings(self):
+        from app.graph.client import list_recordings_folder
+        discovered_url = f"{_BASE}/drives/drive-root-safe/items/optional-recordings/children"
+        respx.get(self._root_path("drive-root-safe")).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "root-mp4", "name": "root.mp4"}]
+        }))
+        respx.get(self._documents_path("drive-root-safe")).mock(return_value=httpx.Response(404))
+        respx.get(self._root_traversal("drive-root-safe")).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "optional-recordings", "name": "Recordings", "folder": {}}]
+        }))
+        respx.get(discovered_url).mock(return_value=httpx.Response(403))
+        with _mock_token():
+            result = await list_recordings_folder("drive-root-safe")
+        assert [item["id"] for item in result] == ["root-mp4"]
+
+    @respx.mock
+    async def test_documents_recordings_403_preserves_root_recordings(self):
+        from app.graph.client import list_recordings_folder
+        respx.get(self._root_path("drive-docs-denied")).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "root-mp4", "name": "root.mp4"}]
+        }))
+        respx.get(self._documents_path("drive-docs-denied")).mock(return_value=httpx.Response(403))
+        respx.get(self._root_traversal("drive-docs-denied")).mock(
+            return_value=httpx.Response(200, json={"value": []})
+        )
+        with _mock_token():
+            result = await list_recordings_folder("drive-docs-denied")
+        assert [item["id"] for item in result] == ["root-mp4"]
+
+    @respx.mock
+    async def test_traversal_folder_403_skips_branch_and_continues(self):
+        from app.graph.client import list_recordings_folder
+        blocked_url = (
+            f"{_BASE}/drives/drive-branch/items/blocked-folder/children"
+            "?$select=id,name,folder,parentReference"
+        )
+        healthy_url = (
+            f"{_BASE}/drives/drive-branch/items/healthy-folder/children"
+            "?$select=id,name,folder,parentReference"
+        )
+        recordings_url = f"{_BASE}/drives/drive-branch/items/healthy-recordings/children"
+        respx.get(self._root_path("drive-branch")).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "root-mp4", "name": "root.mp4"}]
+        }))
+        respx.get(self._documents_path("drive-branch")).mock(return_value=httpx.Response(404))
+        respx.get(self._root_traversal("drive-branch")).mock(return_value=httpx.Response(200, json={
+            "value": [
+                {"id": "blocked-folder", "name": "Blocked", "folder": {}},
+                {"id": "healthy-folder", "name": "Healthy", "folder": {}},
+            ]
+        }))
+        respx.get(blocked_url).mock(return_value=httpx.Response(403))
+        respx.get(healthy_url).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "healthy-recordings", "name": "Recordings", "folder": {}}]
+        }))
+        respx.get(recordings_url).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "nested-mp4", "name": "nested.mp4"}]
+        }))
+        with _mock_token():
+            result = await list_recordings_folder("drive-branch")
+        assert [item["id"] for item in result] == ["root-mp4", "nested-mp4"]
+
+    @respx.mock
+    async def test_root_recordings_403_is_not_suppressed(self):
+        from app.graph.client import list_recordings_folder
+        respx.get(self._root_path("drive-root-denied")).mock(return_value=httpx.Response(403))
+        with _mock_token(), pytest.raises(httpx.HTTPStatusError):
+            await list_recordings_folder("drive-root-denied")
+
+    @respx.mock
+    async def test_root_children_403_is_not_suppressed(self):
+        from app.graph.client import list_recordings_folder
+        respx.get(self._root_path("drive-root-children-denied")).mock(
+            return_value=httpx.Response(404)
+        )
+        respx.get(self._documents_path("drive-root-children-denied")).mock(
+            return_value=httpx.Response(404)
+        )
+        respx.get(self._root_traversal("drive-root-children-denied")).mock(
+            return_value=httpx.Response(403)
+        )
+        with _mock_token(), pytest.raises(httpx.HTTPStatusError):
+            await list_recordings_folder("drive-root-children-denied")
+
+    @respx.mock
+    async def test_root_and_documents_recordings_are_combined(self):
+        from app.graph.client import list_recordings_folder
+        respx.get(self._root_path("drive-combined")).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "root-mp4", "name": "root.mp4"}]
+        }))
+        respx.get(self._documents_path("drive-combined")).mock(return_value=httpx.Response(200, json={
+            "value": [{"id": "docs-mp4", "name": "documents.mp4"}]
+        }))
+        respx.get(self._root_traversal("drive-combined")).mock(
+            return_value=httpx.Response(200, json={"value": []})
+        )
+        with _mock_token():
+            result = await list_recordings_folder("drive-combined")
+        assert [item["id"] for item in result] == ["root-mp4", "docs-mp4"]
+
 
 class TestGetUserDriveId:
     @respx.mock

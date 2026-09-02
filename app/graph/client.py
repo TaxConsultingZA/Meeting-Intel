@@ -105,6 +105,9 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
         client: httpx.AsyncClient,
         initial_url: str,
         recordings_by_id: dict[str, dict],
+        *,
+        ignore_forbidden: bool = False,
+        branch_name: str = "Recordings folder",
     ) -> None:
         url: str | None = initial_url
         seen_urls: set[str] = set()
@@ -112,6 +115,12 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
             seen_urls.add(url)
             response = await client.get(url, headers=_headers())
             if response.status_code == 404:
+                return
+            if response.status_code == 403 and ignore_forbidden:
+                logger.warning(
+                    "Skipped inaccessible optional OneDrive branch: %s",
+                    branch_name,
+                )
                 return
             response.raise_for_status()
             data = response.json()
@@ -148,6 +157,11 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
                 request_count += 1
                 response = await client.get(url, headers=_headers())
                 if response.status_code == 404:
+                    break
+                if response.status_code == 403 and parent_depth > 0:
+                    logger.warning(
+                        "Skipped inaccessible optional OneDrive traversal branch"
+                    )
                     break
                 response.raise_for_status()
                 data = response.json()
@@ -197,6 +211,8 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
             c,
             f"{drive_url}/root:/Documents/Recordings:/children",
             recordings_by_id,
+            ignore_forbidden=True,
+            branch_name="Documents/Recordings",
         )
 
         for folder_id in await discover_recordings_folder_ids(c):
@@ -204,6 +220,8 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
                 c,
                 f"{drive_url}/items/{folder_id}/children",
                 recordings_by_id,
+                ignore_forbidden=True,
+                branch_name="discovered Recordings folder",
             )
 
     return list(recordings_by_id.values())

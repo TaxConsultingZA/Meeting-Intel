@@ -1,9 +1,17 @@
-import httpx
+import logging
 from datetime import datetime, timedelta, timezone
+
+import httpx
 from .auth import get_token
 from ..config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+RECORDINGS_TRAVERSAL_MAX_DEPTH = 2
+RECORDINGS_TRAVERSAL_MAX_REQUESTS = 100
+RECORDINGS_TRAVERSAL_MAX_FOLDERS = 100
+_FOLDER_METADATA_SELECT = "$select=id,name,folder,parentReference"
 
 
 class ProfilePhotoNotFound(Exception):
@@ -78,9 +86,9 @@ async def get_user_photo(user_upn: str) -> tuple[bytes, str]:
 async def list_recordings_folder(drive_id: str) -> list[dict]:
     """List mp4 files in every Recordings folder in the given drive.
 
-    Graph searches the drive hierarchy server-side, so discovery does not walk
-    every folder.  Exact-name and folder-facet checks avoid treating ordinary
-    search matches as recording folders.
+    Known paths are checked first.  A bounded two-level traversal then finds
+    other common placements without using Graph search or walking the drive
+    without limits.
     """
     if _mock_enabled():
         return [{
@@ -91,45 +99,112 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
             "eTag": '"mock-etag-past-1"',
         }]
 
-    search_url = (
-        f"{settings.graph_base}/drives/{drive_id}"
-        "/root/search(q='Recordings')"
-    )
-    recording_folders: list[dict] = []
-    async with httpx.AsyncClient(timeout=30) as c:
-        url: str | None = search_url
-        while url:
-            r = await c.get(url, headers=_headers())
-            r.raise_for_status()
-            data = r.json()
-            recording_folders.extend(
-                item for item in data.get("value", [])
-                if item.get("name", "").casefold() == "recordings"
-                and item.get("folder") is not None
-            )
+    drive_url = f"{settings.graph_base}/drives/{drive_id}"
+
+    async def collect_mp4_children(
+        client: httpx.AsyncClient,
+        initial_url: str,
+        recordings_by_id: dict[str, dict],
+    ) -> None:
+        url: str | None = initial_url
+        seen_urls: set[str] = set()
+        while url and url not in seen_urls:
+            seen_urls.add(url)
+            response = await client.get(url, headers=_headers())
+            if response.status_code == 404:
+                return
+            response.raise_for_status()
+            data = response.json()
+            for item in data.get("value", []):
+                if item.get("name", "").endswith(".mp4") and item.get("id"):
+                    recordings_by_id[item["id"]] = item
             url = data.get("@odata.nextLink")
 
-        recordings_by_id: dict[str, dict] = {}
-        seen_folder_ids: set[str] = set()
-        for folder in recording_folders:
-            folder_id = folder.get("id")
-            if not folder_id or folder_id in seen_folder_ids:
-                continue
-            seen_folder_ids.add(folder_id)
-            url = (
-                f"{settings.graph_base}/drives/{drive_id}"
-                f"/items/{folder_id}/children"
-            )
-            while url:
-                r = await c.get(url, headers=_headers())
-                if r.status_code == 404:
+    async def discover_recordings_folder_ids(
+        client: httpx.AsyncClient,
+    ) -> list[str]:
+        root_url = f"{drive_url}/root/children?{_FOLDER_METADATA_SELECT}"
+        queue: list[tuple[str, int]] = [(root_url, 0)]
+        queued_folder_ids: set[str] = set()
+        recording_folder_ids: list[str] = []
+        recording_folder_id_set: set[str] = set()
+        request_count = 0
+        folder_count = 0
+
+        queue_index = 0
+        while queue_index < len(queue):
+            url, parent_depth = queue[queue_index]
+            queue_index += 1
+            seen_page_urls: set[str] = set()
+
+            while url and url not in seen_page_urls:
+                if request_count >= RECORDINGS_TRAVERSAL_MAX_REQUESTS:
+                    logger.warning(
+                        "Stopped OneDrive folder traversal at request limit %s",
+                        RECORDINGS_TRAVERSAL_MAX_REQUESTS,
+                    )
+                    return recording_folder_ids
+                seen_page_urls.add(url)
+                request_count += 1
+                response = await client.get(url, headers=_headers())
+                if response.status_code == 404:
                     break
-                r.raise_for_status()
-                data = r.json()
+                response.raise_for_status()
+                data = response.json()
+
                 for item in data.get("value", []):
-                    if item.get("name", "").endswith(".mp4") and item.get("id"):
-                        recordings_by_id[item["id"]] = item
+                    if item.get("folder") is None:
+                        continue
+                    if folder_count >= RECORDINGS_TRAVERSAL_MAX_FOLDERS:
+                        logger.warning(
+                            "Stopped OneDrive folder traversal at folder limit %s",
+                            RECORDINGS_TRAVERSAL_MAX_FOLDERS,
+                        )
+                        return recording_folder_ids
+                    folder_count += 1
+
+                    folder_id = item.get("id")
+                    if not folder_id:
+                        continue
+                    item_depth = parent_depth + 1
+                    if item.get("name", "").casefold() == "recordings":
+                        if folder_id not in recording_folder_id_set:
+                            recording_folder_id_set.add(folder_id)
+                            recording_folder_ids.append(folder_id)
+                    elif (
+                        item_depth < RECORDINGS_TRAVERSAL_MAX_DEPTH
+                        and folder_id not in queued_folder_ids
+                    ):
+                        queued_folder_ids.add(folder_id)
+                        queue.append((
+                            f"{drive_url}/items/{folder_id}/children"
+                            f"?{_FOLDER_METADATA_SELECT}",
+                            item_depth,
+                        ))
+
                 url = data.get("@odata.nextLink")
+
+        return recording_folder_ids
+
+    recordings_by_id: dict[str, dict] = {}
+    async with httpx.AsyncClient(timeout=30) as c:
+        await collect_mp4_children(
+            c,
+            f"{drive_url}/root:/Recordings:/children",
+            recordings_by_id,
+        )
+        await collect_mp4_children(
+            c,
+            f"{drive_url}/root:/Documents/Recordings:/children",
+            recordings_by_id,
+        )
+
+        for folder_id in await discover_recordings_folder_ids(c):
+            await collect_mp4_children(
+                c,
+                f"{drive_url}/items/{folder_id}/children",
+                recordings_by_id,
+            )
 
     return list(recordings_by_id.values())
 

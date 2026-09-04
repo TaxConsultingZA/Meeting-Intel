@@ -42,9 +42,10 @@ export default function RecordingJobs({ token, meetingId, onChanged }: { token: 
     {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
     {jobs.map(job => <div key={job.job_id} className="border-t py-3 text-sm space-y-2">
       {!meetingId && (job.meeting_id ? <Link className="font-medium underline" href={`/meetings/${job.meeting_id}`}>{job.title}</Link> : <p>{job.title}</p>)}
-      <StateBadge state={job.phase} />
-      {job.phase === "queued" && !job.processing_enabled && <p className="text-xs text-amber-800">Queued — processing is paused in staging. No paid transcription will run.</p>}
-      {job.phase === "cancel_requested" && <p className="text-xs text-amber-800">Waiting for the current operation to stop. Saved data will be kept.</p>}
+      <StateBadge state={job.processing_status} />
+      {job.processing_status === "completed" && job.review_status && <div className="flex items-center gap-1 text-xs text-[#6b7280]">Review: <StateBadge state={job.review_status} /></div>}
+      {job.processing_status === "queued" && !job.processing_enabled && <p className="text-xs text-amber-800">Queued — processing is paused in staging. No paid transcription will run.</p>}
+      {job.processing_status === "cancel_requested" && <p className="text-xs text-amber-800">Waiting for the current operation to stop. Saved data will be kept.</p>}
       {job.error && <p className="text-xs text-red-700">{job.error}</p>}
       <JobControls job={job} token={token} onChanged={async () => { await refresh(); await onChanged?.(); }} />
     </div>)}

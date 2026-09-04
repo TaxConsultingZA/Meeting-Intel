@@ -31,24 +31,36 @@ def db_for(job, meeting=None):
     return db
 
 
-@pytest.mark.parametrize("status,phase", [("pending", "queued"), ("processing", "processing"),
+@pytest.mark.parametrize("status,processing_status", [("pending", "queued"), ("processing", "processing"),
     ("failed", "failed"), ("completed", "completed"), ("cancelled", "cancelled")])
-def test_job_api_status_mapping(status, phase):
+def test_job_api_status_mapping(status, processing_status):
     out = api.job_out(row(status=status), None, "owner@example.test")
-    assert out["phase"] == phase
+    assert out["processing_status"] == processing_status
+    assert out["phase"] == processing_status
+    assert out["review_status"] is None
 
 
-@pytest.mark.parametrize("phase", [ProcessingState.downloading, ProcessingState.transcribing,
-    ProcessingState.extracting, ProcessingState.awaiting_review, ProcessingState.approved, ProcessingState.sent])
-def test_real_pipeline_phase_mapping(phase):
-    meeting = SimpleNamespace(id=uuid4(), title="Meeting", state=phase)
-    status = "processing" if phase in (ProcessingState.downloading, ProcessingState.transcribing, ProcessingState.extracting) else "completed"
-    assert api.job_out(row(status=status), meeting, "owner@example.test")["phase"] == phase.value
+@pytest.mark.parametrize("processing_status", [ProcessingState.downloading, ProcessingState.transcribing,
+    ProcessingState.extracting])
+def test_real_pipeline_processing_status_mapping(processing_status):
+    meeting = SimpleNamespace(id=uuid4(), title="Meeting", state=processing_status)
+    out = api.job_out(row(status="processing"), meeting, "owner@example.test")
+    assert out["processing_status"] == processing_status.value
+    assert out["review_status"] is None
+
+
+@pytest.mark.parametrize("review_status", [ProcessingState.awaiting_review, ProcessingState.approved, ProcessingState.sent])
+def test_completed_processing_keeps_review_status_separate(review_status):
+    meeting = SimpleNamespace(id=uuid4(), title="Meeting", state=review_status)
+    out = api.job_out(row(status="completed"), meeting, "owner@example.test")
+    assert out["processing_status"] == "completed"
+    assert out["phase"] == "completed"
+    assert out["review_status"] == review_status.value
 
 
 def test_cancel_requested_is_not_cancelled():
     out = api.job_out(row(status="processing", cancel_requested_at=datetime.now(timezone.utc)), None, "owner@example.test")
-    assert out["phase"] == "cancel_requested" and not out["can_cancel"]
+    assert out["processing_status"] == "cancel_requested" and not out["can_cancel"]
 
 
 @pytest.mark.parametrize("method", [api.cancel_job, api.retry_job])

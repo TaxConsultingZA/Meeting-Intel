@@ -16,23 +16,27 @@ router = APIRouter()
 
 
 def job_out(job, meeting, upn):
-    phase = job.status
+    processing_status = job.status
     if job.status == "pending":
-        phase = "queued"
+        processing_status = "queued"
     elif job.status == "processing":
-        phase = "cancel_requested" if job.cancel_requested_at else (
+        processing_status = "cancel_requested" if job.cancel_requested_at else (
             meeting.state.value if meeting and meeting.state in (
                 ProcessingState.downloading, ProcessingState.transcribing, ProcessingState.extracting,
             ) else "processing")
-    elif job.status == "completed" and meeting and meeting.state in (
+    review_status = meeting.state.value if job.status == "completed" and meeting and meeting.state in (
         ProcessingState.awaiting_review, ProcessingState.approved, ProcessingState.sent,
-    ):
-        phase = meeting.state.value
+    ) else None
     owner = job.owner_upn.lower() == upn.lower()
     return dict(job_id=str(job.id), drive_item_id=job.drive_item_id,
                 meeting_id=str(meeting.id) if meeting else None,
                 title=meeting.title if meeting else "Recording queued for import",
-                status=job.status, phase=phase, attempts=job.attempts, max_attempts=job.max_attempts,
+                status=job.status,
+                processing_status=processing_status,
+                review_status=review_status,
+                # Compatibility for older clients; phase is now processing-only.
+                phase=processing_status,
+                attempts=job.attempts, max_attempts=job.max_attempts,
                 error=public_job_error(job.last_error),
                 can_retry=owner and job.status == "failed",
                 can_cancel=owner and job.status in ("pending", "processing") and not job.cancel_requested_at,

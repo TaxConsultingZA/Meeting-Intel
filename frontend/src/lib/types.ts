@@ -16,6 +16,19 @@ export type ProcessingState =
   | "processing"
   | "completed";
 
+export type RecordingProcessingStatus =
+  | "queued"
+  | "processing"
+  | "downloading"
+  | "transcribing"
+  | "extracting"
+  | "cancel_requested"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type MeetingReviewStatus = "awaiting_review" | "approved" | "sent";
+
 /** Confidence level the AI extractor assigns to each identified action item. */
 export type Confidence = "high" | "medium" | "low";
 
@@ -204,7 +217,10 @@ export interface RecordingJobOut {
   meeting_id: string | null;
   title: string | null;
   status: string;
-  phase: ProcessingState;
+  processing_status: RecordingProcessingStatus;
+  review_status: MeetingReviewStatus | null;
+  /** @deprecated Compatibility alias for processing_status. */
+  phase: RecordingProcessingStatus;
   attempts: number;
   max_attempts: number;
   error: string | null;

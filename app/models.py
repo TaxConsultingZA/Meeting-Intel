@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     String, Text, DateTime, ForeignKey, Enum as SAEnum, UniqueConstraint, Boolean, Integer,
-    Index, text
+    Index, text, CheckConstraint
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -173,6 +173,30 @@ class RecordingJob(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class RecordingProcessingRequest(Base):
+    __tablename__ = "recording_processing_requests"
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'approved', 'denied')", name="ck_processing_request_status"),
+        Index("uq_processing_request_pending", "requester_user_id", "occurrence_key", unique=True,
+              postgresql_where=text("status = 'pending'")),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    requester_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("registered_users.id"), index=True)
+    recording_owner_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("registered_users.id"), index=True)
+    event_id: Mapped[str] = mapped_column(String(512))
+    occurrence_key: Mapped[str] = mapped_column(String(64), index=True)
+    event_snapshot: Mapped[dict] = mapped_column(JSONB)
+    drive_id: Mapped[str] = mapped_column(String(255))
+    drive_item_id: Mapped[str] = mapped_column(String(255), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("registered_users.id"), nullable=True)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("recording_jobs.id"), nullable=True)
+    meeting_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("meetings.id"), nullable=True)
 
 
 class SyncedCalendarEvent(Base):

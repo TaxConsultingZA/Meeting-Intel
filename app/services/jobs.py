@@ -19,6 +19,7 @@ async def enqueue_recording_job(
     owner_upn: str,
     source: str,
     etag: str | None = None,
+    commit: bool = True,
 ) -> bool:
     """Atomically claim a new Graph item and persist its processing job."""
     claimed = await claim_item(
@@ -32,7 +33,10 @@ async def enqueue_recording_job(
         owner_upn=owner_upn,
         source=source,
     ))
-    await db.commit()
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
     return True
 
 

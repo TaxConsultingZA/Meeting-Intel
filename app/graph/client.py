@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import httpx
 from .auth import get_token
@@ -83,7 +84,7 @@ async def get_user_photo(user_upn: str) -> tuple[bytes, str]:
         return r.content, r.headers.get("content-type", "image/jpeg")
 
 
-async def list_recordings_folder(drive_id: str) -> list[dict]:
+async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list[dict]:
     """List mp4 files in every Recordings folder in the given drive.
 
     Known paths are checked first.  A bounded two-level traversal then finds
@@ -116,7 +117,7 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
             response = await client.get(url, headers=_headers())
             if response.status_code == 404:
                 return
-            if response.status_code == 403 and ignore_forbidden:
+            if response.status_code == 403 and ignore_forbidden and not strict:
                 logger.warning(
                     "Skipped inaccessible optional OneDrive branch: %s",
                     branch_name,
@@ -148,6 +149,8 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
 
             while url and url not in seen_page_urls:
                 if request_count >= RECORDINGS_TRAVERSAL_MAX_REQUESTS:
+                    if strict:
+                        raise RuntimeError("OneDrive discovery incomplete")
                     logger.warning(
                         "Stopped OneDrive folder traversal at request limit %s",
                         RECORDINGS_TRAVERSAL_MAX_REQUESTS,
@@ -158,7 +161,7 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
                 response = await client.get(url, headers=_headers())
                 if response.status_code == 404:
                     break
-                if response.status_code == 403 and parent_depth > 0:
+                if response.status_code == 403 and parent_depth > 0 and not strict:
                     logger.warning(
                         "Skipped inaccessible optional OneDrive traversal branch"
                     )
@@ -170,6 +173,8 @@ async def list_recordings_folder(drive_id: str) -> list[dict]:
                     if item.get("folder") is None:
                         continue
                     if folder_count >= RECORDINGS_TRAVERSAL_MAX_FOLDERS:
+                        if strict:
+                            raise RuntimeError("OneDrive discovery incomplete")
                         logger.warning(
                             "Stopped OneDrive folder traversal at folder limit %s",
                             RECORDINGS_TRAVERSAL_MAX_FOLDERS,
@@ -294,7 +299,7 @@ async def send_mail(sender: str, to_upns: list[str], subject: str, html_body: st
         r.raise_for_status()
 
 
-async def get_upcoming_calendar_events(upn: str, days: int = 7) -> list[dict]:
+async def get_upcoming_calendar_events(upn: str, days: int = 7, *, include_offline: bool = False) -> list[dict]:
     """Return the user's online meetings (Teams) for the next `days` days."""
     if _mock_enabled():
         start = datetime.now(timezone.utc) + timedelta(hours=2)
@@ -325,15 +330,50 @@ async def get_upcoming_calendar_events(upn: str, days: int = 7) -> list[dict]:
         f"{settings.graph_base}/users/{upn}/calendarView"
         f"?startDateTime={start.strftime(fmt)}"
         f"&endDateTime={end.strftime(fmt)}"
-        f"&$select=id,subject,start,end,originalStartTimeZone,organizer,attendees,isOnlineMeeting,onlineMeetingProvider,location"
+        f"&$select=id,iCalUId,isCancelled,subject,start,end,originalStartTimeZone,organizer,attendees,isOnlineMeeting,onlineMeetingProvider,location"
         f"&$orderby=start/dateTime"
         f"&$top=50"
     )
+    events = await _calendar_pages(url)
+    return events if include_offline else [e for e in events if e.get("isOnlineMeeting")]
+
+
+async def _calendar_pages(url: str) -> list[dict]:
+    events: list[dict] = []
+    seen: set[str] = set()
+    async with httpx.AsyncClient(timeout=30) as c:
+        while url:
+            if url in seen or not url.startswith(settings.graph_base.rstrip("/") + "/"):
+                raise RuntimeError("Invalid Calendar pagination")
+            seen.add(url)
+            r = await c.get(url, headers={**_headers(), "Prefer": 'outlook.timezone="UTC"'})
+            r.raise_for_status()
+            data = r.json()
+            events.extend(data.get("value", []))
+            url = data.get("@odata.nextLink")
+    return events
+
+
+async def get_calendar_event(upn: str, event_id: str) -> dict:
+    """Read an event in the authenticated mailbox, including after the recent window."""
+    if _mock_enabled():
+        events = await get_upcoming_calendar_events(upn, include_offline=True)
+        return next((e for e in events if e["id"] == event_id), {})
+    url = f"{settings.graph_base}/users/{quote(upn, safe='')}/events/{quote(event_id, safe='')}"
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.get(url, headers={**_headers(), "Prefer": 'outlook.timezone="UTC"'})
         r.raise_for_status()
-        events = r.json().get("value", [])
-    return [e for e in events if e.get("isOnlineMeeting")]
+        return r.json()
+
+
+async def get_calendar_window(upn: str, start: datetime, end: datetime) -> list[dict]:
+    if _mock_enabled():
+        return await get_upcoming_calendar_events(upn, include_offline=True)
+    return await _calendar_pages(
+        f"{settings.graph_base}/users/{quote(upn, safe='')}/calendarView"
+        f"?startDateTime={quote(start.isoformat())}&endDateTime={quote(end.isoformat())}"
+        "&$select=id,iCalUId,isCancelled,subject,start,end,organizer,attendees&$top=100"
+    )
 
 
 async def get_event_attendees(drive_id: str, drive_item_id: str) -> list[str]:

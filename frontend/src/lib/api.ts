@@ -1,4 +1,5 @@
 import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, AppNotification, RegisteredUser, BusinessUnit, SyncState, RecordingJobOut } from "./types";
+import type { RecentMeeting, RecordingProcessingRequest } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -165,6 +166,32 @@ export async function getNotifications(upn: string): Promise<AppNotification[]> 
 /** Fetch the user's upcoming and in-progress Teams calendar events (next 7 days). */
 export async function getUpcomingMeetings(upn: string): Promise<CalendarEvent[]> {
   return apiFetch<CalendarEvent[]>("/calendar/upcoming", upn);
+}
+
+export function getRecentMeetings(token: string): Promise<RecentMeeting[]> {
+  return apiFetch("/calendar/recent", token);
+}
+
+export function getProcessingRequests(token: string): Promise<RecordingProcessingRequest[]> {
+  return apiFetch("/recording-processing-requests", token);
+}
+
+export function requestRecordingProcessing(eventId: string, token: string): Promise<RecordingProcessingRequest> {
+  return apiFetch("/recording-processing-requests", token, {
+    method: "POST", body: JSON.stringify({ event_id: eventId }),
+  });
+}
+
+export function decideRecordingProcessing(id: string, approved: boolean, token: string): Promise<RecordingProcessingRequest> {
+  return apiFetch(`/recording-processing-requests/${encodeURIComponent(id)}/decision`, token, {
+    method: "POST", body: JSON.stringify({ approved }),
+  });
+}
+
+export function processRecentMeeting(eventId: string, token: string): Promise<{ ok: boolean }> {
+  return apiFetch("/calendar/recent/process", token, {
+    method: "POST", body: JSON.stringify({ event_id: eventId }),
+  });
 }
 
 /** List MP4 files in the user's OneDrive Recordings folder with their current import status. */

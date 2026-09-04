@@ -408,7 +408,8 @@ async def process_recording(
                             if transcript_segments else
                             [TranscriptSegment("Transcript", meeting.transcript, 0, 0)])
             else:
-                await _send_popia_notice(meeting, extra)
+                if not (meeting.extracted_json or {}).get("t5_calendar_event"):
+                    await _send_popia_notice(meeting, extra)
                 meeting.state = ProcessingState.downloading
                 await commit()
                 video_path = os.path.join(tmp, "rec.mp4")
@@ -416,7 +417,8 @@ async def process_recording(
                 meeting.state = ProcessingState.transcribing
                 await commit()
                 all_upns = normalize_upns([*extra, meeting.organizer_upn, owner_upn])
-                await _send_processing_started(meeting, all_upns)
+                if not (meeting.extracted_json or {}).get("t5_calendar_event"):
+                    await _send_processing_started(meeting, all_upns)
                 segments = await get_transcriber().transcribe(video_path)
                 meeting.transcript = "\n".join(f"[{s.speaker}] {s.text}" for s in segments)
                 transcript_segments = [
@@ -439,6 +441,17 @@ async def process_recording(
             )
             await commit()  # Stop here if cancellation arrived during extraction.
             meeting.summary = result.summary
+            # An owner can approve a request while an existing job is running.
+            # Re-read the verified binding; don't let a stale worker object erase it.
+            from ..models import RecordingProcessingRequest
+            approved_request = await db.scalar(select(RecordingProcessingRequest).where(
+                RecordingProcessingRequest.drive_id == drive_id,
+                RecordingProcessingRequest.drive_item_id == drive_item_id,
+                RecordingProcessingRequest.status == "approved",
+            ).order_by(RecordingProcessingRequest.decided_at.desc()).limit(1))
+            if approved_request:
+                from app.services.cross_user_recordings import apply_calendar_access
+                await apply_calendar_access(db, meeting, approved_request.event_snapshot)
             # Match the imported recording to the organiser's Outlook event. Doing
             # this before the final commit ensures the review page receives the real
             # meeting date, attendee list and speaker-name candidates.
@@ -484,7 +497,9 @@ async def process_recording(
                     approved=False,
                 ))
 
-            all_participant_upns = set(extra)
+            # Enrichment may have discovered Calendar attendees after the initial
+            # file metadata read. Use the final list for row-level view access.
+            all_participant_upns = set(normalize_upns(meeting.attendees_raw) or extra)
             if meeting.organizer_upn:
                 all_participant_upns.add(meeting.organizer_upn)
             if owner_upn:
@@ -502,6 +517,10 @@ async def process_recording(
                     MeetingParticipant.meeting_id == meeting.id
                 )
             ))
+            existing_participants = list(await db.scalars(select(MeetingParticipant).where(
+                MeetingParticipant.meeting_id == meeting.id)))
+            for participant in existing_participants:
+                participant.is_organizer = participant.user_upn.lower() == (meeting.organizer_upn or "").lower()
             participant_upns = registered_upns  # only registered users get visibility
             for upn in participant_upns:
                 if upn not in existing_upns:
@@ -513,7 +532,8 @@ async def process_recording(
 
             meeting.state = ProcessingState.awaiting_review
             await commit(complete=True)
-            await _send_ready_for_review(meeting, len(participant_upns))
+            if not (meeting.extracted_json or {}).get("t5_calendar_event"):
+                await _send_ready_for_review(meeting, len(participant_upns))
 
     except JobCancelled:
         await db.rollback()

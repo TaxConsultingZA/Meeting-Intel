@@ -21,6 +21,11 @@ async def enrich_recording_from_outlook(
     drive_item_id: str,
     candidate_upns: list[str] | None = None,
 ) -> None:
+    # T5's owner-approved Calendar binding must not be replaced by fuzzy matching.
+    verified = (meeting.extracted_json or {}).get("t5_calendar_event")
+    if verified:
+        apply_calendar_event(meeting, verified)
+        return
     item = await graph.get_drive_item(drive_id, drive_item_id)
     recorded_at = recording_datetime(item.get("name", ""), item)
     if recorded_at and not meeting.recorded_at:
@@ -50,7 +55,14 @@ async def enrich_recording_from_outlook(
         logger.info("No Outlook event matched OneDrive recording %s", drive_item_id)
         return
 
+    apply_calendar_event(meeting, event)
+
+
+def apply_calendar_event(meeting: Any, event: dict) -> None:
     emails, names = event_people(event)
+    organizer = ((event.get("organizer") or {}).get("emailAddress", {}).get("address") or "").strip().lower()
+    if organizer:
+        meeting.organizer_upn = organizer
     people = [{"email": email, "name": names.get(email, email)} for email in emails]
     candidates: list[dict[str, str]] = []
     seen: set[str] = set()

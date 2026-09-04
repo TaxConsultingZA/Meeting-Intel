@@ -7,6 +7,7 @@ import StateBadge from "@/components/state-badge";
 import LocalDateTime, { useUserTimeZone } from "@/components/local-date-time";
 import { formatEventTime, parseInstant } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
+import RecentMeetings from "@/components/recent-meetings";
 import { getAllMeetings, requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
 import type { MeetingOut, ProcessingState, CalendarEvent, SyncState } from "@/lib/types";
 
@@ -29,7 +30,7 @@ interface Props {
   loadErrors: string[];
 }
 
-type Tab = "upcoming" | "in_progress" | "review" | "old_meetings" | "historical" | "cancelled";
+type Tab = "upcoming" | "recent" | "in_progress" | "review" | "old_meetings" | "historical" | "cancelled";
 
 function conciseMicrosoftError(error: string): string {
   const lower = error.toLowerCase();
@@ -183,6 +184,7 @@ export default function DashboardClient({ meetings: initialMeetings, upcoming, h
       {/* Tabs */}
       <div className="flex flex-wrap border-b-2 border-[#dde1e8] mb-6 gap-0">
         {([
+          { id: "recent" as Tab, label: "Recent Meetings", count: null },
           { id: "upcoming"    as Tab, label: "Upcoming Meetings",         count: upcomingEvents.length                          },
           { id: "in_progress" as Tab, label: "In Progress",               count: inProgressEvents.length + pipelineActive.length },
           { id: "review"      as Tab, label: "Awaiting Review",           count: pendingReview.length                           },
@@ -211,6 +213,7 @@ export default function DashboardClient({ meetings: initialMeetings, upcoming, h
       </div>
 
       {/* Upcoming Meetings */}
+      {tab === "recent" && <RecentMeetings token={accessToken} isSubscribed={isSubscribed} />}
       {tab === "upcoming" && (
         upcomingEvents.length === 0
           ? <EmptyState

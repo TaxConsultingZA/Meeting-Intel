@@ -30,6 +30,8 @@ def public_job_error(error):
     if not error:
         return None
     value = str(error).lower()
+    if "reprocess conflict" in value:
+        return "Reprocess stopped because the meeting was edited or approved. Existing results were kept."
     if "cancel" in value:
         return "Recording processing was cancelled. Saved meeting data has been kept."
     if "disabled" in value or "configuration" in value or "api_key" in value:

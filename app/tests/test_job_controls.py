@@ -17,7 +17,8 @@ from app.queue import worker
 def row(**overrides):
     data = dict(id=uuid4(), status="pending", drive_item_id="item", drive_id="drive",
                 owner_upn="owner@example.test", cancel_requested_at=None, lease_token=uuid4(),
-                locked_at=datetime.now(timezone.utc), last_error=None, attempts=1, max_attempts=3)
+                locked_at=datetime.now(timezone.utc), last_error=None, attempts=1, max_attempts=3,
+                source="manual")
     data.update(overrides)
     return SimpleNamespace(**data)
 
@@ -63,6 +64,12 @@ def test_cancel_requested_is_not_cancelled():
     assert out["processing_status"] == "cancel_requested" and not out["can_cancel"]
 
 
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_failed_and_cancelled_jobs_are_retryable_by_owner(status):
+    out = api.job_out(row(status=status), None, "owner@example.test")
+    assert out["can_retry"] is True
+
+
 @pytest.mark.parametrize("method", [api.cancel_job, api.retry_job])
 async def test_other_attendee_cannot_control_recording(method):
     job = row(status="failed")
@@ -99,8 +106,11 @@ async def test_terminal_job_cancel_rejected(status):
 
 
 @pytest.mark.parametrize("queued", [True, False])
-async def test_retry_reuses_trusted_queue_ids_preserves_transcript_and_handles_dedup(monkeypatch, queued):
-    job = row(status="failed")
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+async def test_retry_reuses_trusted_queue_ids_preserves_transcript_and_handles_dedup(
+    monkeypatch, queued, status,
+):
+    job = row(status=status)
     meeting = SimpleNamespace(state=ProcessingState.failed, transcript="original raw", extracted_json={"kept": True})
     db = db_for(job, meeting)
     enqueue = AsyncMock(return_value=queued)
@@ -114,6 +124,13 @@ async def test_retry_reuses_trusted_queue_ids_preserves_transcript_and_handles_d
         db.rollback.assert_awaited_once()
     assert meeting.transcript == "original raw" and meeting.extracted_json == {"kept": True}
     assert enqueue.call_args.kwargs["drive_id"] == "drive"
+
+
+async def test_completed_job_cannot_retry():
+    job = row(status="completed")
+    with pytest.raises(HTTPException) as exc:
+        await api.retry_job(job.id, db_for(job), job.owner_upn)
+    assert exc.value.status_code == 409
 
 
 async def test_cancellation_fence_prevents_result_commit():

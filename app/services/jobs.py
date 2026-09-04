@@ -42,6 +42,7 @@ async def enqueue_retry_job(
     drive_item_id: str,
     drive_id: str,
     owner_upn: str,
+    source: str = "manual_retry",
 ) -> bool:
     """Persist a retry unless this item already has active queued work."""
     active = await db.scalar(
@@ -56,7 +57,7 @@ async def enqueue_retry_job(
         drive_item_id=drive_item_id,
         drive_id=drive_id,
         owner_upn=owner_upn,
-        source="manual_retry",
+        source=source,
         available_at=datetime.now(timezone.utc),
     ).on_conflict_do_nothing(
         index_elements=[RecordingJob.drive_item_id],

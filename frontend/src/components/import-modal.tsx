@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { X, FolderOpen, Loader2, CheckCircle2, Download, RefreshCw, AlertCircle, ExternalLink } from "lucide-react";
+import { X, FolderOpen, Loader2, CheckCircle2, Download, AlertCircle, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
 import LocalDateTime from "./local-date-time";
@@ -81,13 +81,14 @@ export default function ImportModal({ upn, onClose }: Props) {
   }
 
   async function handleReprocess(rec: AvailableRecording) {
+    if (!window.confirm("Reprocess this recording? The current review draft will remain available unless the new transcription and extraction finish successfully.")) return;
     setBusy((prev) => new Set(prev).add(rec.drive_item_id));
     try {
       await reprocessRecording(rec.drive_item_id, rec.drive_id, upn);
       toast.success(`"${rec.name.replace(/\.mp4$/i, "")}" requeued for processing`);
       await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Retry failed");
+      toast.error(e instanceof Error ? e.message : "Reprocess failed");
     } finally {
       setBusy((prev) => { const s = new Set(prev); s.delete(rec.drive_item_id); return s; });
     }
@@ -108,6 +109,11 @@ export default function ImportModal({ upn, onClose }: Props) {
     if (rec.job) {
       return <div className="flex items-center justify-end gap-3">
         <JobControls job={rec.job} token={upn} onChanged={refreshJobs} />
+        {rec.job.can_reprocess && <button
+          type="button"
+          onClick={() => handleReprocess(rec)}
+          className="text-xs font-semibold text-blue-800"
+        >Reprocess</button>}
         {rec.job.meeting_id && <Link href={`/meetings/${rec.job.meeting_id}`} onClick={onClose} className="text-xs text-blue-800 underline">View</Link>}
       </div>;
     }
@@ -124,26 +130,14 @@ export default function ImportModal({ upn, onClose }: Props) {
       );
     }
 
-    if (state === "failed") {
-      return (
-        <button
-          type="button"
-          onClick={() => handleReprocess(rec)}
-          className="inline-flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white text-[12.5px] font-semibold px-3 py-1.5 rounded transition-colors"
-        >
-          <RefreshCw size={13} /> Retry
-        </button>
-      );
-    }
-
-    if (state === "awaiting_review" && rec.meeting_id) {
+    if (state && (["awaiting_review", "approved", "sent"] as ProcessingState[]).includes(state) && rec.meeting_id) {
       return (
         <Link
           href={`/meetings/${rec.meeting_id}`}
           onClick={onClose}
           className="inline-flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white text-[12.5px] font-semibold px-3 py-1.5 rounded transition-colors"
         >
-          <ExternalLink size={13} /> Review
+          <ExternalLink size={13} /> View
         </Link>
       );
     }
@@ -165,12 +159,12 @@ export default function ImportModal({ upn, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl overflow-hidden">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl overflow-hidden">
         <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-6 py-5 flex items-center justify-between">
           <div>
             <h2 className="text-white font-semibold text-[15px]">Process a Past Recording</h2>
             <p className="text-white/60 text-[13px] mt-0.5">
-              Select an existing, untranscribed MP4 from your OneDrive Recordings folder
+              View or process MP4 recordings from your OneDrive Recordings folder
             </p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" className="text-white/60 hover:text-white transition-colors">
@@ -178,7 +172,7 @@ export default function ImportModal({ upn, onClose }: Props) {
           </button>
         </div>
 
-        <div className="max-h-[60vh] overflow-y-auto">
+        <div className="max-h-[60vh] overflow-auto">
           {loading && (
             <div className="flex flex-col items-center justify-center py-16 text-[#6b7280]">
               <Loader2 size={28} className="animate-spin mb-3 text-[#003366]" />
@@ -206,10 +200,10 @@ export default function ImportModal({ upn, onClose }: Props) {
           )}
 
           {!loading && !error && recordings.length > 0 && (
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[850px] text-sm">
               <thead>
                 <tr>
-                  {["Recording", "Date", "Size", "Status", ""].map((h) => (
+                  {["Recording", "Date", "Size", "Processing", "Review", "Actions"].map((h) => (
                     <th key={h} className="bg-[#f8fafc] text-[#374151] text-xs font-semibold px-4 py-2.5 text-left border-b border-[#dde1e8] first:pl-6 last:pr-6">
                       {h}
                     </th>
@@ -236,11 +230,16 @@ export default function ImportModal({ upn, onClose }: Props) {
                       {formatBytes(rec.size)}
                     </td>
                     <td className="px-4 py-3 border-b border-[#dde1e8] text-[12.5px]">
-                      {rec.job ? <StateBadge state={rec.job.phase} /> : rec.meeting_state ? (
+                      {rec.job ? <StateBadge state={rec.job.processing_status} /> : rec.meeting_state ? (
                         <span className={`font-medium ${rec.meeting_state === "failed" ? "text-red-600" : rec.meeting_state === "awaiting_review" ? "text-amber-600" : "text-[#6b7280]"}`}>
-                          {STATE_LABEL[rec.meeting_state]}
+                          {(["awaiting_review", "approved", "sent"] as ProcessingState[]).includes(rec.meeting_state) ? "Completed" : STATE_LABEL[rec.meeting_state]}
                         </span>
                       ) : "—"}
+                    </td>
+                    <td className="px-4 py-3 border-b border-[#dde1e8] text-[12.5px]">
+                      {rec.job?.review_status ? <StateBadge state={rec.job.review_status} />
+                        : rec.meeting_state && (["awaiting_review", "approved", "sent"] as ProcessingState[]).includes(rec.meeting_state)
+                          ? <StateBadge state={rec.meeting_state} /> : "—"}
                     </td>
                     <td className="px-4 py-3 pr-6 border-b border-[#dde1e8] text-right whitespace-nowrap">
                       {renderAction(rec)}

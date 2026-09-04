@@ -6,11 +6,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import get_db
-from ..models import ProcessedItem, Meeting, ProcessingState
+from ..models import ProcessedItem, RecordingJob, Meeting, ProcessingState
 from ..graph import client as graph
 from ..services.jobs import enqueue_recording_job, enqueue_retry_job
 from ..services.sync_state import record_sync_result
 from ..services.job_control import public_job_error
+from ..services.reprocessing import (
+    MANUAL_REPROCESS_SOURCE,
+    is_clean_reprocess_candidate,
+    is_meeting_organizer,
+)
 from .deps import require_subscribed
 
 settings = get_settings()
@@ -121,22 +126,24 @@ async def reprocess_recording(
     db: AsyncSession = Depends(get_db),
     upn: str = Depends(require_subscribed),
 ):
-    """Re-trigger processing for a failed recording and ensure caller is a participant."""
+    """Queue a fresh transcription for an untouched completed review draft."""
     m = await db.scalar(
         select(Meeting)
         .where(Meeting.drive_item_id == req.drive_item_id)
-        .options(selectinload(Meeting.participants))
+        .options(selectinload(Meeting.participants), selectinload(Meeting.action_items))
+        .with_for_update()
     )
     if not m:
         raise HTTPException(status_code=404, detail="Meeting record not found")
-    if m.state not in (ProcessingState.failed, ProcessingState.queued):
-        raise HTTPException(status_code=409, detail=f"Cannot reprocess: state is {m.state}")
+    if m.state in (ProcessingState.approved, ProcessingState.sent):
+        raise HTTPException(status_code=409, detail="Approved or sent meeting results cannot be reprocessed")
+    if m.state != ProcessingState.awaiting_review:
+        raise HTTPException(status_code=409, detail=f"Cannot reprocess: review state is {m.state.value}")
 
-    is_organizer = (m.organizer_upn or "").lower() == upn or any(
-        p.user_upn.lower() == upn and p.is_organizer for p in m.participants
-    )
-    if not is_organizer:
+    if not is_meeting_organizer(m, upn):
         raise HTTPException(403, "Only the meeting organiser can reprocess this recording")
+    if not is_clean_reprocess_candidate(m):
+        raise HTTPException(409, "Meeting results were edited or cannot be verified as untouched")
 
     ledger = await db.scalar(
         select(ProcessedItem).where(ProcessedItem.drive_item_id == req.drive_item_id)
@@ -144,15 +151,21 @@ async def reprocess_recording(
     if not ledger or not ledger.drive_id:
         raise HTTPException(409, "Original recording drive is unavailable")
     await _verify_owned_drive_item(upn, ledger.drive_id, req.drive_item_id)
+    completed_job = await db.scalar(
+        select(RecordingJob.id).where(
+            RecordingJob.drive_item_id == req.drive_item_id,
+            RecordingJob.status == "completed",
+        ).limit(1)
+    )
+    if not completed_job:
+        raise HTTPException(409, "A completed recording job could not be verified")
 
-    m.state = ProcessingState.queued
-    m.error = None
-    await db.flush()
     queued = await enqueue_retry_job(
         db,
         drive_item_id=req.drive_item_id,
         drive_id=ledger.drive_id,
         owner_upn=upn,
+        source=MANUAL_REPROCESS_SOURCE,
     )
     if not queued:
         await db.rollback()

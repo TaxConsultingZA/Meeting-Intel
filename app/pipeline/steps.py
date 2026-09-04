@@ -3,16 +3,155 @@ import tempfile
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ..config import get_settings
-from ..models import Meeting, ActionItem, MeetingParticipant, ProcessingState, RegisteredUser
+from ..models import Meeting, ActionItem, MeetingParticipant, ProcessingState, RecordingJob, RegisteredUser
 from ..graph import client as graph
 from ..utils.identity import normalize_upn, normalize_upns
 from .transcribe import get_transcriber, TranscriptSegment
 from .extract import get_extractor, require_transcript, validate_extraction
 from ..services.job_control import guarded_commit, JobCancelled, public_job_error
+from ..services.reprocessing import (
+    MANUAL_REPROCESS_SOURCE,
+    is_clean_reprocess_candidate,
+    result_fingerprint,
+)
 
 settings = get_settings()
+
+
+class ReprocessConflict(Exception):
+    """A completed result changed before its safe replacement could commit."""
+
+
+async def _stop_reprocess_conflict(db, job_id, lease_token, detail: str) -> None:
+    """End a conflicted reprocess without letting normal retry overwrite user work."""
+    job = await db.scalar(select(RecordingJob).where(
+        RecordingJob.id == job_id,
+        RecordingJob.status == "processing",
+        RecordingJob.lease_token == lease_token,
+    ).with_for_update())
+    if job is None:
+        await db.rollback()
+        raise JobCancelled("Cancellation requested or recording lease lost")
+    job.status = "failed"
+    job.locked_at = None
+    job.lease_token = None
+    job.last_error = f"reprocess conflict: {detail}"
+    await db.commit()
+    raise ReprocessConflict(job.last_error)
+
+
+async def _commit_reprocess_result(
+    db, *, job_id, lease_token, meeting_id, baseline_fingerprint,
+    transcript, extracted_json, result,
+) -> Meeting:
+    """Fence the job, recheck the old draft, and atomically install new output."""
+    job = await db.scalar(select(RecordingJob).where(
+        RecordingJob.id == job_id,
+        RecordingJob.status == "processing",
+        RecordingJob.lease_token == lease_token,
+        RecordingJob.cancel_requested_at.is_(None),
+    ).with_for_update().execution_options(populate_existing=True))
+    if job is None:
+        await db.rollback()
+        raise JobCancelled("Cancellation requested or recording lease lost")
+
+    meeting = await db.scalar(
+        select(Meeting)
+        .where(Meeting.id == meeting_id)
+        .options(selectinload(Meeting.action_items))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        meeting is None
+        or not is_clean_reprocess_candidate(meeting)
+        or result_fingerprint(meeting) != baseline_fingerprint
+    ):
+        job.status = "failed"
+        job.locked_at = None
+        job.lease_token = None
+        job.last_error = "reprocess conflict: meeting results changed during processing"
+        await db.commit()
+        raise ReprocessConflict(job.last_error)
+
+    meeting.transcript = transcript
+    meeting.summary = result.summary
+    meeting.extracted_json = extracted_json
+    meeting.error = None
+    meeting.state = ProcessingState.awaiting_review
+    await db.execute(delete(ActionItem).where(ActionItem.meeting_id == meeting.id))
+    for ai in result.action_items:
+        db.add(ActionItem(
+            meeting_id=meeting.id,
+            task=ai.action or ai.task,
+            owner=ai.assigned_to or ai.owner,
+            deadline_text=ai.due_date or ai.deadline_text,
+            deadline_iso=ai.deadline_iso,
+            confidence=ai.confidence,
+            source_quote=ai.source_quote,
+            raw=ai.model_dump(),
+            approved=False,
+        ))
+    job.status = "completed"
+    job.last_error = None
+    job.locked_at = None
+    job.lease_token = None
+    await db.commit()
+    return meeting
+
+
+async def _reprocess_completed_recording(
+    db, meeting, drive_item_id, drive_id, *, job_id, lease_token,
+) -> None:
+    """Generate a fresh result off-row, retaining the current successful draft."""
+    if not is_clean_reprocess_candidate(meeting):
+        await _stop_reprocess_conflict(
+            db, job_id, lease_token, "meeting results are edited or no longer awaiting review"
+        )
+    baseline_fingerprint = result_fingerprint(meeting)
+    preserved_extracted = dict(meeting.extracted_json or {})
+    participant_count = len(meeting.participants or [])
+    meeting_id = meeting.id
+    recorded_at = meeting.recorded_at
+    await db.commit()  # Release the read transaction before external processing.
+
+    with tempfile.TemporaryDirectory() as tmp:
+        video_path = os.path.join(tmp, "rec.mp4")
+        await graph.download_drive_item(drive_id, drive_item_id, video_path)
+        segments = await get_transcriber().transcribe(video_path)
+        require_transcript(segments)
+        transcript = "\n".join(f"[{segment.speaker}] {segment.text}" for segment in segments)
+        result = validate_extraction(
+            await get_extractor().extract(segments),
+            transcript_only=settings.extractor_impl == "transcript_only",
+        )
+
+    extracted_json = preserved_extracted
+    extracted_json.pop("speaker_mappings", None)
+    extracted_json.update(result.model_dump())
+    extracted_json["raw_transcript"] = transcript
+    extracted_json["transcript_segments"] = [
+        {"speaker": segment.speaker, "text": segment.text,
+         "start": segment.start, "end": segment.end}
+        for segment in segments
+    ]
+    if recorded_at:
+        extracted_json["meeting_time"] = recorded_at.isoformat()
+
+    meeting = await _commit_reprocess_result(
+        db,
+        job_id=job_id,
+        lease_token=lease_token,
+        meeting_id=meeting_id,
+        baseline_fingerprint=baseline_fingerprint,
+        transcript=transcript,
+        extracted_json=extracted_json,
+        result=result,
+    )
+    await _send_ready_for_review(meeting, participant_count)
 
 _PROCESSING_STARTED_HTML = """
 <html><body style="font-family:Arial,sans-serif;color:#1a1a2e;max-width:600px;margin:0 auto;">
@@ -183,9 +322,26 @@ async def process_recording(
     async def commit(*, complete=False):
         await guarded_commit(db, job_id, lease_token, complete=complete)
 
+    is_reprocess = False
     if job_id is not None:
         await commit()
-    meeting = await db.scalar(select(Meeting).where(Meeting.drive_item_id == drive_item_id))
+        current_job = await db.scalar(select(RecordingJob).where(RecordingJob.id == job_id))
+        is_reprocess = getattr(current_job, "source", None) == MANUAL_REPROCESS_SOURCE
+    meeting_query = select(Meeting).where(Meeting.drive_item_id == drive_item_id)
+    if is_reprocess:
+        meeting_query = meeting_query.options(
+            selectinload(Meeting.action_items), selectinload(Meeting.participants)
+        )
+    meeting = await db.scalar(meeting_query)
+    if is_reprocess:
+        if meeting is None:
+            await _stop_reprocess_conflict(
+                db, job_id, lease_token, "the original completed meeting is unavailable"
+            )
+        await _reprocess_completed_recording(
+            db, meeting, drive_item_id, drive_id, job_id=job_id, lease_token=lease_token
+        )
+        return
     if meeting is not None and meeting.state in (
         ProcessingState.awaiting_review, ProcessingState.approved, ProcessingState.sent,
     ):

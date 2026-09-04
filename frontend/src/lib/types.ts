@@ -226,5 +226,6 @@ export interface RecordingJobOut {
   error: string | null;
   can_retry: boolean;
   can_cancel: boolean;
+  can_reprocess: boolean;
   processing_enabled: boolean;
 }

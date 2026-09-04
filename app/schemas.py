@@ -114,6 +114,12 @@ class EditAccessRequestOut(BaseModel):
     requested_at: datetime | None = None
 
 
+class CalendarParticipantOut(BaseModel):
+    name: str
+    email: str
+    is_organizer: bool = False
+
+
 class MeetingOut(BaseModel):
     """Full meeting representation returned by GET /reviews and GET /reviews/{id}."""
     id: str
@@ -124,6 +130,7 @@ class MeetingOut(BaseModel):
     transcript: str | None = None
     organizer_upn: str | None = None
     extracted_json: dict | None = None
+    calendar_participants: list[CalendarParticipantOut] = Field(default_factory=list)
     error: str | None = None
     email_recipients: list[str] = Field(default_factory=list)
     approved_recipients: list[str] = Field(default_factory=list)

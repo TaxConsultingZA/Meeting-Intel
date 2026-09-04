@@ -53,6 +53,12 @@ export interface ActionItemEdit {
 }
 
 /** Full meeting representation returned by the reviews API. */
+export interface CalendarParticipant {
+  name: string;
+  email: string;
+  is_organizer: boolean;
+}
+
 export interface MeetingOut {
   id: string;
   recorded_at?: string | null;
@@ -63,6 +69,7 @@ export interface MeetingOut {
   action_items: ActionItemOut[];
   // rich fields from extracted_json (may be absent on older records)
   extracted_json?: ExtractedJson | null;
+  calendar_participants: CalendarParticipant[];
   organizer_upn?: string | null;
   error?: string | null;
   email_recipients: string[];

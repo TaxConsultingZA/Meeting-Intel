@@ -272,7 +272,7 @@ export default function DashboardClient({ meetings: initialMeetings, upcoming, h
                         {formatUpn(m.organizer_upn) || "—"}
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px] text-center">
-                        {m.extracted_json?.attendees?.length ?? "—"}
+                        {m.calendar_participants.length}
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8]">
                         <StateBadge state={m.state} />
@@ -391,7 +391,7 @@ function MeetingCard({ meeting: m }: { meeting: MeetingOut }) {
               <Calendar size={12} className="shrink-0" /> {<LocalDateTime value={m.recorded_at ?? m.extracted_json?.meeting_time} />}
             </span>
             <span className="flex items-center gap-1 text-[#6b7280] text-[12.5px]">
-              <Users size={12} className="shrink-0" /> {m.extracted_json?.attendees?.length ?? 0} participants
+              <Users size={12} className="shrink-0" /> {m.calendar_participants.length} participants
             </span>
           </div>
           {m.organizer_upn && (

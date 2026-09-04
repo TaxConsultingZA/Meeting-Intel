@@ -19,7 +19,7 @@ from ..models import (
 from ..schemas import (
     MeetingOut, ActionItemOut, ActionItemEdit, ShareMeetingIn, ApproveMeetingIn,
     EmailPreviewOut, TranscriptEdit, SpeakerMappingIn, EditAccessDecisionIn,
-    EditAccessRequestOut, SendMeetingCopyIn,
+    EditAccessRequestOut, CalendarParticipantOut, SendMeetingCopyIn,
 )
 from ..graph import client as graph
 from ..email_templates import build_meeting_email
@@ -80,6 +80,52 @@ def _is_attendee_participant(m: Meeting, participant: MeetingParticipant | None)
     )
 
 
+def _calendar_participants(m: Meeting) -> list[CalendarParticipantOut]:
+    """Build the display list solely from durable Outlook attendee data."""
+    organizer_upn = normalize_upn(m.organizer_upn)
+    participants: dict[str, str] = {}
+
+    for raw in m.attendees_raw or []:
+        if isinstance(raw, dict):
+            email_address = raw.get("emailAddress") or {}
+            email = normalize_upn(
+                email_address.get("address")
+                or raw.get("email")
+                or raw.get("userPrincipalName")
+            )
+            name = str(email_address.get("name") or raw.get("name") or "").strip()
+        else:
+            email = normalize_upn(raw)
+            name = ""
+        if not email:
+            continue
+        name = " ".join(name.split())
+        if email not in participants or name:
+            participants[email] = name
+
+    if organizer_upn and organizer_upn not in participants:
+        participants[organizer_upn] = ""
+
+    def display_name(email: str, name: str) -> str:
+        if name:
+            return name
+        local_part = email.split("@", 1)[0]
+        return " ".join(
+            part[:1].upper() + part[1:]
+            for part in local_part.replace("_", ".").replace("-", ".").split(".")
+            if part
+        ) or email
+
+    return [
+        CalendarParticipantOut(
+            name=display_name(email, name),
+            email=email,
+            is_organizer=email == organizer_upn,
+        )
+        for email, name in participants.items()
+    ]
+
+
 def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
     """Convert a Meeting ORM instance to its Pydantic API output schema."""
     known_recipients = set(normalize_upns(m.attendees_raw))
@@ -122,6 +168,7 @@ def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
         id=str(m.id), title=m.title, state=m.state, summary=m.summary,
         transcript=m.transcript,
         organizer_upn=m.organizer_upn, extracted_json=m.extracted_json, error=public_job_error(m.error),
+        calendar_participants=_calendar_participants(m),
         recorded_at=m.recorded_at,
         email_recipients=sorted(known_recipients),
         approved_recipients=m.approved_recipients or [],

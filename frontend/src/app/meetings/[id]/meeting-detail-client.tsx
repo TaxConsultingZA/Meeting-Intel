@@ -205,7 +205,10 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             <div><span className="text-xs text-gray-500">Date</span><p className="text-sm"><LocalDateTime value={meeting.recorded_at ?? data.meeting_time} /></p></div>
             <MetaRow label="Platform"   value={data.platform ?? "Microsoft Teams"} />
             <MetaRow label="Organiser"  value={meeting.organizer_upn ?? "—"} />
-            <MetaRow label="Attendees"  value={data.attendees?.join(", ") ?? "—"} />
+            <MetaRow
+              label="Attendees"
+              value={meeting.calendar_participants.map((participant) => participant.name).join(", ") || "—"}
+            />
             {(data.apologies?.length ?? 0) > 0 && (
               <MetaRow label="Apologies" value={data.apologies!.join(", ")} />
             )}

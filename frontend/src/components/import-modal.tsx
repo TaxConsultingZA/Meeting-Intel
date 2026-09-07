@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { X, FolderOpen, Loader2, CheckCircle2, Download, AlertCircle, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
@@ -7,7 +7,7 @@ import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRec
 import LocalDateTime from "./local-date-time";
 import StateBadge from "./state-badge";
 import { JobControls } from "./recording-jobs";
-import type { AvailableRecording, ProcessingState } from "@/lib/types";
+import type { AvailableRecording, ProcessingState, RecordingJobOut } from "@/lib/types";
 
 function formatBytes(bytes: number | null): string {
   if (!bytes) return "—";
@@ -39,19 +39,29 @@ export default function ImportModal({ upn, onClose }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<Set<string>>(new Set());
+  const jobsInFlight = useRef<Promise<RecordingJobOut[]> | null>(null);
+
+  const loadJobs = useCallback(() => {
+    if (jobsInFlight.current) return jobsInFlight.current;
+    const request = getRecordingJobs(upn).finally(() => {
+      if (jobsInFlight.current === request) jobsInFlight.current = null;
+    });
+    jobsInFlight.current = request;
+    return request;
+  }, [upn]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [data, jobs] = await Promise.all([getAvailableRecordings(upn), getRecordingJobs(upn)]);
+      const [data, jobs] = await Promise.all([getAvailableRecordings(upn), loadJobs()]);
       setRecordings(data.map(rec => ({ ...rec, job: jobs.find(job => job.drive_item_id === rec.drive_item_id) })));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load recordings");
     } finally {
       setLoading(false);
     }
-  }, [upn]);
+  }, [loadJobs, upn]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -59,13 +69,20 @@ export default function ImportModal({ upn, onClose }: Props) {
   }, [load]);
 
   const refreshJobs = useCallback(async () => {
-    const jobs = await getRecordingJobs(upn);
+    const jobs = await loadJobs();
     setRecordings(previous => previous.map(rec => ({ ...rec, job: jobs.find(job => job.drive_item_id === rec.drive_item_id) })));
-  }, [upn]);
+  }, [loadJobs]);
+  const hasActiveJobs = recordings.some((rec) => rec.job && (
+    rec.job.status === "pending" || rec.job.status === "processing" || rec.job.processing_status === "cancel_requested"
+  ));
   useEffect(() => {
-    const timer = setInterval(() => { void refreshJobs().catch(() => setError("Recording status could not be refreshed.")); }, 5000);
+    if (!hasActiveJobs) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      void refreshJobs().catch(() => setError("Recording status could not be refreshed."));
+    }, 5000);
     return () => clearInterval(timer);
-  }, [refreshJobs]);
+  }, [hasActiveJobs, refreshJobs]);
 
   async function handleImport(rec: AvailableRecording) {
     setBusy((prev) => new Set(prev).add(rec.drive_item_id));

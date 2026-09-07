@@ -1,22 +1,30 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import DashboardClient from "../dashboard-client";
-import type { CalendarEvent } from "@/lib/types";
+import type { CalendarEvent, MeetingOut, RecordingJobOut } from "@/lib/types";
+import { getAllMeetings, getRecordingJobs } from "@/lib/api";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("@/lib/api", () => ({
-  getAllMeetings: vi.fn(), requestHistoricalAccess: vi.fn(),
+  getAllMeetings: vi.fn(), getRecordingJobs: vi.fn(), requestHistoricalAccess: vi.fn(),
+  cancelRecordingJob: vi.fn(), retryRecordingJob: vi.fn(),
   shareMeeting: vi.fn(), unsubscribeCurrentUser: vi.fn(),
 }));
 // A mounted panel must be detectable even when the real component has no jobs.
 vi.mock("@/components/recording-jobs", () => ({
   default: () => <section aria-label="Recording processing">Recording processing</section>,
+  JobControls: () => null,
 }));
 vi.mock("@/components/import-modal", () => ({
   default: () => <div role="dialog" aria-label="Process Past Recording">Recording import</div>,
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.clearAllMocks();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+});
 
 function calendarEvent(overrides: Partial<CalendarEvent>): CalendarEvent {
   return {
@@ -32,6 +40,56 @@ function calendarEvent(overrides: Partial<CalendarEvent>): CalendarEvent {
     platform: "Teams",
     location: null,
     status: "upcoming",
+    ...overrides,
+  };
+}
+
+function processedMeeting(overrides: Partial<MeetingOut> = {}): MeetingOut {
+  return {
+    id: "meeting-1",
+    recorded_at: "2026-09-02T08:15:00Z",
+    title: "test",
+    state: "awaiting_review",
+    summary: null,
+    transcript: null,
+    action_items: [],
+    extracted_json: { attendees: [] },
+    calendar_participants: [
+      { name: "Sphesihle Mhlongo", email: "sphesihle@taxconsulting.co.za", is_organizer: false },
+      { name: "Wei Jiuyang", email: "wei.jiuyang@taxconsulting.co.za", is_organizer: true },
+    ],
+    organizer_upn: "wei.jiuyang@taxconsulting.co.za",
+    email_recipients: [],
+    approved_recipients: [],
+    is_organizer: true,
+    can_edit: true,
+    can_request_edit_access: false,
+    edit_access_status: "organizer",
+    edit_access_requests: [],
+    speaker_candidates: [],
+    speaker_mappings: {},
+    speaker_sample_labels: [],
+    ...overrides,
+  };
+}
+
+function recordingJob(overrides: Partial<RecordingJobOut> = {}): RecordingJobOut {
+  return {
+    job_id: "job-1",
+    drive_item_id: "item-1",
+    meeting_id: null,
+    title: "Queued recording",
+    status: "pending",
+    processing_status: "queued",
+    review_status: null,
+    phase: "queued",
+    attempts: 0,
+    max_attempts: 3,
+    error: null,
+    can_retry: false,
+    can_cancel: true,
+    can_reprocess: false,
+    processing_enabled: false,
     ...overrides,
   };
 }
@@ -68,4 +126,77 @@ it("excludes ended events from Upcoming Meetings while keeping future and in-pro
 
   fireEvent.click(screen.getAllByRole("button", { name: /In Progress/ })[1]);
   expect(screen.getByText("Live meeting")).toBeInTheDocument();
+});
+
+it("counts persisted meetings from calendar participants", () => {
+  render(<DashboardClient meetings={[processedMeeting()]} upcoming={[]} historical={[]}
+    upn="wei.jiuyang@taxconsulting.co.za" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} />);
+
+  fireEvent.click(screen.getAllByRole("button", { name: /Awaiting Review/ })[1]);
+
+  expect(screen.getByText("2 participants")).toBeInTheDocument();
+});
+
+it("counts active recording jobs and does not duplicate their linked meeting fallback", () => {
+  const meeting = processedMeeting({ id: "processing-meeting", title: "Transcribing meeting", state: "transcribing" });
+  const linkedJob = recordingJob({
+    job_id: "job-linked",
+    meeting_id: meeting.id,
+    title: meeting.title,
+    status: "processing",
+    processing_status: "transcribing",
+    phase: "transcribing",
+    processing_enabled: true,
+  });
+  render(<DashboardClient meetings={[meeting]} recordingJobs={[linkedJob, recordingJob()]} upcoming={[]} historical={[]}
+    upn="wei.jiuyang@taxconsulting.co.za" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} />);
+
+  const inProgressButtons = screen.getAllByRole("button", { name: /In Progress/ });
+  expect(inProgressButtons[0]).toHaveTextContent("2");
+  expect(inProgressButtons[1]).toHaveTextContent("2");
+  fireEvent.click(inProgressButtons[1]);
+
+  expect(screen.getAllByText("Transcribing meeting")).toHaveLength(1);
+  expect(screen.getByText("Queued recording")).toBeInTheDocument();
+});
+
+it("does not poll reviews or recording jobs without active processing", () => {
+  vi.useFakeTimers();
+  render(<DashboardClient meetings={[]} recordingJobs={[]} upcoming={[]} historical={[]}
+    upn="reviewer@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} />);
+
+  act(() => vi.advanceTimersByTime(20_000));
+  expect(getAllMeetings).not.toHaveBeenCalled();
+  expect(getRecordingJobs).not.toHaveBeenCalled();
+});
+
+it("pauses active polling while hidden or while the import modal owns job refreshes", () => {
+  vi.useFakeTimers();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+  render(<DashboardClient meetings={[]} recordingJobs={[recordingJob()]} upcoming={[]} historical={[]}
+    upn="reviewer@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} />);
+
+  act(() => vi.advanceTimersByTime(10_000));
+  expect(getRecordingJobs).not.toHaveBeenCalled();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+  fireEvent.click(screen.getByRole("button", { name: "Process Past Recording" }));
+  act(() => vi.advanceTimersByTime(10_000));
+  expect(getRecordingJobs).not.toHaveBeenCalled();
+});
+
+it("does not overlap active dashboard polling requests", () => {
+  vi.useFakeTimers();
+  vi.mocked(getRecordingJobs).mockReturnValue(new Promise(() => {}));
+  vi.mocked(getAllMeetings).mockReturnValue(new Promise(() => {}));
+  render(<DashboardClient meetings={[]} recordingJobs={[recordingJob()]} upcoming={[]} historical={[]}
+    upn="reviewer@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} />);
+
+  act(() => vi.advanceTimersByTime(20_000));
+  expect(getRecordingJobs).toHaveBeenCalledOnce();
+  expect(getAllMeetings).toHaveBeenCalledOnce();
 });

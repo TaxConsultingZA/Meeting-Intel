@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Calendar, Users, ChevronRight, Upload, Mic, Video, Share2, History, Lock, Power } from "lucide-react";
 import StateBadge from "@/components/state-badge";
@@ -8,8 +8,9 @@ import LocalDateTime, { useUserTimeZone } from "@/components/local-date-time";
 import { formatEventTime, parseInstant } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
 import RecentMeetings from "@/components/recent-meetings";
-import { getAllMeetings, requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
-import type { MeetingOut, ProcessingState, CalendarEvent, SyncState } from "@/lib/types";
+import { JobControls } from "@/components/recording-jobs";
+import { getAllMeetings, getRecordingJobs, requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
+import type { MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut } from "@/lib/types";
 
 /** Convert a UPN like "jane.doe@taxconsulting.co.za" to a display name "Jane Doe". */
 function formatUpn(upn: string | null | undefined): string {
@@ -21,6 +22,7 @@ const PIPELINE_STATES: ProcessingState[] = ["queued", "downloading", "transcribi
 
 interface Props {
   meetings: MeetingOut[];
+  recordingJobs?: RecordingJobOut[];
   upcoming: CalendarEvent[];
   historical: MeetingOut[];
   upn: string;
@@ -52,18 +54,44 @@ function conciseMicrosoftError(error: string): string {
   return error.length > 180 ? `${error.slice(0, 177)}...` : error;
 }
 
-export default function DashboardClient({ meetings: initialMeetings, upcoming, historical: initialHistorical, upn, accessToken, isSubscribed, syncStates, loadErrors }: Props) {
+export default function DashboardClient({ meetings: initialMeetings, recordingJobs: initialRecordingJobs = [], upcoming, historical: initialHistorical, upn, accessToken, isSubscribed, syncStates, loadErrors }: Props) {
   const router = useRouter();
   const [meetings, setMeetings] = useState(initialMeetings);
-  useEffect(() => {
-    const timer = setInterval(() => { void getAllMeetings(accessToken).then(setMeetings).catch(() => {}); }, 10000);
-    return () => clearInterval(timer);
-  }, [accessToken]);
+  const [recordingJobs, setRecordingJobs] = useState(initialRecordingJobs);
   const [tab, setTab] = useState<Tab>("upcoming");
   const [showImport, setShowImport] = useState(false);
   const [historical, setHistorical] = useState<MeetingOut[]>(initialHistorical);
   const [shareModal, setShareModal] = useState<{ meetingId: string; title: string } | null>(null);
   const [unsubscribing, setUnsubscribing] = useState(false);
+  const pollingInFlight = useRef(false);
+  const hasActiveProcessing = recordingJobs.some((job) =>
+    job.status === "pending" || job.status === "processing" || job.processing_status === "cancel_requested"
+  ) || meetings.some((meeting) => PIPELINE_STATES.includes(meeting.state));
+
+  const refreshProcessing = useCallback(async () => {
+    if (pollingInFlight.current || document.visibilityState === "hidden") return;
+    pollingInFlight.current = true;
+    try {
+      const [nextJobs, nextMeetings] = await Promise.all([
+        getRecordingJobs(accessToken),
+        getAllMeetings(accessToken),
+      ]);
+      setRecordingJobs(nextJobs);
+      setMeetings(nextMeetings);
+    } finally {
+      pollingInFlight.current = false;
+    }
+  }, [accessToken]);
+
+  useEffect(() => {
+    if (!hasActiveProcessing || showImport) return;
+    const timer = setInterval(() => { void refreshProcessing().catch(() => {}); }, 10000);
+    return () => clearInterval(timer);
+  }, [hasActiveProcessing, refreshProcessing, showImport]);
+
+  async function refreshRecordingJobs() {
+    await refreshProcessing();
+  }
 
   async function handleOptOut() {
     if (!confirm("Turn off future Calendar and OneDrive processing? Existing meeting records will remain available.")) return;
@@ -85,7 +113,11 @@ export default function DashboardClient({ meetings: initialMeetings, upcoming, h
     return !end || end.getTime() > now;
   });
   const inProgressEvents = upcoming.filter((e) => e.status === "in_progress");
-  const pipelineActive  = meetings.filter((m) => PIPELINE_STATES.includes(m.state));
+  const activeRecordingJobs = recordingJobs.filter((job) =>
+    job.status === "pending" || job.status === "processing" || job.processing_status === "cancel_requested"
+  );
+  const activeJobMeetingIds = new Set(activeRecordingJobs.flatMap((job) => job.meeting_id ? [job.meeting_id] : []));
+  const pipelineActive  = meetings.filter((m) => PIPELINE_STATES.includes(m.state) && !activeJobMeetingIds.has(m.id));
   const pendingReview   = meetings.filter((m) => m.state === "awaiting_review");
   const oldMeetings     = meetings.filter((m) => m.state === "approved" || m.state === "sent");
   const cancelled       = meetings.filter((m) => m.state === "failed" || m.state === "cancelled");
@@ -110,7 +142,7 @@ export default function DashboardClient({ meetings: initialMeetings, upcoming, h
 
   const stats: { icon: string; num: number; label: string; color: string; tab: Tab }[] = [
     { icon: "📅", num: upcomingEvents.length,                  label: "Upcoming",         color: "bg-blue-50",   tab: "upcoming"     },
-    { icon: "⚙️", num: inProgressEvents.length + pipelineActive.length, label: "In Progress", color: "bg-indigo-50", tab: "in_progress"  },
+    { icon: "⚙️", num: inProgressEvents.length + activeRecordingJobs.length + pipelineActive.length, label: "In Progress", color: "bg-indigo-50", tab: "in_progress"  },
     { icon: "📋", num: pendingReview.length,                   label: "Awaiting Review",  color: "bg-amber-50",  tab: "review"       },
     { icon: "✅", num: oldMeetings.length,                     label: "Completed",        color: "bg-green-50",  tab: "old_meetings" },
   ];
@@ -157,7 +189,10 @@ export default function DashboardClient({ meetings: initialMeetings, upcoming, h
         </div>
       </div>
 
-      {showImport && <ImportModal upn={accessToken} onClose={() => setShowImport(false)} />}
+      {showImport && <ImportModal upn={accessToken} onClose={() => {
+        setShowImport(false);
+        void refreshProcessing().catch(() => {});
+      }} />}
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-7">
@@ -186,7 +221,7 @@ export default function DashboardClient({ meetings: initialMeetings, upcoming, h
         {([
           { id: "recent" as Tab, label: "Recent Meetings", count: null },
           { id: "upcoming"    as Tab, label: "Upcoming Meetings",         count: upcomingEvents.length                          },
-          { id: "in_progress" as Tab, label: "In Progress",               count: inProgressEvents.length + pipelineActive.length },
+          { id: "in_progress" as Tab, label: "In Progress",               count: inProgressEvents.length + activeRecordingJobs.length + pipelineActive.length },
           { id: "review"      as Tab, label: "Awaiting Review",           count: pendingReview.length                           },
           { id: "old_meetings"as Tab, label: "Old Meetings",               count: null                                          },
           { id: "historical"  as Tab, label: "Historical Access",         count: historical.length || null                     },
@@ -230,10 +265,11 @@ export default function DashboardClient({ meetings: initialMeetings, upcoming, h
 
       {/* In Progress */}
       {tab === "in_progress" && (
-        inProgressEvents.length === 0 && pipelineActive.length === 0
+        inProgressEvents.length === 0 && activeRecordingJobs.length === 0 && pipelineActive.length === 0
           ? <EmptyState icon="⚙️" title="Nothing in progress" sub="Meetings currently happening or being processed will appear here." />
           : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {inProgressEvents.map((ev) => <CalendarCard key={ev.event_id} event={ev} inProgress />)}
+              {activeRecordingJobs.map((job) => <RecordingJobCard key={job.job_id} job={job} token={accessToken} onChanged={refreshRecordingJobs} />)}
               {pipelineActive.map((m) => <MeetingCard key={m.id} meeting={m} />)}
             </div>
       )}
@@ -374,6 +410,29 @@ export default function DashboardClient({ meetings: initialMeetings, upcoming, h
         />
       )}
     </main>
+  );
+}
+
+function RecordingJobCard({ job, token, onChanged }: { job: RecordingJobOut; token: string; onChanged: () => Promise<void> }) {
+  return (
+    <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
+      <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-4 py-3.5">
+        <p className="text-white text-[13.5px] font-semibold leading-snug line-clamp-2">{job.title ?? "Recording queued for import"}</p>
+      </div>
+      <div className="px-4 py-3.5">
+        <StateBadge state={job.processing_status} />
+        {job.processing_status === "queued" && !job.processing_enabled && (
+          <p className="mt-2 text-xs text-amber-800">Queued — processing is paused in staging.</p>
+        )}
+        {job.processing_status === "cancel_requested" && (
+          <p className="mt-2 text-xs text-amber-800">Cancellation requested; waiting for the current operation to stop.</p>
+        )}
+        <div className="mt-3 flex items-center justify-between border-t border-[#dde1e8] pt-2.5">
+          <JobControls job={job} token={token} onChanged={onChanged} />
+          {job.meeting_id && <Link href={`/meetings/${job.meeting_id}`} className="text-[12.5px] font-semibold text-[#003366] hover:underline">View Progress</Link>}
+        </div>
+      </div>
+    </div>
   );
 }
 

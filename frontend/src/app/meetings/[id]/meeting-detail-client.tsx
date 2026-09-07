@@ -12,7 +12,6 @@ import {
 } from "@/components/ui/dialog";
 import StateBadge from "@/components/state-badge";
 import LocalDateTime from "@/components/local-date-time";
-import RecordingJobs from "@/components/recording-jobs";
 import PipelineView from "./pipeline-view";
 import {
   getMeeting,
@@ -61,6 +60,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [speakerMappings, setSpeakerMappings] = useState<Record<string, string | null>>(initial.speaker_mappings ?? {});
   const [savingAccess, setSavingAccess] = useState(false);
   const [sendingSelfCopy, setSendingSelfCopy] = useState(false);
+  const pollingInFlight = useRef(false);
 
   const data = meeting.extracted_json ?? {};
   const isTranscriptOnly = data.extraction_mode === "transcript_only";
@@ -77,7 +77,14 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
 
   useEffect(() => {
     if (!isProcessing) return;
-    const timer = setInterval(() => { void getMeeting(initial.id, accessToken).then(setMeeting).catch(() => {}); }, 5000);
+    const timer = setInterval(() => {
+      if (document.visibilityState === "hidden" || pollingInFlight.current) return;
+      pollingInFlight.current = true;
+      void getMeeting(initial.id, accessToken)
+        .then(setMeeting)
+        .catch(() => {})
+        .finally(() => { pollingInFlight.current = false; });
+    }, 5000);
     return () => clearInterval(timer);
   }, [initial.id, accessToken, isProcessing]);
 
@@ -217,7 +224,6 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               <span className="text-[11px] font-semibold text-[#6b7280] uppercase tracking-wide">Status</span>
               <div className="mt-1"><StateBadge state={meeting.state} /></div>
             </div>
-            <RecordingJobs token={accessToken} meetingId={meeting.id} onChanged={async () => setMeeting(await getMeeting(meeting.id, accessToken))} />
             <MetaRow label="Action Items" value={`${meeting.action_items.length} extracted`} />
             <div className="h-px bg-[#dde1e8]" />
             {isReviewable && meeting.can_request_edit_access && !meeting.can_edit && (

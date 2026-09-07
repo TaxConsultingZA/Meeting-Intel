@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { cancelRecordingJob, getRecordingJobs, retryRecordingJob } from "@/lib/api";
@@ -27,15 +27,28 @@ export function JobControls({ job, token, onChanged }: { job: RecordingJobOut; t
 export default function RecordingJobs({ token, meetingId, onChanged }: { token: string; meetingId?: string; onChanged?: () => void | Promise<void> }) {
   const [jobs, setJobs] = useState<RecordingJobOut[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const refreshInFlight = useRef(false);
   const refresh = useCallback(async () => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
     try { setJobs(await getRecordingJobs(token, meetingId)); setError(null); }
     catch { setError("Recording status is temporarily unavailable."); }
+    finally { refreshInFlight.current = false; }
   }, [token, meetingId]);
+  const hasActiveJobs = jobs.some((job) =>
+    job.status === "pending" || job.status === "processing" || job.processing_status === "cancel_requested"
+  );
   useEffect(() => {
     const first = setTimeout(() => void refresh(), 0);
-    const timer = setInterval(() => void refresh(), 5000);
-    return () => { clearTimeout(first); clearInterval(timer); };
+    return () => clearTimeout(first);
   }, [refresh]);
+  useEffect(() => {
+    if (!hasActiveJobs) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "hidden") void refresh();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [hasActiveJobs, refresh]);
   if (!jobs.length && !error) return null;
   return <section aria-label="Recording processing" className="mb-5 rounded-lg border border-blue-200 bg-white p-4">
     <h2 className="font-semibold text-[#003366] mb-2">Recording processing</h2>

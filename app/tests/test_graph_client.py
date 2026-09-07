@@ -1,4 +1,5 @@
 """Tests for app/graph/client.py — Graph API calls via respx mock."""
+import asyncio
 import pytest
 import respx
 import httpx
@@ -27,6 +28,107 @@ class TestListRecordingsFolder:
             f"{_BASE}/drives/{drive_id}/root/children"
             "?$select=id,name,folder,parentReference"
         )
+
+    @respx.mock
+    async def test_independent_entry_points_are_queried_concurrently(self):
+        from app.graph.client import list_recordings_folder
+
+        all_started = asyncio.Event()
+        started = 0
+
+        async def respond(request):
+            nonlocal started
+            started += 1
+            if started == 3:
+                all_started.set()
+            await asyncio.wait_for(all_started.wait(), timeout=1)
+            return httpx.Response(200, json={"value": []})
+
+        respx.get(self._root_path("drive-concurrent")).mock(side_effect=respond)
+        respx.get(self._documents_path("drive-concurrent")).mock(side_effect=respond)
+        respx.get(self._root_traversal("drive-concurrent")).mock(side_effect=respond)
+
+        with _mock_token():
+            assert await list_recordings_folder("drive-concurrent") == []
+        assert started == 3
+
+    @respx.mock
+    async def test_graph_concurrency_is_bounded(self, monkeypatch):
+        from app.graph import client
+
+        monkeypatch.setattr(client, "RECORDINGS_DISCOVERY_CONCURRENCY", 2)
+        active = 0
+        max_active = 0
+
+        async def list_discovered_folder(request):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return httpx.Response(200, json={"value": []})
+
+        respx.get(self._root_path("drive-limited")).mock(
+            return_value=httpx.Response(404)
+        )
+        respx.get(self._documents_path("drive-limited")).mock(
+            return_value=httpx.Response(404)
+        )
+        respx.get(self._root_traversal("drive-limited")).mock(
+            return_value=httpx.Response(200, json={"value": [
+                {"id": f"recordings-{index}", "name": "Recordings", "folder": {}}
+                for index in range(6)
+            ]})
+        )
+        for index in range(6):
+            respx.get(
+                f"{_BASE}/drives/drive-limited/items/recordings-{index}/children"
+            ).mock(side_effect=list_discovered_folder)
+
+        with _mock_token():
+            assert await client.list_recordings_folder("drive-limited") == []
+        assert max_active == 2
+
+    @respx.mock
+    async def test_sibling_traversal_branches_are_queried_concurrently(self):
+        from app.graph.client import list_recordings_folder
+
+        both_started = asyncio.Event()
+        started = 0
+
+        async def list_sibling(request):
+            nonlocal started
+            started += 1
+            if started == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=1)
+            folder_id = "recordings-a" if "parent-a" in str(request.url) else "recordings-b"
+            return httpx.Response(200, json={"value": [
+                {"id": folder_id, "name": "Recordings", "folder": {}}
+            ]})
+
+        respx.get(self._root_path("drive-siblings")).mock(return_value=httpx.Response(404))
+        respx.get(self._documents_path("drive-siblings")).mock(return_value=httpx.Response(404))
+        respx.get(self._root_traversal("drive-siblings")).mock(return_value=httpx.Response(
+            200,
+            json={"value": [
+                {"id": "parent-a", "name": "A", "folder": {}},
+                {"id": "parent-b", "name": "B", "folder": {}},
+            ]},
+        ))
+        for parent_id in ("parent-a", "parent-b"):
+            respx.get(
+                f"{_BASE}/drives/drive-siblings/items/{parent_id}/children"
+                "?$select=id,name,folder,parentReference"
+            ).mock(side_effect=list_sibling)
+        for folder_id in ("recordings-a", "recordings-b"):
+            respx.get(
+                f"{_BASE}/drives/drive-siblings/items/{folder_id}/children"
+            ).mock(return_value=httpx.Response(200, json={"value": []}))
+
+        with _mock_token():
+            assert await list_recordings_folder("drive-siblings") == []
+        assert started == 2
 
     @respx.mock
     async def test_root_recordings_folder_returns_mp4_files_only(self):

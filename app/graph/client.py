@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 RECORDINGS_TRAVERSAL_MAX_DEPTH = 2
 RECORDINGS_TRAVERSAL_MAX_REQUESTS = 100
 RECORDINGS_TRAVERSAL_MAX_FOLDERS = 100
+RECORDINGS_DISCOVERY_CONCURRENCY = 4
 _FOLDER_METADATA_SELECT = "$select=id,name,folder,parentReference"
 
 
@@ -101,6 +103,11 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
         }]
 
     drive_url = f"{settings.graph_base}/drives/{drive_id}"
+    request_semaphore = asyncio.Semaphore(RECORDINGS_DISCOVERY_CONCURRENCY)
+
+    async def graph_get(client: httpx.AsyncClient, url: str) -> httpx.Response:
+        async with request_semaphore:
+            return await client.get(url, headers=_headers())
 
     async def collect_mp4_children(
         client: httpx.AsyncClient,
@@ -114,7 +121,7 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
         seen_urls: set[str] = set()
         while url and url not in seen_urls:
             seen_urls.add(url)
-            response = await client.get(url, headers=_headers())
+            response = await graph_get(client, url)
             if response.status_code == 404:
                 return
             if response.status_code == 403 and ignore_forbidden and not strict:
@@ -140,25 +147,24 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
         recording_folder_id_set: set[str] = set()
         request_count = 0
         folder_count = 0
+        request_count_lock = asyncio.Lock()
 
-        queue_index = 0
-        while queue_index < len(queue):
-            url, parent_depth = queue[queue_index]
-            queue_index += 1
+        async def scan_branch(
+            initial_url: str,
+            parent_depth: int,
+        ) -> tuple[list[dict], bool]:
+            nonlocal request_count
+            url: str | None = initial_url
             seen_page_urls: set[str] = set()
+            items: list[dict] = []
 
             while url and url not in seen_page_urls:
-                if request_count >= RECORDINGS_TRAVERSAL_MAX_REQUESTS:
-                    if strict:
-                        raise RuntimeError("OneDrive discovery incomplete")
-                    logger.warning(
-                        "Stopped OneDrive folder traversal at request limit %s",
-                        RECORDINGS_TRAVERSAL_MAX_REQUESTS,
-                    )
-                    return recording_folder_ids
+                async with request_count_lock:
+                    if request_count >= RECORDINGS_TRAVERSAL_MAX_REQUESTS:
+                        return items, True
+                    request_count += 1
                 seen_page_urls.add(url)
-                request_count += 1
-                response = await client.get(url, headers=_headers())
+                response = await graph_get(client, url)
                 if response.status_code == 404:
                     break
                 if response.status_code == 403 and parent_depth > 0 and not strict:
@@ -168,8 +174,30 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
                     break
                 response.raise_for_status()
                 data = response.json()
+                items.extend(data.get("value", []))
+                url = data.get("@odata.nextLink")
+            return items, False
 
-                for item in data.get("value", []):
+        queue_index = 0
+        while queue_index < len(queue):
+            batch = queue[queue_index:]
+            queue_index = len(queue)
+            branch_results = await asyncio.gather(*(
+                scan_branch(url, parent_depth) for url, parent_depth in batch
+            ))
+            for ((_, parent_depth), (branch_items, request_limit_hit)) in zip(
+                batch, branch_results
+            ):
+                if request_limit_hit:
+                    if strict:
+                        raise RuntimeError("OneDrive discovery incomplete")
+                    logger.warning(
+                        "Stopped OneDrive folder traversal at request limit %s",
+                        RECORDINGS_TRAVERSAL_MAX_REQUESTS,
+                    )
+                    return recording_folder_ids
+
+                for item in branch_items:
                     if item.get("folder") is None:
                         continue
                     if folder_count >= RECORDINGS_TRAVERSAL_MAX_FOLDERS:
@@ -201,33 +229,52 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
                             item_depth,
                         ))
 
-                url = data.get("@odata.nextLink")
-
         return recording_folder_ids
 
     recordings_by_id: dict[str, dict] = {}
     async with httpx.AsyncClient(timeout=30) as c:
-        await collect_mp4_children(
+        root_recordings: dict[str, dict] = {}
+        documents_recordings: dict[str, dict] = {}
+        root_task = collect_mp4_children(
             c,
             f"{drive_url}/root:/Recordings:/children",
-            recordings_by_id,
+            root_recordings,
         )
-        await collect_mp4_children(
+        documents_task = collect_mp4_children(
             c,
             f"{drive_url}/root:/Documents/Recordings:/children",
-            recordings_by_id,
+            documents_recordings,
             ignore_forbidden=True,
             branch_name="Documents/Recordings",
         )
+        root_result, documents_result, discovered_result = await asyncio.gather(
+            root_task,
+            documents_task,
+            discover_recordings_folder_ids(c),
+            return_exceptions=True,
+        )
+        for result in (root_result, documents_result, discovered_result):
+            if isinstance(result, BaseException):
+                raise result
 
-        for folder_id in await discover_recordings_folder_ids(c):
-            await collect_mp4_children(
+        recordings_by_id.update(root_recordings)
+        recordings_by_id.update(documents_recordings)
+        discovered_recordings: list[dict[str, dict]] = []
+        discovered_tasks = []
+        for folder_id in discovered_result:
+            folder_recordings: dict[str, dict] = {}
+            discovered_recordings.append(folder_recordings)
+            discovered_tasks.append(collect_mp4_children(
                 c,
                 f"{drive_url}/items/{folder_id}/children",
-                recordings_by_id,
+                folder_recordings,
                 ignore_forbidden=True,
                 branch_name="discovered Recordings folder",
-            )
+            ))
+        if discovered_tasks:
+            await asyncio.gather(*discovered_tasks)
+        for folder_recordings in discovered_recordings:
+            recordings_by_id.update(folder_recordings)
 
     return list(recordings_by_id.values())
 

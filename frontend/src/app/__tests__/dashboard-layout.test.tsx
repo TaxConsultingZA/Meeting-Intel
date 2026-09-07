@@ -1,12 +1,13 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import DashboardClient from "../dashboard-client";
 import type { CalendarEvent, MeetingOut, RecordingJobOut } from "@/lib/types";
-import { getAllMeetings, getRecordingJobs } from "@/lib/api";
+import { getAllMeetings, getProcessingRequests, getRecentMeetings, getRecordingJobs } from "@/lib/api";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("@/lib/api", () => ({
   getAllMeetings: vi.fn(), getRecordingJobs: vi.fn(), requestHistoricalAccess: vi.fn(),
+  getRecentMeetings: vi.fn(), getProcessingRequests: vi.fn(),
   cancelRecordingJob: vi.fn(), retryRecordingJob: vi.fn(),
   shareMeeting: vi.fn(), unsubscribeCurrentUser: vi.fn(),
 }));
@@ -199,4 +200,24 @@ it("does not overlap active dashboard polling requests", () => {
   act(() => vi.advanceTimersByTime(20_000));
   expect(getRecordingJobs).toHaveBeenCalledOnce();
   expect(getAllMeetings).toHaveBeenCalledOnce();
+});
+
+it("keeps Recent Meetings mounted after its first visit", async () => {
+  vi.mocked(getRecentMeetings).mockResolvedValue([]);
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  render(<DashboardClient meetings={[]} recordingJobs={[]} upcoming={[]} historical={[]}
+    upn="reviewer@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} />);
+
+  expect(getRecentMeetings).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Recent Meetings" }));
+  expect(await screen.findByText("No recently ended meetings.")).toBeInTheDocument();
+  expect(getRecentMeetings).toHaveBeenCalledOnce();
+  expect(getProcessingRequests).toHaveBeenCalledOnce();
+
+  fireEvent.click(screen.getByRole("button", { name: "Upcoming Meetings" }));
+  fireEvent.click(screen.getByRole("button", { name: "Recent Meetings" }));
+  expect(screen.getByText("No recently ended meetings.")).toBeInTheDocument();
+  await waitFor(() => expect(getRecentMeetings).toHaveBeenCalledOnce());
+  expect(getProcessingRequests).toHaveBeenCalledOnce();
 });

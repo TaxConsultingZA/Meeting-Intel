@@ -10,7 +10,7 @@ import ImportModal from "@/components/import-modal";
 import RecentMeetings from "@/components/recent-meetings";
 import { JobControls } from "@/components/recording-jobs";
 import { getAllMeetings, getRecordingJobs, requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
-import type { MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut } from "@/lib/types";
+import type { AvailableRecording, MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut } from "@/lib/types";
 
 /** Convert a UPN like "jane.doe@taxconsulting.co.za" to a display name "Jane Doe". */
 function formatUpn(upn: string | null | undefined): string {
@@ -59,7 +59,9 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const [meetings, setMeetings] = useState(initialMeetings);
   const [recordingJobs, setRecordingJobs] = useState(initialRecordingJobs);
   const [tab, setTab] = useState<Tab>("upcoming");
+  const [hasOpenedRecent, setHasOpenedRecent] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [availableRecordings, setAvailableRecordings] = useState<AvailableRecording[] | null>(null);
   const [historical, setHistorical] = useState<MeetingOut[]>(initialHistorical);
   const [shareModal, setShareModal] = useState<{ meetingId: string; title: string } | null>(null);
   const [unsubscribing, setUnsubscribing] = useState(false);
@@ -91,6 +93,11 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
   async function refreshRecordingJobs() {
     await refreshProcessing();
+  }
+
+  function selectTab(nextTab: Tab) {
+    if (nextTab === "recent") setHasOpenedRecent(true);
+    setTab(nextTab);
   }
 
   async function handleOptOut() {
@@ -189,7 +196,11 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
         </div>
       </div>
 
-      {showImport && <ImportModal upn={accessToken} onClose={() => {
+      {showImport && <ImportModal
+        upn={accessToken}
+        initialRecordings={availableRecordings}
+        onRecordingsLoaded={setAvailableRecordings}
+        onClose={() => {
         setShowImport(false);
         void refreshProcessing().catch(() => {});
       }} />}
@@ -200,7 +211,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           <button
             key={s.label}
             type="button"
-            onClick={() => setTab(s.tab)}
+            onClick={() => selectTab(s.tab)}
             className={`bg-white rounded-lg border shadow-sm p-4 flex items-center gap-3 text-left transition-all hover:shadow-md hover:-translate-y-0.5 ${
               tab === s.tab ? "border-[#003366]" : "border-[#dde1e8] hover:border-[#003366]"
             }`}
@@ -230,7 +241,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           <button
             key={id}
             type="button"
-            onClick={() => setTab(id)}
+            onClick={() => selectTab(id)}
             className={`px-4 py-2.5 text-[13px] font-medium border-b-2 -mb-0.5 transition-colors whitespace-nowrap ${
               tab === id
                 ? "text-[#003366] border-[#C9A52C] font-semibold"
@@ -248,7 +259,11 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       </div>
 
       {/* Upcoming Meetings */}
-      {tab === "recent" && <RecentMeetings token={accessToken} isSubscribed={isSubscribed} />}
+      {hasOpenedRecent && (
+        <div hidden={tab !== "recent"}>
+          <RecentMeetings token={accessToken} isSubscribed={isSubscribed} />
+        </div>
+      )}
       {tab === "upcoming" && (
         upcomingEvents.length === 0
           ? <EmptyState

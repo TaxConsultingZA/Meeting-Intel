@@ -80,3 +80,23 @@ it("uses the server-verified own Process endpoint", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Process" }));
   await waitFor(() => expect(api.processRecentMeeting).toHaveBeenCalledWith("process", "token"));
 });
+
+it("refreshes without clearing successful meetings or processing requests", async () => {
+  vi.mocked(api.getRecentMeetings)
+    .mockResolvedValueOnce([event("process")])
+    .mockRejectedValueOnce(new Error("calendar unavailable"));
+  vi.mocked(api.getProcessingRequests)
+    .mockResolvedValueOnce([request(false)])
+    .mockRejectedValueOnce(new Error("requests unavailable"));
+  render(<RecentMeetings token="token" isSubscribed />);
+
+  expect(await screen.findByRole("button", { name: "Process" })).toBeInTheDocument();
+  expect(screen.getByText("Owner approval")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("unavailable");
+  expect(screen.getByRole("button", { name: "Process" })).toBeInTheDocument();
+  expect(screen.getByText("Owner approval")).toBeInTheDocument();
+  expect(api.getRecentMeetings).toHaveBeenCalledTimes(2);
+  expect(api.getProcessingRequests).toHaveBeenCalledTimes(2);
+});

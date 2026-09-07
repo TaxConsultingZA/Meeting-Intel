@@ -10,6 +10,7 @@ export default function RecentMeetings({ token, isSubscribed }: { token: string;
   const [events, setEvents] = useState<RecentMeeting[]>([]);
   const [requests, setRequests] = useState<RecordingProcessingRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const load = useCallback(() => Promise.allSettled([
@@ -17,10 +18,12 @@ export default function RecentMeetings({ token, isSubscribed }: { token: string;
       getProcessingRequests(token),
     ]), [token, isSubscribed]);
   const applyResults = useCallback((results: Awaited<ReturnType<typeof load>>) => {
+    const errors: string[] = [];
     if (results[0].status === "fulfilled") setEvents(results[0].value);
-    else { setEvents([]); setError("Recent Meetings unavailable. Please refresh to retry."); }
+    else errors.push("Recent Meetings unavailable. Please refresh to retry.");
     if (results[1].status === "fulfilled") setRequests(results[1].value);
-    else { setRequests([]); setError((previous) => `${previous} Processing requests unavailable.`.trim()); }
+    else errors.push("Processing requests unavailable.");
+    setError(errors.join(" "));
     setLoading(false);
   }, []);
 
@@ -30,10 +33,17 @@ export default function RecentMeetings({ token, isSubscribed }: { token: string;
     return () => { active = false; };
   }, [load, applyResults]);
 
+  async function refresh() {
+    setRefreshing(true);
+    setError("");
+    try { applyResults(await load()); }
+    finally { setRefreshing(false); }
+  }
+
   async function act(operation: () => Promise<unknown>) {
     setBusy(true);
     setError("");
-    try { await operation(); applyResults(await load()); }
+    try { await operation(); await refresh(); }
     catch (e) { setError(e instanceof Error ? e.message : "Action failed; refresh before retrying."); }
     finally { setBusy(false); }
   }
@@ -43,10 +53,13 @@ export default function RecentMeetings({ token, isSubscribed }: { token: string;
     <section aria-label="Recent Meetings">
       <div className="mb-4 flex items-center justify-between gap-3">
         <p className="text-sm text-[#6b7280]">Calendar meetings you participated in that ended in the past 7 days.</p>
-        <button type="button" className={buttonClass} disabled={busy || loading} onClick={() => { setLoading(true); setError(""); void load().then(applyResults); }}>Refresh</button>
+        <button type="button" className={buttonClass} disabled={busy || loading || refreshing} onClick={() => void refresh()}>
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
       </div>
       {error && <p role="alert" className="mb-4 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{error}</p>}
       {loading && <p role="status">Loading recent meetings and processing requests…</p>}
+      {refreshing && <p role="status" className="mb-3 text-sm text-[#6b7280]">Refreshing recent meetings and processing requests…</p>}
       {!isSubscribed && <p className="mb-4 text-sm">Subscribe to discover recent Calendar meetings and recordings.</p>}
       {!loading && !error && isSubscribed && events.length === 0 && <p>No recently ended meetings.</p>}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">

@@ -32,11 +32,14 @@ const IN_PROGRESS: ProcessingState[] = ["queued", "downloading", "transcribing",
 interface Props {
   upn: string;
   onClose: () => void;
+  initialRecordings?: AvailableRecording[] | null;
+  onRecordingsLoaded?: (recordings: AvailableRecording[]) => void;
 }
 
-export default function ImportModal({ upn, onClose }: Props) {
-  const [recordings, setRecordings] = useState<AvailableRecording[]>([]);
-  const [loading, setLoading] = useState(true);
+export default function ImportModal({ upn, onClose, initialRecordings = null, onRecordingsLoaded }: Props) {
+  const [recordings, setRecordings] = useState<AvailableRecording[]>(initialRecordings ?? []);
+  const [hasLoaded, setHasLoaded] = useState(initialRecordings !== null);
+  const [refreshing, setRefreshing] = useState(initialRecordings === null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const jobsInFlight = useRef<Promise<RecordingJobOut[]> | null>(null);
@@ -51,22 +54,28 @@ export default function ImportModal({ upn, onClose }: Props) {
   }, [upn]);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    setRefreshing(true);
     setError(null);
     try {
       const [data, jobs] = await Promise.all([getAvailableRecordings(upn), loadJobs()]);
       setRecordings(data.map(rec => ({ ...rec, job: jobs.find(job => job.drive_item_id === rec.drive_item_id) })));
+      setHasLoaded(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load recordings");
     } finally {
-      setLoading(false);
+      setRefreshing(false);
     }
   }, [loadJobs, upn]);
 
   useEffect(() => {
+    if (hasLoaded) return;
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
-  }, [load]);
+  }, [hasLoaded, load]);
+
+  useEffect(() => {
+    if (hasLoaded) onRecordingsLoaded?.(recordings);
+  }, [hasLoaded, onRecordingsLoaded, recordings]);
 
   const refreshJobs = useCallback(async () => {
     const jobs = await loadJobs();
@@ -190,14 +199,14 @@ export default function ImportModal({ upn, onClose }: Props) {
         </div>
 
         <div className="max-h-[60vh] overflow-auto">
-          {loading && (
+          {refreshing && !hasLoaded && (
             <div className="flex flex-col items-center justify-center py-16 text-[#6b7280]">
               <Loader2 size={28} className="animate-spin mb-3 text-[#003366]" />
               <p className="text-[13.5px]">Scanning your OneDrive…</p>
             </div>
           )}
 
-          {error && (
+          {error && !hasLoaded && (
             <div className="flex flex-col items-center justify-center py-16 text-[#6b7280]">
               <AlertCircle size={36} className="mb-3 text-red-400" />
               <p className="text-[13.5px] font-semibold text-[#1a1a2e] mb-1">Could not load recordings</p>
@@ -208,7 +217,13 @@ export default function ImportModal({ upn, onClose }: Props) {
             </div>
           )}
 
-          {!loading && !error && recordings.length === 0 && (
+          {error && hasLoaded && (
+            <div role="alert" className="mx-6 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              Refresh failed. Showing the previously loaded recordings. {error}
+            </div>
+          )}
+
+          {hasLoaded && recordings.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16 text-[#6b7280]">
               <FolderOpen size={36} className="mb-3 text-[#dde1e8]" />
               <p className="text-[13.5px] font-semibold text-[#1a1a2e] mb-1">No recordings found</p>
@@ -216,7 +231,7 @@ export default function ImportModal({ upn, onClose }: Props) {
             </div>
           )}
 
-          {!loading && !error && recordings.length > 0 && (
+          {hasLoaded && recordings.length > 0 && (
             <table className="w-full min-w-[850px] text-sm">
               <thead>
                 <tr>
@@ -272,9 +287,14 @@ export default function ImportModal({ upn, onClose }: Props) {
           <p className="text-[12px] text-[#6b7280]">
             The transcript and AI notes will appear for organiser review once processing finishes.
           </p>
-          <button type="button" onClick={onClose} className="text-[13px] font-medium text-[#003366] hover:underline">
-            Close
-          </button>
+          <div className="flex items-center gap-4">
+            <button type="button" onClick={() => void load()} disabled={refreshing} className="text-[13px] font-medium text-[#003366] hover:underline disabled:opacity-50">
+              {refreshing ? "Refreshing…" : "Refresh"}
+            </button>
+            <button type="button" onClick={onClose} className="text-[13px] font-medium text-[#003366] hover:underline">
+              Close
+            </button>
+          </div>
         </div>
       </div>
     </div>

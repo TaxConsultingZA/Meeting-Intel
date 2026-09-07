@@ -18,6 +18,12 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+const cachedRecording = {
+  drive_item_id: "cached-item", drive_id: "drive-1", name: "cached.mp4", size: 1024,
+  created_at: "2026-09-02T08:15:00Z", already_imported: false,
+  meeting_id: null, meeting_state: null, meeting_error: null,
+};
+
 it("shows completed processing separately from awaiting review", async () => {
   vi.mocked(getAvailableRecordings).mockResolvedValue([{
     drive_item_id: "item-1",
@@ -83,4 +89,35 @@ it("shows approved completed recordings as view-only", async () => {
   expect(screen.getByRole("link", { name: "View" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Reprocess" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+});
+
+it("uses successful recordings supplied by the Dashboard without fetching available again", async () => {
+  vi.mocked(getAvailableRecordings).mockResolvedValue([cachedRecording]);
+  vi.mocked(getRecordingJobs).mockResolvedValue([]);
+  const onRecordingsLoaded = vi.fn();
+  const first = render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()} onRecordingsLoaded={onRecordingsLoaded} />);
+
+  expect(await screen.findByText("cached")).toBeInTheDocument();
+  await waitFor(() => expect(onRecordingsLoaded).toHaveBeenCalled());
+  const cached = onRecordingsLoaded.mock.calls.at(-1)?.[0];
+  expect(getAvailableRecordings).toHaveBeenCalledOnce();
+  first.unmount();
+
+  render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()} initialRecordings={cached} onRecordingsLoaded={vi.fn()} />);
+  expect(screen.getByText("cached")).toBeInTheDocument();
+  await waitFor(() => expect(getAvailableRecordings).toHaveBeenCalledOnce());
+});
+
+it("keeps cached recordings visible when an explicit refresh fails", async () => {
+  vi.mocked(getAvailableRecordings).mockRejectedValue(new Error("OneDrive unavailable"));
+  vi.mocked(getRecordingJobs).mockResolvedValue([]);
+  render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()} initialRecordings={[cachedRecording]} />);
+
+  expect(screen.getByText("cached")).toBeInTheDocument();
+  expect(getAvailableRecordings).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Showing the previously loaded recordings");
+  expect(screen.getByText("cached")).toBeInTheDocument();
+  expect(getAvailableRecordings).toHaveBeenCalledOnce();
 });

@@ -44,7 +44,7 @@ def recent_event(event, now=None):
     now = now or datetime.now(timezone.utc)
     end = parse_graph_datetime(event.get("end"))
     start = parse_graph_datetime(event.get("start"))
-    return bool(start and end and start < end and now - timedelta(days=7) <= end < now
+    return bool(start and end and start < end and now - timedelta(days=30) <= end < now
                 and not event.get("isCancelled")
                 and not (event.get("subject") or "").lower().startswith("canceled:"))
 
@@ -63,7 +63,7 @@ async def read_event(upn, event_id, *, recent=False):
         raise HTTPException(502, "Calendar unavailable; no processing authorized") from exc
     validate_participant(event, upn)
     if recent and not recent_event(event):
-        raise HTTPException(409, "Only ended meetings from the past seven days can be processed here")
+        raise HTTPException(409, "Only ended meetings from the past thirty days can be processed here")
     return event
 
 

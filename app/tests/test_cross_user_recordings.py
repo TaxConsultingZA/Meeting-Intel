@@ -95,7 +95,7 @@ async def request(ctx):
 async def test_recent_ended_window_and_upcoming_unchanged(ctx, monkeypatch):
     now = datetime.now(timezone.utc)
     events = []
-    for name, offset in [("recent", -1), ("old", -24*8), ("ongoing", 1), ("future", 24)]:
+    for name, offset in [("recent", -1), ("recent_21_days", -24*21), ("old", -24*31), ("ongoing", 1), ("future", 24)]:
         event = deepcopy(ctx.event)
         event["id"] = name
         event["end"]["dateTime"] = (now+timedelta(hours=offset)).isoformat()
@@ -105,11 +105,11 @@ async def test_recent_ended_window_and_upcoming_unchanged(ctx, monkeypatch):
     monkeypatch.setattr(service, "recent_state", AsyncMock(return_value={"action": "no_recording"}))
     monkeypatch.setattr(calendar, "record_sync_result", AsyncMock())
     recent = await calendar.recent_meetings(ctx.db, ctx.requester.upn)
-    assert [r["event_id"] for r in recent] == ["recent"]
+    assert [r["event_id"] for r in recent] == ["recent", "recent_21_days"]
     assert recent[0]["status"] == "ended"
     upcoming = await calendar.upcoming_meetings(7, ctx.db, ctx.requester.upn)
-    assert len(upcoming) == 4  # Existing API contract untouched; frontend filters ended ones.
-    assert calendar._event_status(events[2]["start"]["dateTime"], events[2]["end"]["dateTime"]) == "in_progress"
+    assert len(upcoming) == 5  # Existing API contract untouched; frontend filters ended ones.
+    assert calendar._event_status(events[3]["start"]["dateTime"], events[3]["end"]["dateTime"]) == "in_progress"
 
 
 async def test_nonparticipant_forbidden(ctx):

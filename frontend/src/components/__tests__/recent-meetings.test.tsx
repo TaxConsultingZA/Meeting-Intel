@@ -16,6 +16,11 @@ beforeEach(() => {
   vi.mocked(api.getProcessingRequests).mockResolvedValue([]);
 });
 
+it("describes the past 30 day window", () => {
+  render(<RecentMeetings token="token" isSubscribed />);
+  expect(screen.getByText(/ended in the past 30 days/i)).toBeInTheDocument();
+});
+
 function event(action: RecentMeeting["action"]): RecentMeeting {
   return { event_id: action, subject: action, action, status: "ended", start: "2026-09-03T10:00:00Z",
     end: "2026-09-03T11:00:00Z", start_tz: "UTC", organizer_name: "Organizer", organizer_email: "org@example.test",

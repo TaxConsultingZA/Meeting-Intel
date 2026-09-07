@@ -370,7 +370,7 @@ async def get_upcoming_calendar_events(upn: str, days: int = 7, *, include_offli
         }]
 
     now = datetime.now(timezone.utc)
-    start = now - timedelta(days=7)
+    start = now - timedelta(days=30)
     end = now + timedelta(days=days)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     url = (

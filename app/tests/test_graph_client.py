@@ -434,7 +434,7 @@ class TestGetEventAttendees:
 
 class TestGetUpcomingCalendarEvents:
     @respx.mock
-    async def test_queries_previous_seven_days_and_keeps_future_window(self, monkeypatch):
+    async def test_queries_previous_thirty_days_and_keeps_future_window(self, monkeypatch):
         from app.graph import client
 
         class FixedDateTime(datetime):
@@ -468,7 +468,7 @@ class TestGetUpcomingCalendarEvents:
             rows = await client.get_upcoming_calendar_events(upn, days=7)
 
         params = route.calls.last.request.url.params
-        assert params["startDateTime"] == "2026-08-25T12:00:00Z"
+        assert params["startDateTime"] == "2026-08-02T12:00:00Z"
         assert params["endDateTime"] == "2026-09-08T12:00:00Z"
         assert [row["id"] for row in rows] == ["stand-by", "future-meeting"]
 

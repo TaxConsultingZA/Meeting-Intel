@@ -52,7 +52,7 @@ export default function RecentMeetings({ token, isSubscribed }: { token: string;
   return (
     <section aria-label="Recent Meetings">
       <div className="mb-4 flex items-center justify-between gap-3">
-        <p className="text-sm text-[#6b7280]">Calendar meetings you participated in that ended in the past 7 days.</p>
+        <p className="text-sm text-[#6b7280]">Calendar meetings you participated in that ended in the past 30 days.</p>
         <button type="button" className={buttonClass} disabled={busy || loading || refreshing} onClick={() => void refresh()}>
           {refreshing ? "Refreshing…" : "Refresh"}
         </button>

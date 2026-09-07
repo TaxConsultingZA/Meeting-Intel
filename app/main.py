@@ -45,18 +45,12 @@ async def _seed_business_units() -> None:
 
 
 async def _seed_admin_users() -> None:
-    """Auto-register any UPNs listed in ADMIN_UPNS as admins if not already present.
+    """Auto-register any UPNs listed in ADMIN_UPNS as admins if not already present."""
 
-    stanley@taxconsulting.co.za is always seeded as a permanent admin regardless of
-    ADMIN_UPNS — no env var required.
-    """
-    # stanley is always an admin — hardcoded so no env config is needed
-    permanent_admins = {"stanley@taxconsulting.co.za"}
     extra_admins = {u.strip().lower() for u in settings.admin_upns if u.strip()}
-    all_admins = permanent_admins | extra_admins
 
     async with SessionLocal() as db:
-        for upn in all_admins:
+        for upn in extra_admins:
             existing = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
             if not existing:
                 db.add(RegisteredUser(upn=upn, is_admin=True))

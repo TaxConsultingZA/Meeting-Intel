@@ -1,334 +1,265 @@
 # Meeting-Intel 项目状态与后续任务
 
-> 状态日期：2026-08-25  
-> 当前分支：`main`  
-> 当前提交：`e4aada8 Match imported recordings to Outlook meetings`  
-> Git 状态：检查前工作区干净，`main` 与 `origin/main` 同步。
+> 状态日期：2026-09-07。
+> 本次更新依据已明确验证的最新 commit、push、staging 部署及验收观察；不是重新运行测试或部署。
+> “已实现”不等于“已通过所有真实 E2E”。已完成的真实双用户验收与仍待验证的链路在下文分别记录。
 
-## 分析依据与边界
+## Current Deployment Status — 2026-09-07
 
-本文档只依据以下信息整理，没有重新扫描整个代码库：
+### Git
 
-- `git status`
-- `git log --oneline -10`
-- `git diff HEAD~3 --stat`
-- 本次提供的待办列表
+- Retry/Reprocess 已完成两个 commit：
+  - `1f77af274d0f83abd4b4172a494c609b21ca3e3e`：Separate recording processing and review statuses。
+  - `f60b3a1c484f42566e7e0bd8f96a3e080f6a2570`：Add retry and safe recording reprocessing。
+- 两个 commit 均已 push 到 `origin/main`。
+- Participants / Attendees 修复 commit `2148887006cb144b03927fda67a3393f45877abc` 已 push、部署并通过真实 staging 验证。
+- T5 MVP commit `caafe365d1e80dd7b1fea106154090c4ef29d8de` 已 push 并部署到 staging。
+- `backup-20260828` 保留为备份。
+- 未提交 secret、API key、数据库凭据或本地测试媒体。
 
-因此，文中“已完成”表示已有明确提交或变更证据；“待验证”表示代码可能已经存在，但仍需通过真实场景确认；无法从 Git 摘要确认的文件路径会标记为“待定位”，避免把推测写成事实。
+### Staging
 
-## 1. 当前架构（根据变更与关键路径推测）
+本次部署已成功完成，使用现有资源，未创建新的云项目或 service：
 
-### 前端
+- Frontend：Vercel。
+- Backend API：Railway。
+- Background Worker：Railway，独立于 API 运行。
+- Database：现有 PostgreSQL / Neon。
+- Staging URL：[Meeting Intel staging](https://meeting-intel-staging.vercel.app)。
+- Worker deployment `767942ef-d3e6-4c8b-aaa7-1c3a5d57ebca`：SUCCESS。
+- API deployment `64729e0a-9498-4f11-bc14-ac6948a92fb5`：SUCCESS。
+- Frontend deployment：[Vercel deployment](https://meeting-intel-staging-k35k2ux7j-team-22c0.vercel.app)：READY；已确认生成完整 Next.js routes，不只是部署状态为 READY。
+- Staging alias：[meeting-intel-staging.vercel.app](https://meeting-intel-staging.vercel.app)。
+- Railway API health check 通过。
+- Worker 已部署，并确认连接 PostgreSQL。
+- 真实付费录音／AI 处理保持禁用，避免现有排队任务意外调用外部 API。
+- `RECORDING_PROCESSING_ENABLED=false`、`GEMINI_ENABLED=false`、`EMAILS_ENABLED=false`。
+- 本次未调用真实 Gemini、Cloudflare、AssemblyAI，未发送真实邮件。
 
-- 技术：Next.js。
-- 主要目录：`frontend/src/app/`。
-- 已知页面能力：Dashboard、会议状态、录音导入、会议审核、Speaker 姓名映射、参会者编辑申请及管理员入口。
-- 临时公网部署与 Vercel 有关，近期加入了 `.vercelignore`。
+这证明 staging 服务已上线，不表示真实 AI 处理已达到 production-ready 状态。
 
-### 后端 API
+### Database migrations
 
-- 技术：Python / FastAPI。
-- API 代码位于 `app/api/`，会议审核相关接口可见于 `app/api/reviews.py`。
-- 后端负责 Microsoft 数据访问、会议/录音匹配、审核权限、录音任务入队及处理状态更新。
+staging 从 `f81c4a7d2e10` 成功升级，依次执行：
 
+1. `3f7a2b61c9d4`：邮件审计记录。
+2. `7b2d9e4c6a10`：Worker 租约及 active job 去重索引。
+3. `8e31a4c2d907`：已保留代码所需的取消字段及状态。
 
+迁移后实际版本为 `8e31a4c2d907`，schema/version 已复核。现有 meeting/job 数据保留；2 条会议、5 个任务仍在，其中 3 个 pending 任务未被消费。会议、参会者及行动项数据校验值未变。
 
-### Microsoft 集成
+### Timezone Fix
 
-- 使用 Microsoft Entra 登录。
-- 通过 Microsoft Graph 访问 Outlook Calendar、OneDrive 录音，后续计划读取 Teams 原生 Transcript。
-- Outlook 会议匹配逻辑位于：
-  - `app/graph/calendar_match.py`
-  - `app/services/meeting_matching.py`
-  - `app/services/recording_enrichment.py`
+真实南非用户反馈会议时间显示不正确。
 
+根因：Microsoft Graph 分别返回 `dateTime` 和 `timeZone`，但部分处理路径丢失了时区信息；部分无时区 datetime 又被错误解释为浏览器本地时间或直接视为 UTC。
 
+当前修复：
 
-### 录音处理流水线
+- 正确解析 Graph `dateTime` / `timeZone`，已有显式 UTC/offset 的值不重复转换。
+- 后端统一以明确的 UTC 时间处理和输出，数据库可保存 canonical UTC。
+- 前端按用户／浏览器的 IANA 时区渲染，不使用写死的 `+2` / `+8`。
+- 当前没有可靠持久化的用户 mailbox/profile 时区，实际显示采用浏览器 IANA 时区，不使用 Vercel 服务器时区。
+- Dashboard、Upcoming Meetings、Old Meetings、录音匹配／导入展示及 meeting detail 使用统一的时间处理。
+- 南非 `Africa/Johannesburg`、中国 `Asia/Shanghai`、显式 offset 和跨日期转换已有自动化测试覆盖。
 
-- 流水线步骤位于 `app/pipeline/steps.py`。
-- 当前目标流程：录音任务写入数据库队列 → Worker 下载 MP4 → 语音转写 → 更新会议状态 → 人工审核。
-- 当前提交历史表明系统处于 `transcript-only` 阶段：已有 Transcript，但 Gemini 摘要、重点、行动项、风险和下一步尚未接入。
+已读取的真实 Graph 示例：`2026-08-28T13:00:00.0000000` + `timeZone=UTC`，`originalStartTimeZone=South Africa Standard Time`。归一化为 `13:00Z`，南非应显示 15:00，中国应显示 21:00；实际用户页面仍待人工验收。
 
+### Recording Matching Fix
 
+已修复 recording matching 的函数参数不一致及返回值处理错误：
 
-### 数据库与部署
+- `recording_datetime` 正确接收录音文件名和 Graph metadata。
+- `match_calendar_event` 正确接收文件名、录音时间及候选会议。
+- `event_people` 的邮箱列表／姓名映射返回值按实际结构处理。
+- 使用有可靠时区的 Graph 时间，避免把无时区文件名时间戳直接当作 UTC。
 
-- 使用 PostgreSQL；当前测试环境根据待办上下文使用 Neon 保存用户、会议、审核和录音队列数据。
-- Vercel 用于临时前端部署；后端 API/Worker 的实际托管位置和长期方案仍需确认。
-- Neon、Vercel 等属于当前临时测试架构，正式环境预计迁移到公司 Azure；具体 Azure 服务和迁移时间尚未确定。
+这些问题此前导致或促成 meeting date、attendee data、meeting metadata 无法正确补全。修复仅针对现有逻辑，不代表 T5 跨用户录音处理已完成；正确匹配真实会议仍需 staging 用户验证。
 
+### Validation
 
+以下为刚完成部署时的自动化验证结果，本次文档更新未重新执行：
 
-## 2. 已经完成或修改的部分
+- Backend：282 tests passed。
+- Frontend：55 tests passed。
+- ESLint：passed。
+- Python compileall：passed。
+- Next.js production build：passed；Vercel 云端构建及部署成功。
 
+Retry/Reprocess 的最新定向验证结果：
 
+- Targeted backend tests：73 passed。
+- Frontend targeted tests：16 passed。
+- ESLint：passed。
+- Code implemented、committed、pushed，并已部署到 staging。
+- Retry / Reprocess 的人工 staging 状态链路已验收，当前阶段完成；这不代表真实 transcription Worker E2E 已完成或 production ready。
 
-### 最近三次提交的直接证据
+只读上线检查：API health、前端到 API 的 CORS、Microsoft 登录页及 OIDC 配置、Graph 日历读取、已部署的 Speaker 试听／映射及编辑申请接口均已确认。完整 Microsoft 登录及登录后 UI 交互未被标记为验收通过。
 
-最近三次提交：
+### Manual staging validation status
 
-1. `e4aada8 Match imported recordings to Outlook meetings`
-2. `1a82672 Shorten old meetings tab label`
-3. `7aa5585 Ignore local files during Vercel deployment`
+真实公司用户 staging 验证状态：
 
-这三次提交共涉及 7 个文件，新增 268 行、删除 4 行：
+- [ ] 1. Microsoft login 可完成登录并返回 staging。
+- [ ] 2. 能看到该用户的真实 Outlook meetings。
+- [ ] 3. Meeting title、organiser、attendees、date、time 正确；南非／中国本地显示及跨日期场景正确。
+- [ ] 4. Recording 匹配到正确的会议，而非同时间附近的其他会议。
+- [ ] 5. 有审核权限时 Speaker audio preview 出现且可播放。
+- [ ] 6. Speaker dropdown 包含正确的 Outlook attendees，映射保存后显示正确。
+- [x] 7. Attendee edit-request workflow 正常，申请仅限本人参加的会议。
+- [x] 8. Organiser 可 approve/reject；批准前不可编辑，批准后仅可编辑获授权会议。
+- [ ] 9. 获批参会者仍不能批准最终 meeting notes，不能指定任意收件人；仅允许向本人发送副本。
 
-- `.vercelignore`：增加 Vercel 部署忽略规则。
-- `frontend/src/app/dashboard-client.tsx`：Dashboard 文案/显示调整，包括缩短 Old Meetings 标签。
-- `app/graph/calendar_match.py`：新增 Outlook Calendar 匹配逻辑。
-- `app/services/meeting_matching.py`：新增会议匹配服务。
-- `app/services/recording_enrichment.py`：新增录音元数据补全服务。
-- `app/pipeline/steps.py`：把会议匹配/补全接入录音处理流水线。
-- `app/api/reviews.py`：调整审核相关逻辑。
+本轮人工验证不得启用真实付费转写／AI，也不得发送真实邮件。涉及处理的场景使用已完成转写的现有会议；依赖新的真实处理结果的验收保持待验证，不为验收临时解除安全开关。
 
+## Feature Status
 
+### Completed / implemented
 
-### 最近十次提交显示的已实现方向
+以下能力已实现或部署；不代表每项都已通过真实多人验收：
 
-- 真实 Microsoft Entra 登录与 transcript-only 处理模式。
-- Neon 登录表迁移修复。
-- Microsoft 同步和录音工作流加固。
-- 登录页背景更新。
-- 参会者编辑申请与 Speaker 映射基础功能。
-- Vercel 部署文件过滤。
-- Old Meetings 标签调整。
-- 导入录音与 Outlook 会议匹配。
+- Microsoft company login。
+- Outlook meeting/calendar reading。
+- OneDrive recording discovery。
+- Recording-to-meeting matching logic（T1，参数及时间处理 bug 已修复，真实匹配待验收）。
+- Transcript/review workflow。
+- Speaker A/B/C detection。
+- Speaker audio preview（T2，已实现并部署，真实试听待验收）。
+- Speaker-to-Outlook-attendee mapping。
+- Attendee edit-access request（T4，真实双用户 staging E2E 已通过）。
+- Organiser approve/reject edit request（真实双用户 staging E2E 已通过）。
+- Approved attendee transcript/action-item/speaker editing（真实双用户 staging E2E 已通过）。
+- Attendee self-copy email restriction（T3，前后端权限限制已实现，真实角色验收待完成）。
+- PostgreSQL job queue。
+- Independent background Worker。
+- retry/backoff infrastructure。
+- job lease/heartbeat。
+- stale-job recovery。
+- worker shutdown handling。
+- staging Worker deployment。
+- staging API deployment。
+- staging frontend deployment。
 
+### T5 — Cross-user recording processing
 
+**Status: MVP IMPLEMENTED、COMMITTED、PUSHED、DEPLOYED TO STAGING；REAL CROSS-USER E2E NOT COMPLETE。**
 
-### 当前结论
+业务规则：T5 不允许未参加会议的人申请。当前用户必须是该会议的 organizer 或 attendee。如果当前用户参加过会议，但 recording 存储在另一个已注册／opt-in 用户的 OneDrive，当前用户可以 Request Processing；Recording Owner Approve/Deny 后，系统才允许处理该 recording。
 
-- **录音与 Outlook 会议匹配：已实现代码，待真实多人会议验收。** 最新提交已经增加匹配和元数据补全服务，但仅凭 diff 统计不能证明日期、参会者和候选姓名在所有会议中都正确。
-- **Speaker 姓名映射：已有基础实现，待增强。** 已有提交支持 Speaker 映射；代表性音频试听尚未实现。
-- **参会者编辑申请：已有基础实现，待端到端验证。** 不能再按“完全未开发”描述，但组织者审批、权限边界和修改后的行为仍需实测。
-- **Gemini 内容整理：尚未接入。** 当前只有 Transcript。
-- **独立 Worker：任务持久化方向已形成，但持续运行的 Worker 部署尚未完成。**
+T5 MVP 当前事实：
 
+- 已实现、commit、push，并部署到 staging。
+- Commit：`caafe365d1e80dd7b1fea106154090c4ef29d8de`。
+- Migration：`ae52c790b316`。
+- Backend targeted tests：39 passed。
+- Frontend targeted tests：11 passed。
+- Recent Meetings 已在真实 staging 显示过去 7 天会议。
+- processed meeting 可显示 View。
+- Request Processing 的 frontend、backend、model 与 approval flow 已实现。
 
+但 T5 real cross-user E2E 尚未完成。真实页面中，一些应该属于跨用户场景的会议仍显示 `No recording found` 或 `No reliable recording found`。因此以下真实链路尚未验证成功：
 
-## 3. 可独立验证的任务
+`cross-user OneDrive discovery/matching -> Request Processing -> owner approve -> queued`
 
+T5 不能标记为 fully validated。
 
+### Background sync
 
-### T1. 验收录音与 Outlook 会议匹配
+Pilot proposal，尚未通过 production 验证：
 
-- **目标**：确认导入 OneDrive 录音后，系统能够匹配正确的 Outlook 会议，并显示真实日期、组织者、参会者及 Speaker 姓名候选项。
-- **涉及文件**：
-  - `app/graph/calendar_match.py`
-  - `app/services/meeting_matching.py`
-  - `app/services/recording_enrichment.py`
-  - `app/pipeline/steps.py`
-  - `frontend/src/app/dashboard-client.tsx`
-- **验收标准**：
-  - 用一场已知组织者和至少两名参会者的真实 Outlook 会议测试。
-  - 导入对应录音后，会议日期和组织者正确。
-  - 参会者列表与 Outlook 一致。
-  - Speaker 下拉候选项包含本次会议参会者。
-  - 找不到匹配时明确显示“未匹配”，不能错误绑定其他会议。
-- **优先级**：高。
+- 大约每 15 分钟 polling；这是试点方案，不是已确认启用的生产调度。
+- 优先合理使用资源，避免不必要的同步和外部请求。
+- Opt-out 应停止未来同步和 AI 处理。
+- 已有历史 Meeting Intel 数据继续可访问，不因退出而删除。
 
+### T6 — AI meeting insights
 
+- Gemini adapter / provider abstraction 已存在。
+- Mock/offline processing 已存在。
+- 公司真实 AI 凭据尚未接入使用，真实 AI 处理未验收。
+- 计划输出：Summary、Key points、Action items、Risks、Next steps。
+- Gemini 仍是首选 meeting-insights provider。
+- 正式 transcription provider 尚未最终选定。
+- 候选包括 Gemini Transcribe，以及 Cloudflare Whisper 等较低成本转写服务。
+- 最终选择必须依据真实公司会议的准确率和成本测试；这些候选不代表已接入或获准调用。
 
-### T2. 增加 Speaker 代表性音频试听  已完成
+### T7 — Worker
 
-- **目标**：让组织者先试听 Speaker A/B/C 的短音频片段，再选择对应的 Outlook 参会者姓名。
-- **涉及文件**：会议审核详情页（准确路径待定位）、录音片段 API（待新增或定位）、录音处理/存储模块。
-- **验收标准**：
-  - 每个检测到的 Speaker 至少提供一个可播放的短片段。
-  - 播放权限仅授予有权审核该会议的用户。
-  - 组织者可试听、选择姓名并保存映射。
-  - 保存后 Transcript 中相应 Speaker 标签能够一致显示所选姓名。
-- **优先级**：中。
+**Current status: DEPLOYED TO STAGING。** 不再描述为“未部署”。
 
+已实现 PostgreSQL queue、retry/backoff、deduplication、lease/heartbeat、stale recovery、graceful shutdown，并完成 Railway staging 部署及 PostgreSQL 连接验证。
 
+真实付费 AI／transcription execution 有意保持禁用。服务已上线不等于真实转写消费、异常恢复及多人流程已完成生产验收。
 
-### T3. 完成参会者“仅发送副本给自己”  已完成
+### Processing status / Retry / Reprocess / Cancel
 
-- **目标**：编辑权限获批的参会者不能向其他人群发，只能把会议副本发送到自己的公司邮箱。
-- **涉及文件**：`app/api/reviews.py`、会议详情/邮件预览前端（准确路径待定位）、邮件发送服务（待定位）。
-- **验收标准**：
-  - 组织者仍可按规则选择收件人并批准发送。
-  - 获批参会者只看到“发送副本给自己”。
-  - 前端无法选择其他收件人。
-  - 即使绕过前端直接调用 API，后端也拒绝给其他地址发送。
-  - 发送行为写入审计记录。
-- **优先级**：中；可安排在首轮核心录音链路稳定之后。
+**Status: IMPLEMENTED、COMMITTED、PUSHED、DEPLOYED TO STAGING；CURRENT PHASE COMPLETE。**
 
+用户提出导入／转写／处理阶段更清晰的进度展示、失败任务 Retry，以及 queued/running 任务 Cancel。
 
+Retry/Reprocess 已分两个 commit 完成；processing status 与 review status 已拆分，并加入 Retry 与安全 Reprocess。定向验证为 backend 73 passed、frontend 16 passed、ESLint passed；代码已 committed、pushed，并已部署到 staging。
 
-### T4. 验证参会者编辑申请现有实现
+当前 staging UI 已观察到：
 
-- **目标**：确认现有“参会者申请编辑、组织者批准”功能完整且权限安全。
-- **涉及文件**：参会者申请相关前后端文件（最近提交 `c9f2add`，准确路径待定位）、`app/api/reviews.py`。
-- **验收标准**：
-  - 参会者能对自己参加的会议发起申请。
-  - 组织者能查看、批准或拒绝申请。
-  - 批准前参会者不能编辑；批准后只能编辑授权会议。
-  - 获批参会者可修改 Transcript、行动项和 Speaker 映射。
-  - 参会者不能批准会议或向其他人群发邮件。
-- **优先级**：高。
+- Processing / Review 已分列。
+- Cancelled job 显示 Retry。
+- Approved Completed 显示 View-only。
+- clean Awaiting Review Completed 可显示 Reprocess + View。
+- 某些 Awaiting Review Completed 只有 View，表示 `can_reprocess=false`。
 
+已人工验证真实 staging UI 状态链路：`Reprocess -> Queued -> Cancel -> Cancelled -> Retry`。Retry / Reprocess 当前阶段视为完成。
 
+该验收不代表真实 transcription Worker E2E 已完成，也不代表真实付费处理已达到 production ready。`RECORDING_PROCESSING_ENABLED=false` 仍保持不变，自动处理没有开启。
 
-### T5. 开发跨用户录音处理申请
+### Participants / Attendees
 
-- **目标**：参会者可申请处理会议组织者 OneDrive 中的录音；录音所有者批准后，任务才进入处理队列。
-- **涉及文件**：申请数据模型及数据库迁移、Microsoft/OneDrive 服务、录音队列服务、申请/审批 API、参会者和组织者前端页面（均待开发或定位）。
-- **验收标准**：
-  - 只有真实参会者能对对应会议发起申请。
-  - 申请不直接暴露或处理录音。
-  - OneDrive 录音所有者可批准或拒绝。
-  - 批准后系统使用受控的 `drive_id`/`item_id` 入队，不能由前端任意指定他人文件。
-  - 管理员可查看申请与审计记录，但不能绕过数据权限读取无关录音。
-- **优先级**：低；属于后续功能，首轮多人测试不依赖它。
+**Status: FIXED、COMMITTED、DEPLOYED、VALIDATED ON REAL STAGING；COMPLETE。**
 
+- Dashboard participant count 正确。
+- Meeting Detail attendees 正确。
+- Commit：`2148887006cb144b03927fda67a3393f45877abc`。
 
+### Multi-user Edit Access
 
-### T6. 接入 Gemini 会议内容整理
+**Status: REAL TWO-USER STAGING E2E PASSED；COMPLETE。**
 
-- **目标**：基于 Transcript 生成结构化会议摘要、重点、行动项、风险和下一步，并进入人工审核。
-- **涉及文件**：`app/pipeline/steps.py`、AI provider/config 模块（待新增或定位）、结构化数据模型/迁移、会议审核 API、会议详情前端。
-- **验收标准**：
-  - Gemini Key 仅通过环境变量提供，不进入 Git。
-  - 输出符合固定结构，并能处理空字段和模型异常。
-  - 原始 Transcript 始终保留，AI 输出与原文可追溯。
-  - 组织者可修改生成内容后再批准。
-  - 失败时状态明确且可重试，不把空结果当成功。
-  - 使用短、中、长三种真实 Transcript 验证质量和成本。
-- **优先级**：高。
+已通过 attendee Request Edit Access、organizer approve、attendee edit、Save speaker names 的真实双用户 staging E2E。CORS 问题已修复；Sphesihle 实际复测回复 “works”。
 
+### Performance
 
+**Status: BOTTLENECK IDENTIFIED；NOT OPTIMIZED。**
 
-### T7. 部署独立录音 Worker
+- `/recordings/available` 约 9.4s。
+- `/reviews/all` 约 3.9s。
+- 当前只完成瓶颈定位，尚未优化，不能写成 fixed。
+- 后续方向：对 opt-in 用户进行 Calendar / recording metadata 后台同步和持久化；Dashboard 优先读取数据库；避免页面打开时重复扫描 OneDrive。
 
-- **目标**：让录音处理脱离 Web/API 请求生命周期，可靠消费数据库队列中的任务。
-- **涉及文件**：`app/pipeline/steps.py`、队列/任务模型、Worker 启动入口和部署配置（准确路径待定位或新增）。
-- **验收标准**：
-  - API 只负责校验和入队，可立即返回任务 ID。
-  - Worker 能领取任务、下载 MP4、调用转写服务并更新状态。
-  - Worker 或 API 重启后，未完成任务不会丢失。
-  - 同一录音重复提交不会被并行重复处理。
-  - 失败任务记录错误、重试次数和最终状态。
-  - 临时环境完成一次真实短 MP4 测试；将来迁移 Azure 时保留同一队列语义。
-- **优先级**：高。
+### Remaining known gaps
 
+- T5 real cross-user recording discovery E2E。
+- Performance optimization。
+- Background sync。
+- Admin override/control。
+- Real transcription / Gemini / email E2E。
+- Teams native transcript。
+- Nested OneDrive discovery real-user acceptance。
 
+### T8 — Email workflow validation
 
-### T8. 验证邮件预览、收件人选择和失败重试
+邮件预览、权限限制及审计相关实现已保留；真实邮件发送、失败恢复及不重复发送仍需单独授权后的验证。本轮不发送真实邮件，不因状态为 approved 就宣称邮件已送达。
 
-- **目标**：确保批准与邮件发送状态一致，失败后能够安全重试且不会重复群发。
-- **涉及文件**：`app/api/reviews.py`、邮件服务、会议详情/邮件预览前端（准确路径待定位）。
-- **验收标准**：
-  - 预览内容与实际发送内容一致。
-  - 组织者可勾选/取消参会者。
-  - 非允许域名或无权限收件人按规则处理。
-  - 发送失败时会议不被错误标记为已全部发送。
-  - 重试不会向已成功收件人重复发送。
-  - 审计记录包含操作者、收件人、时间和结果。
-- **优先级**：高。
+### T9 — Teams native transcripts
 
+**Status: PLANNED。**
 
+存在 Teams 原生 transcript 时优先导入，避免付费 MP4 重复转写；MP4 transcription 作为 fallback。原生 transcript 获取权限、说话人／时间戳、与 MP4 路线的去重均待实现或验收，不标为已完成。
 
-### T9. 开发 Teams 原生 Transcript 路线并防止重复处理
+### T10 — Full multi-user E2E validation
 
-- **目标**：会议已有 Teams 原生 Transcript 时优先通过 Microsoft Graph 导入；没有时才使用 OneDrive MP4 转写。
-- **涉及文件**：Microsoft Graph/Teams 服务（待新增或定位）、`app/pipeline/steps.py`、会议与录音匹配服务、数据库唯一标识/迁移。
-- **验收标准**：
-  - 能查询并下载一场真实 Teams 会议的原生 Transcript。
-  - 保留 Graph 提供的可用说话人身份和时间戳。
-  - 有原生 Transcript 时不再调用付费语音转写。
-  - 同一会议的 Teams Transcript 与 MP4 不会生成两条会议记录或两个处理任务。
-  - Graph 无 Transcript 或权限不足时明确回退 MP4 路线。
-- **优先级**：中；可在 MP4 核心链路稳定后开发。
+**Status: PENDING。** 需真实组织者及参会者完成全链路、角色权限与异常恢复验证，才能宣称多人端到端稳定。当前部署、单元测试和只读检查不能替代该验收。
 
+## Immediate Next Step
 
+Retry / Reprocess、Participants / Attendees 与 Multi-user Edit Access 当前任务均已完成。后续重要工作保持为：T5 real cross-user recording discovery E2E、performance optimization 与 background sync；另有 Admin override/control、real transcription / Gemini / email E2E、Teams native transcript，以及 nested OneDrive discovery real-user acceptance。T5 MVP 已部署，但在真实跨用户发现、匹配、申请、owner 审批并 queued 的整条链路成功前，不标记为 fully validated。
 
-### T10. 完整多人端到端测试
-
-- **目标**：用真实组织者和参会者验证从 Microsoft 数据到审核邮件的完整业务流程。
-- **涉及文件**：全链路；测试脚本/测试记录建议放入 `docs/` 或 E2E 测试目录。
-- **验收标准**：
-  - Outlook 创建一场包含组织者和参会者的测试会议。
-  - 完成：导入 → 入队 → Worker 转写 → 申请编辑 → 组织者批准 → 修改 Transcript/Speaker → 预览邮件 → 选择收件人 → 批准发送。
-  - 分别验证组织者、未授权参会者、获批参会者和管理员权限。
-  - 验证服务重启、转写失败和邮件失败的恢复路径。
-  - 保存测试证据和遗留问题，全部通过后才能称为“端到端稳定”。
-- **优先级**：高；依赖 T1、T4、T7、T8，若要展示 AI 内容则还依赖 T6。
-
-
-
-## 4. 建议后续再做的功能
-
-以下功能不应阻塞当前 MP4 核心链路和首轮小范围测试：
-
-1. **跨用户录音处理申请**：涉及 OneDrive 所有权、审批和审计，安全边界复杂，应单独设计和验收。
-2. **参会者仅发送副本给自己**：重要但不是转写链路的前置条件，可在组织者邮件流程稳定后补齐。
-3. **Teams 原生 Transcript 自动路线**：有明显降本价值，但应先稳定现有 MP4 路线，再加入双路线和去重逻辑。
-4. **Speaker 代表性音频**：可显著改善人工映射体验，但不阻塞基础 Transcript 审核。
-5. **正式迁移 Azure**：当前 Neon/Vercel/其他临时托管适合预发布测试；正式服务选型、容量、费用与迁移由公司 Azure 资源确定后处理。
-
-
-
-## 5. 风险和不确定点
-
-
-
-### 功能状态证据有限
-
-- 本文没有读取具体实现，只能根据提交名称、文件名和 diff 统计判断。
-- `c9f2add` 表明参会者编辑申请和 Speaker 映射已有实现，但不能证明前端、后端和权限边界已全部通过测试。
-
-
-
-### 会议匹配可能存在误匹配
-
-- 录音文件名、时间和 Outlook 会议可能不完全一致。
-- 必须定义时间容差、组织者校验、多人会议冲突和“无匹配”策略。
-- 错误匹配比不匹配风险更高，因为会造成错误参会者和邮件收件人。
-
-
-
-### Worker 尚未形成可靠运行闭环
-
-- 仅把任务写入 Neon 不代表任务会被执行。
-- 没有持续运行的 Worker 时，录音可能长期停留在队列。
-- 必须确认 Worker 入口、部署平台、并发数、超时、重试和死信策略。
-
-
-
-### AI Provider 尚未落地
-
-- Gemini 的模型、账号、付费 Key、数据保留政策、输出 schema 和预算尚待确认。
-- AI 内容必须由组织者审核，不能直接自动发送。
-
-
-
-### Teams Transcript 存在权限与身份不确定性
-
-- 需要确认 Entra Application 权限和管理员许可是否完整。
-- Teams 必须实际生成 Transcript；不是所有 MP4 都有对应 Transcript。
-- Graph 返回的 Transcript 是否包含可直接使用的真实姓名，需要用公司真实会议验证。
-
-
-
-### 邮件一致性与重试风险
-
-- “会议已批准”和“邮件已成功发送”不能简单视为同一状态。
-- 部分收件人成功、部分失败时需要幂等重试，否则可能重复发送。
-
-
-
-### 临时环境与正式环境差异
-
-- Neon、Vercel 及临时后端适合测试，不代表已经满足正式生产的容量、安全、监控、备份和合规要求。
-- 正式迁移 Azure 后，连接字符串、回调地址、密钥、Worker 部署和数据库迁移均需重新验证。
-
-
-
-### 安全要求
-
-- `.env`、`.env.local`、数据库连接字符串、Microsoft Client Secret、Gemini Key 和转写服务 Key 均不得提交 Git。
-- 跨用户录音功能必须以后端验证会议关系和录音所有权，不能信任前端传入的任意 `drive_id` 或 `item_id`。
-- 不要把建议当成现有事实，不要自行设计代码里已经有答案的东西
-
+继续遵守安全边界：secret 和本地测试媒体不进入 Git；真实付费 AI 和邮件发送保持关闭，直至获得明确授权。staging 不等同于正式生产环境。

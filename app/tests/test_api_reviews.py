@@ -70,6 +70,28 @@ class TestAllMeetingsEndpoint:
         assert resp.status_code == 200
         assert resp.json() == []
 
+    async def test_query_only_loads_columns_used_by_response(self):
+        from sqlalchemy.dialects import postgresql
+        from app.api import reviews
+
+        db = AsyncMock()
+        db.scalars.return_value = MagicMock(
+            unique=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+
+        assert await reviews.all_meetings(
+            db=db, upn="alice@taxconsulting.co.za"
+        ) == []
+
+        statement = db.scalars.await_args.args[0]
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+        assert "JOIN meeting_participants" in sql
+        assert "lower(meeting_participants.user_upn)" in sql
+        assert "meetings.transcript" in sql
+        assert "meetings.extracted_json" in sql
+        assert "meetings.drive_item_id" not in sql
+        assert "meetings.email_delivery_error" not in sql
+
 
 class TestToOut:
     def test_converts_meeting_to_output(self):

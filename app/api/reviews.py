@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 from fastapi import APIRouter, Body, Depends, HTTPException, Response
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import load_only, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -291,7 +291,41 @@ async def all_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(cu
         select(Meeting)
         .join(MeetingParticipant)
         .where(func.lower(MeetingParticipant.user_upn) == upn)
-        .options(selectinload(Meeting.participants), selectinload(Meeting.action_items))
+        .options(
+            load_only(
+                Meeting.id,
+                Meeting.organizer_upn,
+                Meeting.title,
+                Meeting.recorded_at,
+                Meeting.state,
+                Meeting.transcript,
+                Meeting.summary,
+                Meeting.extracted_json,
+                Meeting.attendees_raw,
+                Meeting.error,
+                Meeting.approved_recipients,
+            ),
+            selectinload(Meeting.participants).load_only(
+                MeetingParticipant.id,
+                MeetingParticipant.meeting_id,
+                MeetingParticipant.user_upn,
+                MeetingParticipant.is_organizer,
+                MeetingParticipant.access_type,
+                MeetingParticipant.edit_access_status,
+                MeetingParticipant.edit_requested_at,
+            ),
+            selectinload(Meeting.action_items).load_only(
+                ActionItem.id,
+                ActionItem.meeting_id,
+                ActionItem.task,
+                ActionItem.owner,
+                ActionItem.deadline_text,
+                ActionItem.deadline_iso,
+                ActionItem.confidence,
+                ActionItem.source_quote,
+                ActionItem.approved,
+            ),
+        )
     )).unique().all()
     return [_to_out(m, upn) for m in rows]
 

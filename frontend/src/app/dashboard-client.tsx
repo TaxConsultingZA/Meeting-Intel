@@ -9,8 +9,8 @@ import { formatEventTime, parseInstant } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
 import RecentMeetings from "@/components/recent-meetings";
 import { JobControls } from "@/components/recording-jobs";
-import { getAllMeetings, getRecordingJobs, requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
-import type { AvailableRecording, MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut } from "@/lib/types";
+import { decideRecordingProcessing, getAllMeetings, getProcessingRequests, getRecordingJobs, requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
+import type { AvailableRecording, MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
 
 /** Convert a UPN like "jane.doe@taxconsulting.co.za" to a display name "Jane Doe". */
 function formatUpn(upn: string | null | undefined): string {
@@ -58,6 +58,9 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const router = useRouter();
   const [meetings, setMeetings] = useState(initialMeetings);
   const [recordingJobs, setRecordingJobs] = useState(initialRecordingJobs);
+  const [processingRequests, setProcessingRequests] = useState<RecordingProcessingRequest[]>([]);
+  const [processingRequestsError, setProcessingRequestsError] = useState("");
+  const [processingRequestBusy, setProcessingRequestBusy] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("upcoming");
   const [hasOpenedRecent, setHasOpenedRecent] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -90,6 +93,17 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     const timer = setInterval(() => { void refreshProcessing().catch(() => {}); }, 10000);
     return () => clearInterval(timer);
   }, [hasActiveProcessing, refreshProcessing, showImport]);
+
+  const refreshProcessingRequests = useCallback(async () => {
+    try {
+      setProcessingRequests(await getProcessingRequests(accessToken));
+      setProcessingRequestsError("");
+    } catch {
+      setProcessingRequestsError("Recording processing requests are temporarily unavailable.");
+    }
+  }, [accessToken]);
+
+  useEffect(() => { void refreshProcessingRequests(); }, [refreshProcessingRequests]);
 
   async function refreshRecordingJobs() {
     await refreshProcessing();
@@ -126,6 +140,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const activeJobMeetingIds = new Set(activeRecordingJobs.flatMap((job) => job.meeting_id ? [job.meeting_id] : []));
   const pipelineActive  = meetings.filter((m) => PIPELINE_STATES.includes(m.state) && !activeJobMeetingIds.has(m.id));
   const pendingReview   = meetings.filter((m) => m.state === "awaiting_review");
+  const pendingProcessingRequests = processingRequests.filter((request) => request.status === "pending");
   const oldMeetings     = meetings.filter((m) => m.state === "approved" || m.state === "sent");
   const cancelled       = meetings.filter((m) => m.state === "failed" || m.state === "cancelled");
   const persistedSyncErrors = syncStates
@@ -150,7 +165,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const stats: { icon: string; num: number; label: string; color: string; tab: Tab }[] = [
     { icon: "📅", num: upcomingEvents.length,                  label: "Upcoming",         color: "bg-blue-50",   tab: "upcoming"     },
     { icon: "⚙️", num: inProgressEvents.length + activeRecordingJobs.length + pipelineActive.length, label: "In Progress", color: "bg-indigo-50", tab: "in_progress"  },
-    { icon: "📋", num: pendingReview.length,                   label: "Awaiting Review",  color: "bg-amber-50",  tab: "review"       },
+    { icon: "📋", num: pendingReview.length + pendingProcessingRequests.length, label: "Awaiting Review", color: "bg-amber-50", tab: "review" },
     { icon: "✅", num: oldMeetings.length,                     label: "Completed",        color: "bg-green-50",  tab: "old_meetings" },
   ];
 
@@ -233,7 +248,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           { id: "recent" as Tab, label: "Recent Meetings", count: null },
           { id: "upcoming"    as Tab, label: "Upcoming Meetings",         count: upcomingEvents.length                          },
           { id: "in_progress" as Tab, label: "In Progress",               count: inProgressEvents.length + activeRecordingJobs.length + pipelineActive.length },
-          { id: "review"      as Tab, label: "Awaiting Review",           count: pendingReview.length                           },
+          { id: "review"      as Tab, label: "Awaiting Review",           count: pendingReview.length + pendingProcessingRequests.length },
           { id: "old_meetings"as Tab, label: "Old Meetings",               count: null                                          },
           { id: "historical"  as Tab, label: "Historical Access",         count: historical.length || null                     },
           { id: "cancelled"   as Tab, label: "Failed / Cancelled",                 count: cancelled.length || null                      },
@@ -291,10 +306,48 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
       {/* Awaiting Review */}
       {tab === "review" && (
-        pendingReview.length === 0
+        pendingReview.length === 0 && pendingProcessingRequests.length === 0 && !processingRequestsError
           ? <EmptyState icon="📭" title="All caught up" sub="No meetings are awaiting your review." />
-          : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {pendingReview.map((m) => <MeetingCard key={m.id} meeting={m} />)}
+          : <div className="space-y-7">
+              <section aria-labelledby="ai-notes-reviews-heading">
+                <h2 id="ai-notes-reviews-heading" className="mb-3 text-base font-semibold text-[#003366]">Existing AI Notes Reviews</h2>
+                {pendingReview.length === 0
+                  ? <p className="text-sm text-[#6b7280]">No AI notes are awaiting review.</p>
+                  : <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                      {pendingReview.map((m) => <MeetingCard key={m.id} meeting={m} />)}
+                    </div>}
+              </section>
+              <section aria-labelledby="recording-processing-requests-heading">
+                <h2 id="recording-processing-requests-heading" className="mb-3 text-base font-semibold text-[#003366]">Recording Processing Requests</h2>
+                {processingRequestsError && <p role="alert" className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{processingRequestsError}</p>}
+                {pendingProcessingRequests.length === 0
+                  ? !processingRequestsError && <p className="text-sm text-[#6b7280]">No recording processing requests are awaiting approval.</p>
+                  : <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                      {pendingProcessingRequests.map((request) => (
+                        <article key={request.id} className="rounded-lg border border-[#dde1e8] bg-white p-4 shadow-sm">
+                          <h3 className="font-semibold text-[#003366]">{request.subject || "Meeting"}</h3>
+                          <p className="mt-2 text-sm text-[#6b7280]">Requested by: {request.requester_name || "Requester"}</p>
+                          {request.can_decide && (
+                            <div className="mt-4 flex gap-2">
+                              {[{ label: "Approve", approved: true }, { label: "Reject", approved: false }].map(({ label, approved }) => (
+                                <button key={label} type="button" disabled={processingRequestBusy === request.id}
+                                  className="rounded-md bg-[#003366] px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
+                                  onClick={() => {
+                                    setProcessingRequestBusy(request.id);
+                                    void decideRecordingProcessing(request.id, approved, accessToken)
+                                      .then(refreshProcessingRequests)
+                                      .catch((error: unknown) => setProcessingRequestsError(error instanceof Error ? error.message : "Could not update the request."))
+                                      .finally(() => setProcessingRequestBusy(null));
+                                  }}>
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </article>
+                      ))}
+                    </div>}
+              </section>
             </div>
       )}
 

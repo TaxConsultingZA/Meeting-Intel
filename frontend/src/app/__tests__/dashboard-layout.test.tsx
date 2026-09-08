@@ -1,13 +1,14 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import DashboardClient from "../dashboard-client";
-import type { CalendarEvent, MeetingOut, RecordingJobOut } from "@/lib/types";
-import { getAllMeetings, getProcessingRequests, getRecentMeetings, getRecordingJobs } from "@/lib/api";
+import type { CalendarEvent, MeetingOut, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
+import { decideRecordingProcessing, getAllMeetings, getProcessingRequests, getRecentMeetings, getRecordingJobs } from "@/lib/api";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("@/lib/api", () => ({
   getAllMeetings: vi.fn(), getRecordingJobs: vi.fn(), requestHistoricalAccess: vi.fn(),
   getRecentMeetings: vi.fn(), getProcessingRequests: vi.fn(),
+  decideRecordingProcessing: vi.fn(),
   cancelRecordingJob: vi.fn(), retryRecordingJob: vi.fn(),
   shareMeeting: vi.fn(), unsubscribeCurrentUser: vi.fn(),
 }));
@@ -26,6 +27,15 @@ afterEach(() => {
   vi.clearAllMocks();
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
+
+function processingRequest(overrides: Partial<RecordingProcessingRequest> = {}): RecordingProcessingRequest {
+  return {
+    id: "request-1", event_id: "event-1", subject: "Cross-user recording", start: null, end: null,
+    organizer_email: "owner@example.test", requester_user_id: "requester-1", requester_name: "Wei Jiuyang",
+    status: "pending", can_decide: true, created_at: "2026-09-08T08:00:00Z", decided_at: null, meeting_id: null,
+    ...overrides,
+  };
+}
 
 function calendarEvent(overrides: Partial<CalendarEvent>): CalendarEvent {
   return {
@@ -139,6 +149,32 @@ it("counts persisted meetings from calendar participants", () => {
   expect(screen.getByText("2 participants")).toBeInTheDocument();
 });
 
+it("renders pending recording processing requests with owner-only approval actions", async () => {
+  vi.mocked(getProcessingRequests).mockResolvedValue([
+    processingRequest(),
+    processingRequest({ id: "request-2", subject: "Someone else's recording", requester_name: "Other Requester", can_decide: false }),
+    processingRequest({ id: "request-3", subject: "Already approved", status: "approved" }),
+  ]);
+  vi.mocked(decideRecordingProcessing).mockResolvedValue(processingRequest({ status: "approved" }));
+  render(<DashboardClient meetings={[processedMeeting()]} upcoming={[]} historical={[]}
+    upn="owner@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} />);
+
+  await waitFor(() => expect(getProcessingRequests).toHaveBeenCalledWith("offline-test-token"));
+  fireEvent.click(screen.getAllByRole("button", { name: /Awaiting Review/ })[1]);
+
+  expect(screen.getByRole("heading", { name: "Existing AI Notes Reviews" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Recording Processing Requests" })).toBeInTheDocument();
+  expect(screen.getByText("Requested by: Wei Jiuyang")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+  expect(screen.getByText("Someone else's recording").parentElement).not.toHaveTextContent("Approve");
+  expect(screen.queryByText("Already approved")).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+  await waitFor(() => expect(decideRecordingProcessing).toHaveBeenCalledWith("request-1", true, "offline-test-token"));
+});
+
 it("counts active recording jobs and does not duplicate their linked meeting fallback", () => {
   const meeting = processedMeeting({ id: "processing-meeting", title: "Transcribing meeting", state: "transcribing" });
   const linkedJob = recordingJob({
@@ -213,11 +249,11 @@ it("keeps Recent Meetings mounted after its first visit", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Recent Meetings" }));
   expect(await screen.findByText("No recently ended meetings.")).toBeInTheDocument();
   expect(getRecentMeetings).toHaveBeenCalledOnce();
-  expect(getProcessingRequests).toHaveBeenCalledOnce();
+  expect(getProcessingRequests).toHaveBeenCalledTimes(2);
 
   fireEvent.click(screen.getByRole("button", { name: "Upcoming Meetings" }));
   fireEvent.click(screen.getByRole("button", { name: "Recent Meetings" }));
   expect(screen.getByText("No recently ended meetings.")).toBeInTheDocument();
   await waitFor(() => expect(getRecentMeetings).toHaveBeenCalledOnce());
-  expect(getProcessingRequests).toHaveBeenCalledOnce();
+  expect(getProcessingRequests).toHaveBeenCalledTimes(2);
 });

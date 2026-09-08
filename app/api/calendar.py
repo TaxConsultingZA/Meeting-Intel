@@ -19,13 +19,14 @@ async def recent_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends
     except Exception as exc:
         raise HTTPException(502, "Recent Calendar unavailable") from exc
     user = await service.user_by_upn(db, upn)
+    recording_cache = {}
     now = datetime.now(timezone.utc)
     recent = [e for e in events if service.recent_event(e, now) and upn.lower() in service.people(e)]
     result = []
     for event in sorted(recent, key=lambda e: parse_graph_datetime(e["end"]), reverse=True):
         row = _format_event(event)
         row["status"] = "ended"
-        row.update(await service.recent_state(db, user, event))
+        row.update(await service.recent_state(db, user, event, recording_cache=recording_cache))
         result.append(row)
     return result
 

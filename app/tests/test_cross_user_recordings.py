@@ -4,6 +4,7 @@ SQLite is only a test adapter; PostgreSQL constraints are separately compiled.
 No Graph, transcription, mail, or staging database connections are permitted.
 """
 from copy import deepcopy
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -110,6 +111,47 @@ async def test_recent_ended_window_and_upcoming_unchanged(ctx, monkeypatch):
     upcoming = await calendar.upcoming_meetings(7, ctx.db, ctx.requester.upn)
     assert len(upcoming) == 5  # Existing API contract untouched; frontend filters ended ones.
     assert calendar._event_status(events[3]["start"]["dateTime"], events[3]["end"]["dateTime"]) == "in_progress"
+
+
+async def test_recent_request_reuses_one_owner_recording_metadata(ctx, monkeypatch):
+    events = [deepcopy(ctx.event), deepcopy(ctx.event)]
+    events[0]["id"], events[1]["id"] = "newer", "older"
+    events[1]["start"]["dateTime"] = (
+        service.parse_graph_datetime(events[1]["start"]) - timedelta(days=1)
+    ).isoformat()
+    events[1]["end"]["dateTime"] = (
+        service.parse_graph_datetime(events[1]["end"]) - timedelta(days=1)
+    ).isoformat()
+    monkeypatch.setattr(service.graph, "get_upcoming_calendar_events", AsyncMock(return_value=events))
+    monkeypatch.setattr(service.graph, "get_calendar_window", AsyncMock(side_effect=lambda upn, start, end: [
+        deepcopy(next(event for event in events if service.parse_graph_datetime(event["start"]) == start + timedelta(hours=1)))
+    ]))
+
+    result = await calendar.recent_meetings(ctx.db, ctx.requester.upn)
+
+    assert len(result) == 2
+    assert service.graph.get_user_drive_id.await_count == 3
+    assert ctx.scan.await_count == 3
+
+
+async def test_discover_scans_independent_non_requester_owners_concurrently(ctx, monkeypatch):
+    active = 0
+    maximum = 0
+
+    async def scan(drive, **kwargs):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return []
+
+    monkeypatch.setattr(service.graph, "list_recordings_folder", AsyncMock(side_effect=scan))
+    with pytest.raises(HTTPException) as error:
+        await service.discover(ctx.db, ctx.requester, ctx.event, recording_cache={})
+
+    assert error.value.status_code == 404
+    assert maximum == 2
 
 
 async def test_nonparticipant_forbidden(ctx):

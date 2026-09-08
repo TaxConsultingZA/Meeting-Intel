@@ -1,4 +1,5 @@
 """Calendar-bound discovery and owner approval. No client-supplied recording IDs."""
+import asyncio
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import re
@@ -89,15 +90,33 @@ def same_occurrence(a, b):
                 and organizer(a) == organizer(b))
 
 
-async def scan_owner(owner, event, requester_upn):
+async def owner_recordings(owner):
+    """Load the OneDrive recording metadata used to match any recent event."""
+    drive_id = await graph.get_user_drive_id(owner.upn)
+    items = await graph.list_recordings_folder(drive_id, strict=True)
+    return drive_id, items
+
+
+async def cached_owner_recordings(owner, recording_cache=None):
+    if recording_cache is None:
+        return await owner_recordings(owner)
+    # Store the task, rather than only its result, so concurrent scans for the
+    # same owner share the same in-flight Graph requests as well.
+    task = recording_cache.get(owner.id)
+    if task is None:
+        task = asyncio.create_task(owner_recordings(owner))
+        recording_cache[owner.id] = task
+    return await task
+
+
+async def scan_owner(owner, event, requester_upn, *, recording_cache=None):
     validate_participant(event, owner.upn)
     start, end = parse_graph_datetime(event["start"]), parse_graph_datetime(event["end"])
     events = await graph.get_calendar_window(owner.upn, start - timedelta(hours=1), end + timedelta(hours=1))
     copies = [e for e in events if same_occurrence(event, e) and not e.get("isCancelled")]
     if len(copies) != 1 or requester_upn.lower() not in people(copies[0]) or owner.upn.lower() not in people(copies[0]):
         return []
-    drive_id = await graph.get_user_drive_id(owner.upn)
-    items = await graph.list_recordings_folder(drive_id, strict=True)
+    drive_id, items = await cached_owner_recordings(owner, recording_cache)
     candidates = []
     for item in items:
         if item.get("remoteItem"):
@@ -123,20 +142,27 @@ async def verify_item(drive, item, event):
     return current
 
 
-async def discover(db, requester, event):
+async def discover(db, requester, event, *, recording_cache=None):
     validate_participant(event, requester.upn)
     owners = list(await db.scalars(select(RegisteredUser).where(
         RegisteredUser.is_subscribed.is_(True), RegisteredUser.upn.in_(people(event)))))
     # Own recordings have product priority; failures cannot silently fall through.
     for group in ([u for u in owners if u.id == requester.id], [u for u in owners if u.id != requester.id]):
-        found = []
-        for owner in group:
-            try:
-                found.extend(await scan_owner(owner, event, requester.upn))
-            except HTTPException:
-                raise
-            except Exception as exc:
-                raise HTTPException(502, "Recording discovery unavailable") from exc
+        try:
+            if recording_cache is None:
+                # Preserve the existing T5 request/process discovery flow.
+                scans = [await scan_owner(owner, event, requester.upn) for owner in group]
+            else:
+                # The requester group is completed first to preserve own-recording
+                # priority. Other owners are independent and safe to scan together.
+                scans = await asyncio.gather(*(scan_owner(
+                    owner, event, requester.upn, recording_cache=recording_cache
+                ) for owner in group))
+            found = [candidate for scan in scans for candidate in scan]
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(502, "Recording discovery unavailable") from exc
         if len(found) > 1:
             raise HTTPException(409, "Ambiguous recording match")
         if found:
@@ -183,7 +209,7 @@ async def recording_state(db, drive_id, item_id):
     return ledger, meeting, active or (jobs[0] if jobs else None)
 
 
-async def recent_state(db, requester, event):
+async def recent_state(db, requester, event, *, recording_cache=None):
     result = await visible_result(db, requester.upn, event)
     if result:
         return {"action": "view", "meeting_id": str(result.id)}
@@ -199,7 +225,7 @@ async def recent_state(db, requester, event):
         return {"action": "processing", "processing_status": job.status if job else "unavailable",
                 "request_id": str(request.id)}
     try:
-        owner, drive, item = await discover(db, requester, event)
+        owner, drive, item = await discover(db, requester, event, recording_cache=recording_cache)
         ledger, meeting, job = await recording_state(db, drive, item["id"])
         if meeting and meeting.state in DONE:
             # Existing results require row-level view permission; no new transcription.

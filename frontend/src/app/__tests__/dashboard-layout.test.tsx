@@ -2,11 +2,12 @@ import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import DashboardClient from "../dashboard-client";
 import type { CalendarEvent, MeetingOut, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
-import { decideRecordingProcessing, getAllMeetings, getProcessingRequests, getRecentMeetings, getRecordingJobs } from "@/lib/api";
+import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecentMeetings, getRecordingJobs, getSyncStatus, getUpcomingMeetings } from "@/lib/api";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("@/lib/api", () => ({
   getAllMeetings: vi.fn(), getRecordingJobs: vi.fn(), requestHistoricalAccess: vi.fn(),
+  getHistoricalMeetings: vi.fn(), getSyncStatus: vi.fn(), getUpcomingMeetings: vi.fn(),
   getRecentMeetings: vi.fn(), getProcessingRequests: vi.fn(),
   decideRecordingProcessing: vi.fn(),
   cancelRecordingJob: vi.fn(), retryRecordingJob: vi.fn(),
@@ -104,6 +105,28 @@ function recordingJob(overrides: Partial<RecordingJobOut> = {}): RecordingJobOut
     ...overrides,
   };
 }
+
+it("renders the dashboard frame while slow dashboard data loads asynchronously", async () => {
+  let finishUpcoming!: (events: CalendarEvent[]) => void;
+  vi.mocked(getAllMeetings).mockResolvedValue([]);
+  vi.mocked(getHistoricalMeetings).mockResolvedValue([]);
+  vi.mocked(getSyncStatus).mockResolvedValue([]);
+  vi.mocked(getRecordingJobs).mockResolvedValue([]);
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  vi.mocked(getUpcomingMeetings).mockReturnValue(new Promise((resolve) => { finishUpcoming = resolve; }));
+
+  render(<DashboardClient meetings={[]} recordingJobs={[]} upcoming={[]} historical={[]}
+    upn="reviewer@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} deferInitialLoad />);
+
+  expect(screen.getByRole("heading", { name: "Meeting Intelligence" })).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent("Loading dashboard data");
+  expect(getUpcomingMeetings).toHaveBeenCalledWith("offline-test-token");
+
+  finishUpcoming([calendarEvent({ subject: "Loaded later" })]);
+  expect(await screen.findByText("Loaded later")).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+});
 
 it("keeps the dashboard stats, meeting tabs and import entry without the persistent job panel", () => {
   render(<DashboardClient meetings={[]} upcoming={[]} historical={[]}

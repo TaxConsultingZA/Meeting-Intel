@@ -1,6 +1,6 @@
 import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
-import { getAllMeetings, getUpcomingMeetings, getMe, getHistoricalMeetings, getSyncStatus } from "@/lib/api";
+import { getMe } from "@/lib/api";
 import Nav from "@/components/nav";
 import DashboardClient from "./dashboard-client";
 import PendingAccess from "@/components/pending-access";
@@ -20,24 +20,6 @@ export default async function DashboardPage() {
   if (!me) {
     return <PendingAccess userEmail={upn} />;
   }
-  async function load<T>(promise: Promise<T>, label: string, fallback: T) {
-    try {
-      return { data: await promise, error: null as string | null };
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : "Unknown error";
-      return { data: fallback, error: `${label}: ${detail}` };
-    }
-  }
-
-  const [meetingResult, upcomingResult, historicalResult, syncResult] = await Promise.all([
-    load(getAllMeetings(accessToken), "Meeting records could not be loaded", []),
-    me.is_subscribed
-      ? load(getUpcomingMeetings(accessToken), "Calendar sync failed", [])
-      : Promise.resolve({ data: [], error: null }),
-    load(getHistoricalMeetings(accessToken), "Historical meetings could not be loaded", []),
-    load(getSyncStatus(accessToken), "Sync status could not be loaded", []),
-  ]);
-
   return (
     <>
       <Nav userEmail={upn} accessToken={accessToken} isAdmin={me.is_admin} />
@@ -45,14 +27,16 @@ export default async function DashboardPage() {
         <SubscriptionGate userEmail={upn} accessToken={accessToken} />
       )}
       <DashboardClient
-        meetings={meetingResult.data}
-        upcoming={upcomingResult.data}
-        historical={historicalResult.data}
-        syncStates={syncResult.data}
-        loadErrors={[meetingResult.error, upcomingResult.error, historicalResult.error, syncResult.error].filter((value): value is string => Boolean(value))}
+        meetings={[]}
+        upcoming={[]}
+        historical={[]}
+        recordingJobs={[]}
+        syncStates={[]}
+        loadErrors={[]}
         upn={upn}
         accessToken={accessToken}
         isSubscribed={me.is_subscribed}
+        deferInitialLoad
       />
     </>
   );

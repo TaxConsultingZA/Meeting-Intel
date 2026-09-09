@@ -9,7 +9,7 @@ import { formatEventTime, parseInstant } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
 import RecentMeetings from "@/components/recent-meetings";
 import { JobControls } from "@/components/recording-jobs";
-import { decideRecordingProcessing, getAllMeetings, getProcessingRequests, getRecordingJobs, requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
+import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecordingJobs, getSyncStatus, getUpcomingMeetings, requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
 import type { AvailableRecording, MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
 
 /** Convert a UPN like "jane.doe@taxconsulting.co.za" to a display name "Jane Doe". */
@@ -30,6 +30,7 @@ interface Props {
   isSubscribed: boolean;
   syncStates: SyncState[];
   loadErrors: string[];
+  deferInitialLoad?: boolean;
 }
 
 type Tab = "upcoming" | "recent" | "in_progress" | "review" | "old_meetings" | "historical" | "cancelled";
@@ -54,7 +55,7 @@ function conciseMicrosoftError(error: string): string {
   return error.length > 180 ? `${error.slice(0, 177)}...` : error;
 }
 
-export default function DashboardClient({ meetings: initialMeetings, recordingJobs: initialRecordingJobs = [], upcoming, historical: initialHistorical, upn, accessToken, isSubscribed, syncStates, loadErrors }: Props) {
+export default function DashboardClient({ meetings: initialMeetings, recordingJobs: initialRecordingJobs = [], upcoming: initialUpcoming, historical: initialHistorical, upn, accessToken, isSubscribed, syncStates: initialSyncStates, loadErrors: initialLoadErrors, deferInitialLoad = false }: Props) {
   const router = useRouter();
   const [meetings, setMeetings] = useState(initialMeetings);
   const [recordingJobs, setRecordingJobs] = useState(initialRecordingJobs);
@@ -66,12 +67,50 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const [showImport, setShowImport] = useState(false);
   const [availableRecordings, setAvailableRecordings] = useState<AvailableRecording[] | null>(null);
   const [historical, setHistorical] = useState<MeetingOut[]>(initialHistorical);
+  const [upcoming, setUpcoming] = useState<CalendarEvent[]>(initialUpcoming);
+  const [syncStates, setSyncStates] = useState<SyncState[]>(initialSyncStates);
+  const [loadErrors, setLoadErrors] = useState(initialLoadErrors);
+  const [dashboardLoading, setDashboardLoading] = useState(deferInitialLoad);
   const [shareModal, setShareModal] = useState<{ meetingId: string; title: string } | null>(null);
   const [unsubscribing, setUnsubscribing] = useState(false);
   const pollingInFlight = useRef(false);
   const hasActiveProcessing = recordingJobs.some((job) =>
     job.status === "pending" || job.status === "processing" || job.processing_status === "cancel_requested"
   ) || meetings.some((meeting) => PIPELINE_STATES.includes(meeting.state));
+
+  useEffect(() => {
+    if (!deferInitialLoad) return;
+
+    let cancelled = false;
+    const errors: string[] = [];
+    const load = async <T,>(promise: Promise<T>, label: string, apply: (data: T) => void) => {
+      try {
+        const data = await promise;
+        if (!cancelled) apply(data);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "Unknown error";
+        errors.push(`${label}: ${detail}`);
+      }
+    };
+
+    const requests = [
+      load(getAllMeetings(accessToken), "Meeting records could not be loaded", setMeetings),
+      load(getHistoricalMeetings(accessToken), "Historical meetings could not be loaded", setHistorical),
+      load(getSyncStatus(accessToken), "Sync status could not be loaded", setSyncStates),
+      load(getRecordingJobs(accessToken), "Recording processing status could not be loaded", setRecordingJobs),
+    ];
+    if (isSubscribed) {
+      requests.push(load(getUpcomingMeetings(accessToken), "Calendar sync failed", setUpcoming));
+    }
+
+    void Promise.all(requests).then(() => {
+      if (!cancelled) {
+        setLoadErrors(errors);
+        setDashboardLoading(false);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [accessToken, deferInitialLoad, isSubscribed]);
 
   const refreshProcessing = useCallback(async () => {
     if (pollingInFlight.current || document.visibilityState === "hidden") return;
@@ -171,6 +210,11 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
   return (
     <main className="max-w-5xl mx-auto px-6 py-7">
+      {dashboardLoading && (
+        <div role="status" className="mb-5 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-[#003366]">
+          Loading dashboard data…
+        </div>
+      )}
       {microsoftErrors.length > 0 && (
         <div role="alert" className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
           <p className="font-semibold">Microsoft data is temporarily unavailable</p>
@@ -280,7 +324,9 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
         </div>
       )}
       {tab === "upcoming" && (
-        upcomingEvents.length === 0
+        dashboardLoading && upcomingEvents.length === 0
+          ? <DashboardSkeleton />
+          : upcomingEvents.length === 0
           ? <EmptyState
               icon="📅"
               title={isSubscribed ? "No upcoming meetings" : "Calendar processing is off"}
@@ -591,6 +637,20 @@ function EmptyState({ icon, title, sub }: { icon: string; title: string; sub: st
       <div className="text-4xl mb-3">{icon}</div>
       <h3 className="text-[15px] font-semibold text-[#1a1a2e] mb-1">{title}</h3>
       <p className="text-[13.5px]">{sub}</p>
+    </div>
+  );
+}
+
+function DashboardSkeleton() {
+  return (
+    <div aria-hidden="true" className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {[0, 1, 2].map((item) => (
+        <div key={item} className="h-40 animate-pulse rounded-lg border border-[#dde1e8] bg-white p-4">
+          <div className="mb-4 h-4 w-2/3 rounded bg-slate-200" />
+          <div className="mb-2 h-3 w-full rounded bg-slate-100" />
+          <div className="h-3 w-1/2 rounded bg-slate-100" />
+        </div>
+      ))}
     </div>
   );
 }

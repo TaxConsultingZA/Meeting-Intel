@@ -123,13 +123,14 @@ async def test_recent_request_reuses_one_owner_recording_metadata(ctx, monkeypat
         service.parse_graph_datetime(events[1]["end"]) - timedelta(days=1)
     ).isoformat()
     monkeypatch.setattr(service.graph, "get_upcoming_calendar_events", AsyncMock(return_value=events))
-    monkeypatch.setattr(service.graph, "get_calendar_window", AsyncMock(side_effect=lambda upn, start, end: [
-        deepcopy(next(event for event in events if service.parse_graph_datetime(event["start"]) == start + timedelta(hours=1)))
-    ]))
+    monkeypatch.setattr(service.graph, "get_calendar_window", AsyncMock(
+        side_effect=lambda upn, start, end: deepcopy(events)
+    ))
 
     result = await calendar.recent_meetings(ctx.db, ctx.requester.upn)
 
     assert len(result) == 2
+    assert service.graph.get_calendar_window.await_count == 2
     assert service.graph.get_user_drive_id.await_count == 3
     assert ctx.scan.await_count == 3
 

@@ -109,10 +109,35 @@ async def cached_owner_recordings(owner, recording_cache=None):
     return await task
 
 
-async def scan_owner(owner, event, requester_upn, *, recording_cache=None):
+async def prefetch_recent_calendars(db, requester, recent_events, requester_events):
+    """Load each eligible recording owner's Calendar once for /calendar/recent."""
+    upns = {upn for event in recent_events for upn in people(event)}
+    owners = list(await db.scalars(select(RegisteredUser).where(
+        RegisteredUser.is_subscribed.is_(True), RegisteredUser.upn.in_(upns))))
+    cache = {requester.upn.lower(): requester_events}
+    if not recent_events:
+        return cache
+    start = min(parse_graph_datetime(event["start"]) for event in recent_events) - timedelta(hours=1)
+    end = max(parse_graph_datetime(event["end"]) for event in recent_events) + timedelta(hours=1)
+    tasks = {
+        owner.upn.lower(): asyncio.create_task(graph.get_calendar_window(owner.upn, start, end))
+        for owner in owners if owner.id != requester.id
+    }
+    results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+    cache.update(zip(tasks, results))
+    return cache
+
+
+async def scan_owner(owner, event, requester_upn, *, recording_cache=None, calendar_cache=None):
     validate_participant(event, owner.upn)
-    start, end = parse_graph_datetime(event["start"]), parse_graph_datetime(event["end"])
-    events = await graph.get_calendar_window(owner.upn, start - timedelta(hours=1), end + timedelta(hours=1))
+    cached_events = calendar_cache.get(owner.upn.lower()) if calendar_cache is not None else None
+    if isinstance(cached_events, BaseException):
+        raise cached_events
+    if cached_events is None:
+        start, end = parse_graph_datetime(event["start"]), parse_graph_datetime(event["end"])
+        events = await graph.get_calendar_window(owner.upn, start - timedelta(hours=1), end + timedelta(hours=1))
+    else:
+        events = cached_events
     copies = [e for e in events if same_occurrence(event, e) and not e.get("isCancelled")]
     if len(copies) != 1 or requester_upn.lower() not in people(copies[0]) or owner.upn.lower() not in people(copies[0]):
         return []
@@ -142,7 +167,7 @@ async def verify_item(drive, item, event):
     return current
 
 
-async def discover(db, requester, event, *, recording_cache=None):
+async def discover(db, requester, event, *, recording_cache=None, calendar_cache=None):
     validate_participant(event, requester.upn)
     owners = list(await db.scalars(select(RegisteredUser).where(
         RegisteredUser.is_subscribed.is_(True), RegisteredUser.upn.in_(people(event)))))
@@ -156,7 +181,8 @@ async def discover(db, requester, event, *, recording_cache=None):
                 # The requester group is completed first to preserve own-recording
                 # priority. Other owners are independent and safe to scan together.
                 scans = await asyncio.gather(*(scan_owner(
-                    owner, event, requester.upn, recording_cache=recording_cache
+                    owner, event, requester.upn, recording_cache=recording_cache,
+                    calendar_cache=calendar_cache
                 ) for owner in group))
             found = [candidate for scan in scans for candidate in scan]
         except HTTPException:
@@ -209,7 +235,7 @@ async def recording_state(db, drive_id, item_id):
     return ledger, meeting, active or (jobs[0] if jobs else None)
 
 
-async def recent_state(db, requester, event, *, recording_cache=None):
+async def recent_state(db, requester, event, *, recording_cache=None, calendar_cache=None):
     result = await visible_result(db, requester.upn, event)
     if result:
         return {"action": "view", "meeting_id": str(result.id)}
@@ -225,7 +251,9 @@ async def recent_state(db, requester, event, *, recording_cache=None):
         return {"action": "processing", "processing_status": job.status if job else "unavailable",
                 "request_id": str(request.id)}
     try:
-        owner, drive, item = await discover(db, requester, event, recording_cache=recording_cache)
+        owner, drive, item = await discover(
+            db, requester, event, recording_cache=recording_cache, calendar_cache=calendar_cache
+        )
         ledger, meeting, job = await recording_state(db, drive, item["id"])
         if meeting and meeting.state in DONE:
             # Existing results require row-level view permission; no new transcription.

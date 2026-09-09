@@ -2,10 +2,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy.orm import aliased
 
 from app.db import get_db
-from app.api.deps import require_registered, require_subscribed
+from app.api.deps import registered_user, require_registered, require_subscribed
+from app.models import RecordingProcessingRequest, RegisteredUser
 from app.services import cross_user_recordings as service
 
 router = APIRouter(prefix="/recording-processing-requests", tags=["recording requests"])
@@ -44,21 +46,34 @@ async def create(body: EventReference, db=Depends(get_db), upn=Depends(require_s
 
 
 @router.get("")
-async def listing(db=Depends(get_db), upn=Depends(require_registered)):
-    user = await service.user_by_upn(db, upn)
-    requests = await service.list_requests(db, user)
-    requester_ids = {request.requester_user_id for request in requests}
-    requesters = {
-        requester.id: requester
-        for requester in await db.scalars(
-            select(service.RegisteredUser).where(service.RegisteredUser.id.in_(requester_ids))
+async def listing(db=Depends(get_db), user: RegisteredUser = Depends(registered_user)):
+    requester = aliased(RegisteredUser)
+    rows = await db.execute(
+        select(
+            RecordingProcessingRequest.id,
+            RecordingProcessingRequest.event_id,
+            RecordingProcessingRequest.event_snapshot,
+            RecordingProcessingRequest.requester_user_id,
+            RecordingProcessingRequest.recording_owner_user_id,
+            RecordingProcessingRequest.status,
+            RecordingProcessingRequest.created_at,
+            RecordingProcessingRequest.decided_at,
+            RecordingProcessingRequest.meeting_id,
+            requester.display_name,
+            requester.upn,
         )
-    } if requester_ids else {}
+        .outerjoin(requester, requester.id == RecordingProcessingRequest.requester_user_id)
+        .where(or_(
+            RecordingProcessingRequest.requester_user_id == user.id,
+            RecordingProcessingRequest.recording_owner_user_id == user.id,
+        ))
+        .order_by(RecordingProcessingRequest.created_at.desc())
+    )
     result = []
-    for request in requests:
+    for row in rows:
+        request = row._mapping
         out = public_request(request, user.id)
-        requester = requesters.get(request.requester_user_id)
-        out["requester_name"] = requester.display_name or requester.upn if requester else "Former user"
+        out["requester_name"] = request.display_name or request.upn or "Former user"
         result.append(out)
     return result
 

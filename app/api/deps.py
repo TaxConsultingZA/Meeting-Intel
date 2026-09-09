@@ -70,20 +70,23 @@ async def current_user(
     return upn
 
 
-async def require_registered(
+async def registered_user(
     upn: str = Depends(current_user),
     db: AsyncSession = Depends(get_db),
-) -> str:
-    """FastAPI dependency: verify the caller is a registered platform user.
+) -> RegisteredUser:
+    """Resolve and verify the caller as a registered platform user.
 
     Raises 403 for outside-domain UPNs and for domain users not yet registered.
-    Use this instead of ``current_user`` on endpoints that should be invisible
-    to unregistered domain members.
     """
     user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
     if not user:
         raise HTTPException(403, "Not registered on the platform")
-    return upn
+    return user
+
+
+async def require_registered(user: RegisteredUser = Depends(registered_user)) -> str:
+    """Verify registration while preserving the existing UPN dependency contract."""
+    return user.upn
 
 
 async def require_subscribed(

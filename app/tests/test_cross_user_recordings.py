@@ -342,20 +342,22 @@ async def test_request_listing_is_scoped(ctx):
     assert await service.list_requests(ctx.db, ctx.requester) == [result]
 
 
-async def test_request_route_bulk_loads_requester_names(ctx):
+async def test_request_route_loads_contract_in_one_query(ctx):
     await request(ctx)
-    get_calls = 0
-    original_get = ctx.db.get
+    execute_calls = 0
+    original_execute = ctx.db.execute
 
-    async def counted_get(*args, **kwargs):
-        nonlocal get_calls
-        get_calls += 1
-        return await original_get(*args, **kwargs)
+    async def counted_execute(*args, **kwargs):
+        nonlocal execute_calls
+        execute_calls += 1
+        return await original_execute(*args, **kwargs)
 
-    ctx.db.get = counted_get
-    rows = await recording_processing_requests.listing(ctx.db, ctx.owner.upn)
+    ctx.db.execute = counted_execute
+    rows = await recording_processing_requests.listing(ctx.db, ctx.owner)
     assert rows[0]["requester_name"] == ctx.requester.upn
-    assert get_calls == 0
+    assert rows[0]["can_decide"] is True
+    assert "drive_id" not in rows[0]
+    assert execute_calls == 1
 
 
 async def test_approved_pipeline_preserves_calendar_access_without_emails(ctx, monkeypatch):

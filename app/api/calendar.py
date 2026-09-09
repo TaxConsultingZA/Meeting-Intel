@@ -1,8 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
 from ..graph import client as graph
+from ..models import SyncedCalendarEvent
 from ..services.sync_state import record_sync_result
 from .deps import require_subscribed
 from .recording_processing_requests import EventReference
@@ -14,22 +16,21 @@ router = APIRouter()
 @router.get("/calendar/recent")
 async def recent_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(require_subscribed)):
     from ..services import cross_user_recordings as service
-    try:
-        events = await graph.get_upcoming_calendar_events(upn, days=0, include_offline=True)
-    except Exception as exc:
-        raise HTTPException(502, "Recent Calendar unavailable") from exc
-    user = await service.user_by_upn(db, upn)
-    recording_cache = {}
     now = datetime.now(timezone.utc)
+    events = list(await db.scalars(
+        select(SyncedCalendarEvent.raw).where(
+            SyncedCalendarEvent.user_upn == upn,
+            SyncedCalendarEvent.ends_at >= now - timedelta(days=30),
+            SyncedCalendarEvent.ends_at < now,
+        )
+    ))
+    user = await service.user_by_upn(db, upn)
     recent = [e for e in events if service.recent_event(e, now) and upn.lower() in service.people(e)]
-    calendar_cache = await service.prefetch_recent_calendars(db, user, recent, events)
     result = []
     for event in sorted(recent, key=lambda e: parse_graph_datetime(e["end"]), reverse=True):
         row = _format_event(event)
         row["status"] = "ended"
-        row.update(await service.recent_state(
-            db, user, event, recording_cache=recording_cache, calendar_cache=calendar_cache
-        ))
+        row.update(await service.recent_state(db, user, event, discover_recording=False))
         result.append(row)
     return result
 

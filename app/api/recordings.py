@@ -6,10 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import get_db
-from ..models import ProcessedItem, RecordingJob, Meeting, ProcessingState
+from ..models import ProcessedItem, RecordingJob, Meeting, ProcessingState, RegisteredUser
 from ..graph import client as graph
 from ..services.jobs import enqueue_recording_job, enqueue_retry_job
-from ..services.sync_state import record_sync_result
 from ..services.job_control import public_job_error
 from ..services.reprocessing import (
     MANUAL_REPROCESS_SOURCE,
@@ -51,47 +50,39 @@ async def available_recordings(
     db: AsyncSession = Depends(get_db),
     upn: str = Depends(require_subscribed),
 ):
-    """List recordings in the user's OneDrive Recordings folder with current processing state."""
-    try:
-        drive_id = await graph.get_user_drive_id(upn)
-        items = await graph.list_recordings_folder(drive_id)
-    except Exception as e:
-        await record_sync_result(db, user_upn=upn, source="onedrive", error=e)
-        raise HTTPException(status_code=502, detail=f"Could not reach OneDrive: {e}")
-    await record_sync_result(db, user_upn=upn, source="onedrive")
-
-    if not items:
+    """List recordings from the durable OneDrive reconciliation state."""
+    user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
+    drive_ids = set(await db.scalars(
+        select(RecordingJob.drive_id).where(RecordingJob.owner_upn == upn)
+    ))
+    if user and user.graph_drive_id:
+        drive_ids.add(user.graph_drive_id)
+    if not drive_ids:
         return []
 
-    item_ids = [i["id"] for i in items]
-
-    already = set(
-        await db.scalars(
-            select(ProcessedItem.drive_item_id).where(
-                ProcessedItem.drive_item_id.in_(item_ids)
-            )
-        )
-    )
+    ledgers = list(await db.scalars(
+        select(ProcessedItem).where(ProcessedItem.drive_id.in_(drive_ids))
+    ))
+    if not ledgers:
+        return []
+    item_ids = [row.drive_item_id for row in ledgers]
 
     meetings_by_item: dict[str, Meeting] = {}
-    if already:
-        rows = await db.scalars(
-            select(Meeting).where(Meeting.drive_item_id.in_(already))
-        )
-        for m in rows.all():
-            meetings_by_item[m.drive_item_id] = m
+    rows = await db.scalars(select(Meeting).where(Meeting.drive_item_id.in_(item_ids)))
+    for m in rows.all():
+        meetings_by_item[m.drive_item_id] = m
 
     result = []
-    for item in items:
-        iid = item["id"]
+    for ledger in ledgers:
+        iid = ledger.drive_item_id
         m = meetings_by_item.get(iid)
         result.append({
             "drive_item_id": iid,
-            "drive_id": drive_id,
-            "name": item.get("name", "Unknown"),
-            "size": item.get("size"),
-            "created_at": item.get("createdDateTime"),
-            "already_imported": iid in already,
+            "drive_id": ledger.drive_id,
+            "name": m.title if m and m.title else "Unknown",
+            "size": None,
+            "created_at": m.recorded_at.isoformat() if m and m.recorded_at else None,
+            "already_imported": True,
             "meeting_id": str(m.id) if m else None,
             "meeting_state": m.state if m else None,
             "meeting_error": public_job_error(m.error) if m else None,

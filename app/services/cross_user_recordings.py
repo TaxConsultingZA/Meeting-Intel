@@ -235,7 +235,10 @@ async def recording_state(db, drive_id, item_id):
     return ledger, meeting, active or (jobs[0] if jobs else None)
 
 
-async def recent_state(db, requester, event, *, recording_cache=None, calendar_cache=None):
+async def recent_state(
+    db, requester, event, *, recording_cache=None, calendar_cache=None,
+    discover_recording=True,
+):
     result = await visible_result(db, requester.upn, event)
     if result:
         return {"action": "view", "meeting_id": str(result.id)}
@@ -250,6 +253,10 @@ async def recent_state(db, requester, event, *, recording_cache=None, calendar_c
         _, meeting, job = await recording_state(db, request.drive_id, request.drive_item_id)
         return {"action": "processing", "processing_status": job.status if job else "unavailable",
                 "request_id": str(request.id)}
+    if not discover_recording:
+        # Read-only page loads use durable sync/processing state. The explicit
+        # process/request endpoints retain the live, permission-checked T5 scan.
+        return {"action": "no_recording"}
     try:
         owner, drive, item = await discover(
             db, requester, event, recording_cache=recording_cache, calendar_cache=calendar_cache

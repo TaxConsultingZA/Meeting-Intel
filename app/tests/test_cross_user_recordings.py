@@ -19,9 +19,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.schema import CreateIndex
 from sqlalchemy.dialects import postgresql
 
-from app.models import Base, RegisteredUser, RecordingJob, Meeting, MeetingParticipant, RecordingProcessingRequest, ProcessedItem
+from app.models import Base, RegisteredUser, RecordingJob, Meeting, MeetingParticipant, RecordingProcessingRequest, ProcessedItem, ProcessingState, SyncedCalendarEvent
 from app.services import cross_user_recordings as service
-from app.api import calendar
+from app.api import calendar, recordings
 from app.api.recording_processing_requests import EventReference, public_request
 
 
@@ -104,7 +104,13 @@ async def test_recent_ended_window_and_upcoming_unchanged(ctx, monkeypatch):
         events.append(event)
     monkeypatch.setattr(service.graph, "get_upcoming_calendar_events", AsyncMock(return_value=events))
     monkeypatch.setattr(service, "recent_state", AsyncMock(return_value={"action": "no_recording"}))
-    monkeypatch.setattr(calendar, "record_sync_result", AsyncMock())
+    for event in events:
+        ctx.session.add(SyncedCalendarEvent(
+            user_upn=ctx.requester.upn, event_id=event["id"], raw=event,
+            starts_at=service.parse_graph_datetime(event["start"]),
+            ends_at=service.parse_graph_datetime(event["end"]),
+        ))
+    ctx.session.commit()
     recent = await calendar.recent_meetings(ctx.db, ctx.requester.upn)
     assert [r["event_id"] for r in recent] == ["recent", "recent_21_days"]
     assert recent[0]["status"] == "ended"
@@ -113,7 +119,7 @@ async def test_recent_ended_window_and_upcoming_unchanged(ctx, monkeypatch):
     assert calendar._event_status(events[3]["start"]["dateTime"], events[3]["end"]["dateTime"]) == "in_progress"
 
 
-async def test_recent_request_reuses_one_owner_recording_metadata(ctx, monkeypatch):
+async def test_recent_request_uses_durable_state_without_graph_scans(ctx, monkeypatch):
     events = [deepcopy(ctx.event), deepcopy(ctx.event)]
     events[0]["id"], events[1]["id"] = "newer", "older"
     events[1]["start"]["dateTime"] = (
@@ -122,17 +128,59 @@ async def test_recent_request_reuses_one_owner_recording_metadata(ctx, monkeypat
     events[1]["end"]["dateTime"] = (
         service.parse_graph_datetime(events[1]["end"]) - timedelta(days=1)
     ).isoformat()
-    monkeypatch.setattr(service.graph, "get_upcoming_calendar_events", AsyncMock(return_value=events))
-    monkeypatch.setattr(service.graph, "get_calendar_window", AsyncMock(
-        side_effect=lambda upn, start, end: deepcopy(events)
-    ))
+    for event in events:
+        ctx.session.add(SyncedCalendarEvent(
+            user_upn=ctx.requester.upn, event_id=event["id"], raw=event,
+            starts_at=service.parse_graph_datetime(event["start"]),
+            ends_at=service.parse_graph_datetime(event["end"]),
+        ))
+    ctx.session.commit()
 
     result = await calendar.recent_meetings(ctx.db, ctx.requester.upn)
 
     assert len(result) == 2
-    assert service.graph.get_calendar_window.await_count == 2
-    assert service.graph.get_user_drive_id.await_count == 3
-    assert ctx.scan.await_count == 3
+    service.graph.get_calendar_event.assert_not_awaited()
+    service.graph.get_calendar_window.assert_not_awaited()
+    service.graph.get_user_drive_id.assert_not_awaited()
+    ctx.scan.assert_not_awaited()
+
+
+async def test_available_recordings_uses_reconciled_rows_without_graph(ctx):
+    ctx.requester.graph_drive_id = "drive:requester"
+    meeting = Meeting(
+        drive_item_id="persisted-item",
+        title="Persisted recording.mp4",
+        recorded_at=datetime.now(timezone.utc),
+        state=ProcessingState.awaiting_review,
+    )
+    ctx.session.add_all([
+        ProcessedItem(
+            drive_item_id="persisted-item", drive_id="drive:requester",
+            source="reconcile",
+        ),
+        RecordingJob(
+            drive_item_id="persisted-item", drive_id="drive:requester",
+            owner_upn=ctx.requester.upn, source="reconcile", status="completed",
+        ),
+        meeting,
+    ])
+    ctx.session.commit()
+
+    result = await recordings.available_recordings(ctx.db, ctx.requester.upn)
+
+    assert result == [{
+        "drive_item_id": "persisted-item",
+        "drive_id": "drive:requester",
+        "name": "Persisted recording.mp4",
+        "size": None,
+        "created_at": meeting.recorded_at.isoformat(),
+        "already_imported": True,
+        "meeting_id": str(meeting.id),
+        "meeting_state": ProcessingState.awaiting_review,
+        "meeting_error": None,
+    }]
+    service.graph.get_user_drive_id.assert_not_awaited()
+    ctx.scan.assert_not_awaited()
 
 
 async def test_discover_scans_independent_non_requester_owners_concurrently(ctx, monkeypatch):

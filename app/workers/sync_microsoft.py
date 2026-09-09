@@ -26,7 +26,10 @@ async def sync_calendar_events(days: int = 14) -> int:
     synced = 0
     for upn in upns:
         try:
-            events = await graph.get_upcoming_calendar_events(upn, days=days)
+            # /calendar/recent includes offline events as well as Teams events.
+            events = await graph.get_upcoming_calendar_events(
+                upn, days=days, include_offline=True
+            )
         except Exception as exc:
             # One user's Graph failure must not block every other subscriber.
             async with SessionLocal() as db:

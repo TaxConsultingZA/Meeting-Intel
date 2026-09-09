@@ -272,11 +272,11 @@ it("keeps Recent Meetings mounted after its first visit", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Recent Meetings" }));
   expect(await screen.findByText("No recently ended meetings.")).toBeInTheDocument();
   expect(getRecentMeetings).toHaveBeenCalledOnce();
-  expect(getProcessingRequests).toHaveBeenCalledTimes(2);
+  expect(getProcessingRequests).toHaveBeenCalledOnce();
 
   fireEvent.click(screen.getByRole("button", { name: "Upcoming Meetings" }));
   fireEvent.click(screen.getByRole("button", { name: "Recent Meetings" }));
   expect(screen.getByText("No recently ended meetings.")).toBeInTheDocument();
   await waitFor(() => expect(getRecentMeetings).toHaveBeenCalledOnce());
-  expect(getProcessingRequests).toHaveBeenCalledTimes(2);
+  expect(getProcessingRequests).toHaveBeenCalledOnce();
 });

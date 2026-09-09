@@ -1,22 +1,30 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import LocalDateTime from "./local-date-time";
 import { getRecentMeetings, getProcessingRequests, requestRecordingProcessing, decideRecordingProcessing, processRecentMeeting } from "@/lib/api";
 import type { RecentMeeting, RecordingProcessingRequest } from "@/lib/types";
 
-export default function RecentMeetings({ token, isSubscribed }: { token: string; isSubscribed: boolean }) {
+export default function RecentMeetings({ token, isSubscribed, processingRequests, onRefreshProcessingRequests }: {
+  token: string;
+  isSubscribed: boolean;
+  processingRequests?: RecordingProcessingRequest[];
+  onRefreshProcessingRequests?: () => Promise<void>;
+}) {
   const [events, setEvents] = useState<RecentMeeting[]>([]);
   const [requests, setRequests] = useState<RecordingProcessingRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const controlledRequests = processingRequests !== undefined;
+  const processingRequestsRef = useRef(processingRequests);
+  processingRequestsRef.current = processingRequests;
   const load = useCallback(() => Promise.allSettled([
       isSubscribed ? getRecentMeetings(token) : Promise.resolve([]),
-      getProcessingRequests(token),
-    ]), [token, isSubscribed]);
+      controlledRequests ? Promise.resolve(processingRequestsRef.current ?? []) : getProcessingRequests(token),
+    ]), [token, isSubscribed, controlledRequests]);
   const applyResults = useCallback((results: Awaited<ReturnType<typeof load>>) => {
     const errors: string[] = [];
     if (results[0].status === "fulfilled") setEvents(results[0].value);
@@ -33,10 +41,17 @@ export default function RecentMeetings({ token, isSubscribed }: { token: string;
     return () => { active = false; };
   }, [load, applyResults]);
 
+  useEffect(() => {
+    if (processingRequests !== undefined) setRequests(processingRequests);
+  }, [processingRequests]);
+
   async function refresh() {
     setRefreshing(true);
     setError("");
-    try { applyResults(await load()); }
+    try {
+      applyResults(await load());
+      await onRefreshProcessingRequests?.();
+    }
     finally { setRefreshing(false); }
   }
 

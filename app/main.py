@@ -19,6 +19,16 @@ log = logging.getLogger("meeting_intel")
 _RECONCILE_INTERVAL = 10 * 60  # 10 minutes
 
 
+async def _sync_microsoft_once() -> tuple[int, int]:
+    """Refresh durable Calendar state; gate only the OneDrive scan."""
+    from app.workers.reconcile import reconcile
+    from app.workers.sync_microsoft import sync_calendar_events
+
+    calendar_count = await sync_calendar_events()
+    found = await reconcile() if settings.enable_auto_reconcile else 0
+    return calendar_count, found
+
+
 async def _init_db() -> None:
     """Create all tables (idempotent) and add new columns to existing tables if absent."""
     async with engine.begin() as conn:
@@ -59,7 +69,7 @@ async def _seed_admin_users() -> None:
 
 
 async def _reconcile_loop() -> None:
-    """Background loop: sync Microsoft data for explicitly subscribed users.
+    """Background loop: sync Calendar data and optionally reconcile OneDrive.
 
     Waits 30 seconds after startup to let the app and DB pool finish initialising,
     then runs ``reconcile()`` every ``_RECONCILE_INTERVAL`` seconds.  Errors are
@@ -68,10 +78,7 @@ async def _reconcile_loop() -> None:
     await asyncio.sleep(30)  # let the app finish starting up first
     while True:
         try:
-            from app.workers.reconcile import reconcile
-            from app.workers.sync_microsoft import sync_calendar_events
-            calendar_count = await sync_calendar_events()
-            found = await reconcile()
+            calendar_count, found = await _sync_microsoft_once()
             if calendar_count:
                 log.info("Microsoft sync: refreshed %d calendar event(s)", calendar_count)
             if found:
@@ -88,18 +95,15 @@ async def _lifespan(app: FastAPI):
     await _seed_business_units()
     await _seed_admin_users()
 
-    if settings.enable_auto_reconcile:
-        log.info("Starting auto-reconcile background task...")
-        task = asyncio.create_task(_reconcile_loop())
-    else:
-        log.info("Auto-reconcile background task is disabled.")
-        task = None
+    # Calendar sync is required by the DB-backed Calendar pages. The existing
+    # flag controls only the potentially expensive OneDrive reconciliation.
+    log.info("Starting Calendar sync background task (OneDrive reconcile=%s)...", settings.enable_auto_reconcile)
+    task = asyncio.create_task(_reconcile_loop())
 
     try:
         yield
     finally:
-        if task:
-            task.cancel()
+        task.cancel()
 
 
 app = FastAPI(title="Meeting Intelligence", lifespan=_lifespan)

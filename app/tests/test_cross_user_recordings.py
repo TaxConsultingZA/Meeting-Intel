@@ -21,7 +21,7 @@ from sqlalchemy.dialects import postgresql
 
 from app.models import Base, RegisteredUser, RecordingJob, Meeting, MeetingParticipant, RecordingProcessingRequest, ProcessedItem, ProcessingState, SyncedCalendarEvent
 from app.services import cross_user_recordings as service
-from app.api import calendar, recordings
+from app.api import calendar, recordings, recording_processing_requests
 from app.api.recording_processing_requests import EventReference, public_request
 
 
@@ -340,6 +340,22 @@ async def test_request_listing_is_scoped(ctx):
     assert await service.list_requests(ctx.db, ctx.organizer) == []
     assert await service.list_requests(ctx.db, ctx.owner) == [result]
     assert await service.list_requests(ctx.db, ctx.requester) == [result]
+
+
+async def test_request_route_bulk_loads_requester_names(ctx):
+    await request(ctx)
+    get_calls = 0
+    original_get = ctx.db.get
+
+    async def counted_get(*args, **kwargs):
+        nonlocal get_calls
+        get_calls += 1
+        return await original_get(*args, **kwargs)
+
+    ctx.db.get = counted_get
+    rows = await recording_processing_requests.listing(ctx.db, ctx.owner.upn)
+    assert rows[0]["requester_name"] == ctx.requester.upn
+    assert get_calls == 0
 
 
 async def test_approved_pipeline_preserves_calendar_access_without_emails(ctx, monkeypatch):

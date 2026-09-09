@@ -320,7 +320,12 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       {/* Upcoming Meetings */}
       {hasOpenedRecent && (
         <div hidden={tab !== "recent"}>
-          <RecentMeetings token={accessToken} isSubscribed={isSubscribed} />
+          <RecentMeetings
+            token={accessToken}
+            isSubscribed={isSubscribed}
+            processingRequests={processingRequests}
+            onRefreshProcessingRequests={refreshProcessingRequests}
+          />
         </div>
       )}
       {tab === "upcoming" && (

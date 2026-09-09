@@ -2,6 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 
 from app.db import get_db
 from app.api.deps import require_registered, require_subscribed
@@ -46,10 +47,17 @@ async def create(body: EventReference, db=Depends(get_db), upn=Depends(require_s
 async def listing(db=Depends(get_db), upn=Depends(require_registered)):
     user = await service.user_by_upn(db, upn)
     requests = await service.list_requests(db, user)
+    requester_ids = {request.requester_user_id for request in requests}
+    requesters = {
+        requester.id: requester
+        for requester in await db.scalars(
+            select(service.RegisteredUser).where(service.RegisteredUser.id.in_(requester_ids))
+        )
+    } if requester_ids else {}
     result = []
     for request in requests:
         out = public_request(request, user.id)
-        requester = await db.get(service.RegisteredUser, request.requester_user_id)
+        requester = requesters.get(request.requester_user_id)
         out["requester_name"] = requester.display_name or requester.upn if requester else "Former user"
         result.append(out)
     return result

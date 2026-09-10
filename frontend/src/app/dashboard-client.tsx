@@ -322,6 +322,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
         <div hidden={tab !== "recent"}>
           <RecentMeetings
             token={accessToken}
+            cacheIdentity={upn}
             isSubscribed={isSubscribed}
             processingRequests={processingRequests}
             onRefreshProcessingRequests={refreshProcessingRequests}

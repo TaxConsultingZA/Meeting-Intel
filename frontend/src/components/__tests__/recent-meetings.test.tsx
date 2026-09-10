@@ -12,8 +12,38 @@ vi.mock("@/lib/api", () => ({
 afterEach(cleanup);
 beforeEach(() => {
   vi.resetAllMocks();
+  sessionStorage.clear();
   vi.mocked(api.getRecentMeetings).mockResolvedValue([]);
   vi.mocked(api.getProcessingRequests).mockResolvedValue([]);
+});
+
+it("restores cached meetings immediately after remount and revalidates in the background", async () => {
+  vi.mocked(api.getRecentMeetings).mockResolvedValue([event("view")]);
+  const first = render(<RecentMeetings token="token" cacheIdentity="reviewer@example.test" isSubscribed />);
+  expect(await screen.findByRole("link", { name: "View" })).toBeInTheDocument();
+  first.unmount();
+
+  vi.mocked(api.getRecentMeetings).mockReturnValue(new Promise(() => {}));
+  render(<RecentMeetings token="token" cacheIdentity="reviewer@example.test" isSubscribed />);
+
+  expect(screen.getByRole("link", { name: "View" })).toBeInTheDocument();
+  expect(screen.queryByText(/Loading recent meetings/i)).not.toBeInTheDocument();
+  expect(api.getRecentMeetings).toHaveBeenCalledTimes(2);
+});
+
+it("shows expired cached meetings while silently refreshing them", async () => {
+  sessionStorage.setItem(
+    "meeting-intel:recent-meetings:v1:reviewer%40example.test",
+    JSON.stringify({ version: 1, cachedAt: Date.now() - 10 * 60 * 1000, events: [event("view")] }),
+  );
+  vi.mocked(api.getRecentMeetings).mockRejectedValue(new Error("calendar unavailable"));
+
+  render(<RecentMeetings token="token" cacheIdentity="reviewer@example.test" isSubscribed />);
+
+  expect(screen.getByRole("link", { name: "View" })).toBeInTheDocument();
+  expect(screen.queryByText(/Loading recent meetings/i)).not.toBeInTheDocument();
+  await waitFor(() => expect(api.getRecentMeetings).toHaveBeenCalledOnce());
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
 it("describes the past 30 day window", () => {

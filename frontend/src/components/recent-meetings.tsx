@@ -6,8 +6,49 @@ import LocalDateTime from "./local-date-time";
 import { getRecentMeetings, getProcessingRequests, requestRecordingProcessing, decideRecordingProcessing, processRecentMeeting } from "@/lib/api";
 import type { RecentMeeting, RecordingProcessingRequest } from "@/lib/types";
 
-export default function RecentMeetings({ token, isSubscribed, processingRequests, onRefreshProcessingRequests }: {
+const RECENT_MEETINGS_CACHE_TTL_MS = 5 * 60 * 1000;
+const RECENT_MEETINGS_CACHE_VERSION = 1;
+
+interface RecentMeetingsCacheEntry {
+  version: number;
+  cachedAt: number;
+  events: RecentMeeting[];
+}
+
+function cacheKey(identity: string) {
+  return `meeting-intel:recent-meetings:v${RECENT_MEETINGS_CACHE_VERSION}:${encodeURIComponent(identity.toLowerCase())}`;
+}
+
+function readCache(identity: string): RecentMeetingsCacheEntry | null {
+  try {
+    const value = sessionStorage.getItem(cacheKey(identity));
+    if (!value) return null;
+    const parsed = JSON.parse(value) as Partial<RecentMeetingsCacheEntry>;
+    if (parsed.version !== RECENT_MEETINGS_CACHE_VERSION || typeof parsed.cachedAt !== "number" || !Array.isArray(parsed.events)) {
+      sessionStorage.removeItem(cacheKey(identity));
+      return null;
+    }
+    return parsed as RecentMeetingsCacheEntry;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(identity: string, events: RecentMeeting[]) {
+  try {
+    sessionStorage.setItem(cacheKey(identity), JSON.stringify({
+      version: RECENT_MEETINGS_CACHE_VERSION,
+      cachedAt: Date.now(),
+      events,
+    } satisfies RecentMeetingsCacheEntry));
+  } catch {
+    // Storage can be unavailable; the in-memory state still provides the existing behavior.
+  }
+}
+
+export default function RecentMeetings({ token, cacheIdentity = "current-user", isSubscribed, processingRequests, onRefreshProcessingRequests }: {
   token: string;
+  cacheIdentity?: string;
   isSubscribed: boolean;
   processingRequests?: RecordingProcessingRequest[];
   onRefreshProcessingRequests?: () => Promise<void>;
@@ -25,21 +66,36 @@ export default function RecentMeetings({ token, isSubscribed, processingRequests
       isSubscribed ? getRecentMeetings(token) : Promise.resolve([]),
       controlledRequests ? Promise.resolve(processingRequestsRef.current ?? []) : getProcessingRequests(token),
     ]), [token, isSubscribed, controlledRequests]);
-  const applyResults = useCallback((results: Awaited<ReturnType<typeof load>>) => {
+  const applyResults = useCallback((results: Awaited<ReturnType<typeof load>>, options?: { silent?: boolean }) => {
     const errors: string[] = [];
-    if (results[0].status === "fulfilled") setEvents(results[0].value);
-    else errors.push("Recent Meetings unavailable. Please refresh to retry.");
+    if (results[0].status === "fulfilled") {
+      setEvents(results[0].value);
+      if (isSubscribed) writeCache(cacheIdentity, results[0].value);
+    }
+    else if (!options?.silent) errors.push("Recent Meetings unavailable. Please refresh to retry.");
     if (results[1].status === "fulfilled") setRequests(results[1].value);
-    else errors.push("Processing requests unavailable.");
+    else if (!options?.silent) errors.push("Processing requests unavailable.");
     setError(errors.join(" "));
     setLoading(false);
-  }, []);
+  }, [cacheIdentity, isSubscribed]);
 
   useEffect(() => {
     let active = true;
-    void load().then((results) => { if (active) applyResults(results); });
+    const cached = isSubscribed ? readCache(cacheIdentity) : null;
+    if (cached) {
+      setEvents(cached.events);
+      setLoading(false);
+      setError("");
+    }
+
+    // A cached result is rendered immediately. Revalidate it without replacing
+    // the page with a loading state, especially once its TTL has elapsed.
+    const isStale = cached ? Date.now() - cached.cachedAt >= RECENT_MEETINGS_CACHE_TTL_MS : false;
+    void load().then((results) => {
+      if (active) applyResults(results, { silent: Boolean(cached) || isStale });
+    });
     return () => { active = false; };
-  }, [load, applyResults]);
+  }, [load, applyResults, cacheIdentity, isSubscribed]);
 
   useEffect(() => {
     if (processingRequests !== undefined) setRequests(processingRequests);

@@ -1,6 +1,6 @@
 # Meeting-Intel 项目状态与后续任务
 
-> 状态日期：2026-09-07。
+> 状态日期：2026-09-10。
 > 本次更新依据已明确验证的最新 commit、push、staging 部署及验收观察；不是重新运行测试或部署。
 > “已实现”不等于“已通过所有真实 E2E”。已完成的真实双用户验收与仍待验证的链路在下文分别记录。
 
@@ -225,19 +225,74 @@ Retry/Reprocess 已分两个 commit 完成；processing status 与 review status
 
 已通过 attendee Request Edit Access、organizer approve、attendee edit、Save speaker names 的真实双用户 staging E2E。CORS 问题已修复；Sphesihle 实际复测回复 “works”。
 
-### Performance
+### Performance Optimization
 
-**Status: BOTTLENECK IDENTIFIED；NOT OPTIMIZED。**
+**Status: CORE DASHBOARD PATHS OPTIMIZED；FINAL VALIDATION PARTIALLY PENDING。**
 
-- `/recordings/available` 约 9.4s。
-- `/reviews/all` 约 3.9s。
-- 当前只完成瓶颈定位，尚未优化，不能写成 fixed。
-- 后续方向：对 opt-in 用户进行 Calendar / recording metadata 后台同步和持久化；Dashboard 优先读取数据库；避免页面打开时重复扫描 OneDrive。
+已完成：
+
+- Dashboard initial render optimization：
+  - 首屏不再等待全部慢 API。
+  - 页面框架先显示，数据异步加载。
+- Recent Meetings optimization：
+  - `/calendar/recent` 优先读取 `synced_calendar_events`。
+  - 页面请求不再实时扫描 Microsoft Graph / OneDrive。
+- Upcoming Meetings optimization：
+  - `/calendar/upcoming` 优先读取同步数据。
+- Process Past Recording optimization：
+  - `/recordings/available` 使用同步数据。
+  - 页面请求不再扫描 OneDrive。
+- Recording Processing Requests optimization：
+  - 修复 N+1 查询。
+  - 减少重复请求。
+  - 保持 approval flow 不变。
+- Reviews optimization：
+  - `/reviews/all` 减少列表响应大小。
+  - 不加载 `transcript` / `extracted_json` 等详情字段。
+- Historical Access optimization：
+  - SQL 提前过滤 attendees。
+  - 减少 Meeting 字段加载。
+  - 当前 PostgreSQL JSONB 类型兼容问题已修复，等待最终验证。
+
+当前页面请求架构：
+
+优化前：
+
+```text
+Frontend request
+→ API
+→ Microsoft Graph
+→ OneDrive
+→ Database
+→ Response
+```
+
+优化后：
+
+```text
+Frontend request
+→ API
+→ Persisted synced data
+→ Database
+→ Response
+```
+
+页面请求路径已减少对 Microsoft Graph / OneDrive 的实时依赖。
+
+### Remaining Performance Items
+
+- Meeting Detail：
+  - 需要验证首屏加载时间。
+  - 可能存在 `transcript` / `extracted_json` 大字段影响 SSR。
+- Historical Access：
+  - 已优化。
+  - 需要 staging 最终验证。
 
 ### Remaining known gaps
 
 - T5 real cross-user recording discovery E2E。
-- Performance optimization。
+- Meeting Detail 首屏性能验证。
+- Historical Access staging 最终验证。
 - Background sync。
 - Admin override/control。
 - Real transcription / Gemini / email E2E。
@@ -260,6 +315,6 @@ Retry/Reprocess 已分两个 commit 完成；processing status 与 review status
 
 ## Immediate Next Step
 
-Retry / Reprocess、Participants / Attendees 与 Multi-user Edit Access 当前任务均已完成。后续重要工作保持为：T5 real cross-user recording discovery E2E、performance optimization 与 background sync；另有 Admin override/control、real transcription / Gemini / email E2E、Teams native transcript，以及 nested OneDrive discovery real-user acceptance。T5 MVP 已部署，但在真实跨用户发现、匹配、申请、owner 审批并 queued 的整条链路成功前，不标记为 fully validated。
+Retry / Reprocess、Participants / Attendees、Multi-user Edit Access 与核心 Dashboard 性能优化当前任务均已完成。剩余性能事项仅为 Meeting Detail 首屏加载时间验证，以及已优化的 Historical Access staging 最终验证。其他后续重要工作保持为：T5 real cross-user recording discovery E2E 与 background sync；另有 Admin override/control、real transcription / Gemini / email E2E、Teams native transcript，以及 nested OneDrive discovery real-user acceptance。T5 MVP 已部署，但在真实跨用户发现、匹配、申请、owner 审批并 queued 的整条链路成功前，不标记为 fully validated。
 
 继续遵守安全边界：secret 和本地测试媒体不进入 Git；真实付费 AI 和邮件发送保持关闭，直至获得明确授权。staging 不等同于正式生产环境。

@@ -142,6 +142,8 @@ class TestHistoricalMeetingsEndpoint:
         assert "jsonb_array_elements(meetings.attendees_raw)" in sql
         assert "lower(CASE WHEN" in sql
         assert "emailAddress,address" in sql
+        assert sql.count("AS TEXT[]") == 2
+        assert sql.count("AS TEXT)") == 2
         assert "NOT (EXISTS" in sql
         assert "meetings.transcript" not in sql
         assert "meetings.summary" not in sql

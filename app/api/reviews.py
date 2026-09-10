@@ -6,8 +6,8 @@ import os
 import subprocess
 import tempfile
 from fastapi import APIRouter, Body, Depends, HTTPException, Response
-from sqlalchemy import case, column, exists, func, literal, not_, or_, select
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Text, case, cast, column, exists, func, literal, not_, or_, select
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import load_only, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -421,11 +421,13 @@ async def historical_meetings(db: AsyncSession = Depends(get_db), upn: str = Dep
     ).alias("historical_attendee")
     attendee_upn = case(
         (func.jsonb_typeof(attendee.c.value) == "string",
-         attendee.c.value.op("#>>")(literal("{}"))),
+         attendee.c.value.op("#>>")(cast(literal("{}"), ARRAY(Text)))),
         else_=func.coalesce(
-            attendee.c.value.op("#>>")(literal("{emailAddress,address}")),
-            attendee.c.value.op("->>")(literal("email")),
-            attendee.c.value.op("->>")(literal("userPrincipalName")),
+            attendee.c.value.op("#>>")(
+                cast(literal("{emailAddress,address}"), ARRAY(Text))
+            ),
+            attendee.c.value.op("->>")(cast(literal("email"), Text)),
+            attendee.c.value.op("->>")(cast(literal("userPrincipalName"), Text)),
         ),
     )
     attendee_exists = exists(

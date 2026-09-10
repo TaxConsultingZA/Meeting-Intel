@@ -102,11 +102,27 @@ async def upcoming_meetings(
     upn: str = Depends(require_subscribed),
 ):
     """Return the user's upcoming online/Teams meetings for the next N days."""
-    try:
-        events = await graph.get_upcoming_calendar_events(upn, days=days)
-    except Exception as e:
-        await record_sync_result(db, user_upn=upn, source="calendar", error=e)
-        raise HTTPException(status_code=502, detail=f"Could not reach calendar: {e}")
-    await record_sync_result(db, user_upn=upn, source="calendar")
+    now = datetime.now(timezone.utc)
+    events = list(await db.scalars(
+        select(SyncedCalendarEvent.raw)
+        .where(
+            SyncedCalendarEvent.user_upn == upn,
+            SyncedCalendarEvent.starts_at >= now - timedelta(days=30),
+            SyncedCalendarEvent.starts_at <= now + timedelta(days=days),
+        )
+        .order_by(SyncedCalendarEvent.starts_at)
+    ))
+    if events:
+        # Background sync includes offline events for /calendar/recent. Preserve
+        # this endpoint's existing Graph-backed contract by returning online
+        # meetings only.
+        events = [e for e in events if e.get("isOnlineMeeting")]
+    else:
+        try:
+            events = await graph.get_upcoming_calendar_events(upn, days=days)
+        except Exception as e:
+            await record_sync_result(db, user_upn=upn, source="calendar", error=e)
+            raise HTTPException(status_code=502, detail=f"Could not reach calendar: {e}")
+        await record_sync_result(db, user_upn=upn, source="calendar")
     active = [e for e in events if not (e.get("subject") or "").lower().startswith("canceled:")]
     return [_format_event(e) for e in active]

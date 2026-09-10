@@ -1,5 +1,6 @@
 """Tests for app/api/reviews.py — domain validation and endpoint behaviour (mocked DB)."""
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 from fastapi.security import HTTPAuthorizationCredentials
@@ -87,10 +88,37 @@ class TestAllMeetingsEndpoint:
         sql = str(statement.compile(dialect=postgresql.dialect()))
         assert "JOIN meeting_participants" in sql
         assert "lower(meeting_participants.user_upn)" in sql
-        assert "meetings.transcript" in sql
-        assert "meetings.extracted_json" in sql
+        assert "meetings.transcript" not in sql
+        assert "meetings.summary" not in sql
+        assert "meetings.extracted_json" not in sql
         assert "meetings.drive_item_id" not in sql
         assert "meetings.email_delivery_error" not in sql
+        assert len(statement._with_options) == 2
+
+    def test_list_output_keeps_contract_without_detail_payload(self):
+        from app.api.reviews import _to_list_out
+        from app.models import ProcessingState
+
+        caller = SimpleNamespace(
+            user_upn="alice@taxconsulting.co.za", is_organizer=False,
+            access_type="participant", edit_access_status="approved",
+            edit_requested_at=None,
+        )
+        meeting = SimpleNamespace(
+            id="meeting-1", recorded_at=None, title="Review", error=None,
+            state=ProcessingState.awaiting_review,
+            organizer_upn="owner@taxconsulting.co.za",
+            attendees_raw=["alice@taxconsulting.co.za"],
+            participants=[caller],
+        )
+
+        out = _to_list_out(meeting, caller.user_upn)
+
+        assert out.can_edit is True
+        assert out.transcript is None
+        assert out.extracted_json is None
+        assert out.action_items == []
+        assert set(out.model_dump()) == set(type(out).model_fields)
 
 
 class TestToOut:
@@ -115,6 +143,97 @@ class TestToOut:
         assert out.title == "Budget Meeting"
         assert out.state == ProcessingState.awaiting_review
         assert out.transcript == "Speaker A: Opening remarks"
+
+    def test_calendar_participants_use_graph_objects_when_extracted_attendees_are_empty(self):
+        from app.api.reviews import _to_out
+        from app.models import ProcessingState
+
+        meeting = SimpleNamespace(
+            id="meeting-1",
+            title="test",
+            state=ProcessingState.awaiting_review,
+            summary=None,
+            transcript="Transcript",
+            organizer_upn="wei.jiuyang@taxconsulting.co.za",
+            extracted_json={"attendees": []},
+            error=None,
+            recorded_at=None,
+            attendees_raw=[
+                {"emailAddress": {
+                    "name": "Sphesihle  Mhlongo",
+                    "address": "sphesihle@taxconsulting.co.za",
+                }},
+                {"emailAddress": {
+                    "name": "Wei Jiuyang",
+                    "address": "wei.jiuyang@taxconsulting.co.za",
+                }},
+            ],
+            approved_recipients=[],
+            participants=[SimpleNamespace(
+                user_upn="shared.viewer@taxconsulting.co.za",
+                is_organizer=False,
+                access_type="shared",
+                edit_access_status="none",
+            )],
+            action_items=[],
+        )
+
+        out = _to_out(meeting)
+
+        assert [participant.model_dump() for participant in out.calendar_participants] == [
+            {
+                "name": "Sphesihle Mhlongo",
+                "email": "sphesihle@taxconsulting.co.za",
+                "is_organizer": False,
+            },
+            {
+                "name": "Wei Jiuyang",
+                "email": "wei.jiuyang@taxconsulting.co.za",
+                "is_organizer": True,
+            },
+        ]
+        assert all(
+            participant.email != "shared.viewer@taxconsulting.co.za"
+            for participant in out.calendar_participants
+        )
+
+    def test_calendar_participants_support_legacy_string_attendees_and_deduplicate(self):
+        from app.api.reviews import _to_out
+        from app.models import ProcessingState
+
+        meeting = SimpleNamespace(
+            id="meeting-2",
+            title="Legacy meeting",
+            state=ProcessingState.awaiting_review,
+            summary=None,
+            transcript=None,
+            organizer_upn="wei.jiuyang@taxconsulting.co.za",
+            extracted_json={"attendees": []},
+            error=None,
+            recorded_at=None,
+            attendees_raw=[
+                "sphesihle.mhlongo@taxconsulting.co.za",
+                "SPHESIHLE.MHLONGO@taxconsulting.co.za",
+            ],
+            approved_recipients=[],
+            participants=[],
+            action_items=[],
+        )
+
+        out = _to_out(meeting)
+
+        assert [participant.model_dump() for participant in out.calendar_participants] == [
+            {
+                "name": "Sphesihle Mhlongo",
+                "email": "sphesihle.mhlongo@taxconsulting.co.za",
+                "is_organizer": False,
+            },
+            {
+                "name": "Wei Jiuyang",
+                "email": "wei.jiuyang@taxconsulting.co.za",
+                "is_organizer": True,
+            },
+        ]
 
 
 class TestOrganizerReviewGate:
@@ -315,6 +434,28 @@ class TestEditAccessWorkflow:
 
         assert exc.value.status_code == 403
         db.commit.assert_not_awaited()
+
+    async def test_approved_attendee_can_save_speaker_mappings(self, monkeypatch):
+        from app.api import reviews
+        from app.schemas import SpeakerMappingIn
+
+        meeting, _ = self._meeting(status="approved")
+        meeting.extracted_json = {}
+        db = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        mappings = {
+            "Speaker A": "guest@taxconsulting.co.za",
+            "Speaker B": "owner@taxconsulting.co.za",
+        }
+        result = await reviews.save_speaker_mappings(
+            "meeting-1", SpeakerMappingIn(mappings=mappings), db=db,
+            upn="guest@taxconsulting.co.za",
+        )
+
+        assert result == {"ok": True, "speaker_mappings": mappings}
+        assert meeting.extracted_json["speaker_mappings"] == mappings
+        db.commit.assert_awaited_once()
 
     async def test_approved_attendee_cannot_approve_or_group_email(self, monkeypatch):
         from fastapi import HTTPException

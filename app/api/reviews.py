@@ -196,6 +196,57 @@ def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
     )
 
 
+def _to_list_out(m: Meeting, upn: str) -> MeetingOut:
+    """Return the stable MeetingOut shape without detail-page content."""
+    caller = _participant_for(m, upn)
+    is_organizer = (
+        normalize_upn(m.organizer_upn) == upn
+        or bool(caller and caller.is_organizer)
+    )
+    known_recipients = set(normalize_upns(m.attendees_raw))
+    known_recipients.update(p.user_upn.lower() for p in m.participants)
+    if m.organizer_upn:
+        known_recipients.add(m.organizer_upn.lower())
+    edit_requests = [
+        EditAccessRequestOut(
+            requester_upn=p.user_upn,
+            status=p.edit_access_status,
+            requested_at=p.edit_requested_at,
+        )
+        for p in m.participants
+        if is_organizer and p.edit_access_status == "pending"
+    ]
+    return MeetingOut(
+        id=str(m.id),
+        recorded_at=m.recorded_at,
+        title=m.title,
+        state=m.state,
+        summary=None,
+        transcript=None,
+        organizer_upn=m.organizer_upn,
+        extracted_json=None,
+        calendar_participants=_calendar_participants(m),
+        error=public_job_error(m.error),
+        email_recipients=sorted(known_recipients),
+        approved_recipients=[],
+        is_organizer=is_organizer,
+        can_edit=is_organizer or bool(
+            _is_attendee_participant(m, caller) and caller.edit_access_status == "approved"
+        ),
+        can_request_edit_access=bool(
+            not is_organizer
+            and _is_attendee_participant(m, caller)
+            and caller.edit_access_status in {"none", "pending", "denied"}
+        ),
+        edit_access_status="organizer" if is_organizer else (caller.edit_access_status if caller else "none"),
+        edit_access_requests=edit_requests,
+        speaker_candidates=[],
+        speaker_mappings={},
+        speaker_sample_labels=[],
+        action_items=[],
+    )
+
+
 def _require_organizer(m: Meeting, upn: str) -> None:
     """The human-in-the-loop reviewer is the meeting organiser only."""
     organizer = (m.organizer_upn or "").lower()
@@ -287,6 +338,7 @@ async def _build_speaker_sample(
 
 @router.get("/reviews/all", response_model=list[MeetingOut])
 async def all_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
+    """List dashboard summaries; full content remains available from /reviews/{id}."""
     rows = (await db.scalars(
         select(Meeting)
         .join(MeetingParticipant)
@@ -298,12 +350,8 @@ async def all_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(cu
                 Meeting.title,
                 Meeting.recorded_at,
                 Meeting.state,
-                Meeting.transcript,
-                Meeting.summary,
-                Meeting.extracted_json,
                 Meeting.attendees_raw,
                 Meeting.error,
-                Meeting.approved_recipients,
             ),
             selectinload(Meeting.participants).load_only(
                 MeetingParticipant.id,
@@ -314,20 +362,9 @@ async def all_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(cu
                 MeetingParticipant.edit_access_status,
                 MeetingParticipant.edit_requested_at,
             ),
-            selectinload(Meeting.action_items).load_only(
-                ActionItem.id,
-                ActionItem.meeting_id,
-                ActionItem.task,
-                ActionItem.owner,
-                ActionItem.deadline_text,
-                ActionItem.deadline_iso,
-                ActionItem.confidence,
-                ActionItem.source_quote,
-                ActionItem.approved,
-            ),
         )
     )).unique().all()
-    return [_to_out(m, upn) for m in rows]
+    return [_to_list_out(m, upn) for m in rows]
 
 
 @router.get("/reviews/pending", response_model=list[MeetingOut])
@@ -421,7 +458,7 @@ async def save_speaker_mappings(meeting_id: str, body: SpeakerMappingIn,
     meeting = await _authorize(db, meeting_id, upn)
     _require_editor(meeting, upn)
     _require_awaiting_review(meeting)
-    allowed = normalize_upns(meeting.attendees_raw)
+    allowed = set(normalize_upns(meeting.attendees_raw))
     allowed.update(normalize_upn(p.user_upn) for p in meeting.participants)
     mappings: dict[str, str | None] = {}
     for label, candidate in body.mappings.items():

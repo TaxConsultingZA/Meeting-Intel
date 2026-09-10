@@ -121,6 +121,57 @@ class TestAllMeetingsEndpoint:
         assert set(out.model_dump()) == set(type(out).model_fields)
 
 
+class TestHistoricalMeetingsEndpoint:
+    async def test_query_filters_attendees_in_database_and_loads_list_columns_only(self):
+        from sqlalchemy.dialects import postgresql
+        from app.api import reviews
+
+        db = AsyncMock()
+        db.scalars.return_value = MagicMock(
+            unique=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+
+        assert await reviews.historical_meetings(
+            db=db, upn="alice@taxconsulting.co.za"
+        ) == []
+
+        statement = db.scalars.await_args.args[0]
+        sql = str(statement.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        ))
+        assert "jsonb_array_elements(meetings.attendees_raw)" in sql
+        assert "lower(CASE WHEN" in sql
+        assert "emailAddress,address" in sql
+        assert "NOT (EXISTS" in sql
+        assert "meetings.transcript" not in sql
+        assert "meetings.summary" not in sql
+        assert "meetings.extracted_json" not in sql
+        assert "meetings.attendees_raw" not in sql.split("FROM meetings", 1)[0]
+        assert len(statement._with_options) == 1
+
+    def test_historical_output_keeps_contract_without_detail_payload(self):
+        from app.api.reviews import _to_historical_out
+        from app.models import ProcessingState
+
+        meeting = SimpleNamespace(
+            id="meeting-1",
+            recorded_at=None,
+            title="Historical review",
+            state=ProcessingState.sent,
+            organizer_upn="owner@taxconsulting.co.za",
+        )
+
+        out = _to_historical_out(meeting)
+
+        assert out.id == "meeting-1"
+        assert out.title == "Historical review"
+        assert out.transcript is None
+        assert out.extracted_json is None
+        assert out.calendar_participants == []
+        assert out.action_items == []
+        assert set(out.model_dump()) == set(type(out).model_fields)
+
+
 class TestToOut:
     def test_converts_meeting_to_output(self):
         from app.api.reviews import _to_out

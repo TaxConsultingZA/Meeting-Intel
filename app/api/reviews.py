@@ -6,7 +6,8 @@ import os
 import subprocess
 import tempfile
 from fastapi import APIRouter, Body, Depends, HTTPException, Response
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, column, exists, func, literal, not_, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import load_only, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -247,6 +248,25 @@ def _to_list_out(m: Meeting, upn: str) -> MeetingOut:
     )
 
 
+def _to_historical_out(m: Meeting) -> MeetingOut:
+    """Return the stable MeetingOut shape with only historical-list content."""
+    return MeetingOut(
+        id=str(m.id),
+        recorded_at=m.recorded_at,
+        title=m.title,
+        state=m.state,
+        summary=None,
+        transcript=None,
+        organizer_upn=m.organizer_upn,
+        extracted_json=None,
+        calendar_participants=[],
+        error=None,
+        email_recipients=[],
+        approved_recipients=[],
+        action_items=[],
+    )
+
+
 def _require_organizer(m: Meeting, upn: str) -> None:
     """The human-in-the-loop reviewer is the meeting organiser only."""
     organizer = (m.organizer_upn or "").lower()
@@ -392,21 +412,43 @@ async def historical_meetings(db: AsyncSession = Depends(get_db), upn: str = Dep
     These are meetings where the caller's UPN appears in ``attendees_raw`` but they
     have no ``MeetingParticipant`` row.  The caller can request access to each one.
     """
-    from sqlalchemy import not_, exists
-
     participant_exists = exists().where(
         MeetingParticipant.meeting_id == Meeting.id,
         func.lower(MeetingParticipant.user_upn) == upn,
+    )
+    attendee = func.jsonb_array_elements(Meeting.attendees_raw).table_valued(
+        column("value", JSONB)
+    ).alias("historical_attendee")
+    attendee_upn = case(
+        (func.jsonb_typeof(attendee.c.value) == "string",
+         attendee.c.value.op("#>>")(literal("{}"))),
+        else_=func.coalesce(
+            attendee.c.value.op("#>>")(literal("{emailAddress,address}")),
+            attendee.c.value.op("->>")(literal("email")),
+            attendee.c.value.op("->>")(literal("userPrincipalName")),
+        ),
+    )
+    attendee_exists = exists(
+        select(1)
+        .select_from(attendee)
+        .where(func.lower(attendee_upn) == upn)
     )
     rows = (await db.scalars(
         select(Meeting)
         .where(
             Meeting.attendees_raw.isnot(None),
             not_(participant_exists),
+            attendee_exists,
         )
-        .options(selectinload(Meeting.participants), selectinload(Meeting.action_items))
+        .options(load_only(
+            Meeting.id,
+            Meeting.recorded_at,
+            Meeting.title,
+            Meeting.state,
+            Meeting.organizer_upn,
+        ))
     )).unique().all()
-    return [_to_out(m, upn) for m in rows if upn in normalize_upns(m.attendees_raw)]
+    return [_to_historical_out(m) for m in rows]
 
 
 @router.get("/reviews/{meeting_id}", response_model=MeetingOut)

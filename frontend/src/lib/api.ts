@@ -312,10 +312,14 @@ export async function getHistoricalMeetings(upn: string): Promise<MeetingOut[]> 
   return apiFetch<MeetingOut[]>("/reviews/historical", upn);
 }
 
-/** Auto-request access to a historical meeting (granted instantly if UPN is in attendees). */
+/** Request owner-approved access to a historical meeting. */
 export async function requestHistoricalAccess(
   meetingId: string,
   upn: string,
-): Promise<{ ok: boolean; message: string }> {
-  return apiFetch(`/reviews/${meetingId}/request-access`, upn, { method: "POST" });
+  accessType: "view" | "edit",
+): Promise<{ ok: boolean; status: string; access_type: "view" | "edit" }> {
+  return apiFetch(`/reviews/${meetingId}/request-access`, upn, {
+    method: "POST",
+    body: JSON.stringify({ access_type: accessType }),
+  });
 }

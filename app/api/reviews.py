@@ -20,7 +20,7 @@ from ..models import (
 from ..schemas import (
     MeetingOut, ActionItemOut, ActionItemEdit, ShareMeetingIn, ApproveMeetingIn,
     EmailPreviewOut, TranscriptEdit, SpeakerMappingIn, EditAccessDecisionIn,
-    EditAccessRequestOut, CalendarParticipantOut, SendMeetingCopyIn,
+    EditAccessRequestOut, CalendarParticipantOut, SendMeetingCopyIn, MeetingAccessRequestIn,
 )
 from ..graph import client as graph
 from ..email_templates import build_meeting_email
@@ -30,6 +30,11 @@ from .deps import current_user, require_registered  # noqa: F401 — re-exported
 
 settings = get_settings()
 router = APIRouter()
+PENDING_ACCESS_TYPES = {"request_view", "request_edit"}
+
+
+def _has_view_access(participant: MeetingParticipant) -> bool:
+    return participant.access_type not in PENDING_ACCESS_TYPES
 
 
 def is_local_test_meeting(meeting) -> bool:
@@ -59,7 +64,10 @@ async def _authorize(
     m = await db.scalar(query)
     if not m:
         raise HTTPException(404)
-    if not any(normalize_upn(p.user_upn) == upn for p in m.participants):
+    if not any(
+        normalize_upn(p.user_upn) == upn and _has_view_access(p)
+        for p in m.participants
+    ):
         raise HTTPException(403, "Not a participant of this meeting")
     return m
 
@@ -161,6 +169,7 @@ def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
             requester_upn=p.user_upn,
             status=p.edit_access_status,
             requested_at=p.edit_requested_at,
+            requested_access="view" if p.access_type == "request_view" else "edit",
         )
         for p in m.participants
         if p.edit_access_status == "pending"
@@ -183,6 +192,7 @@ def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
             and caller.edit_access_status in {"none", "pending", "denied"}
         ),
         edit_access_status="organizer" if is_organizer else (caller.edit_access_status if caller else "none"),
+        access_request_type=None,
         edit_access_requests=edit_requests,
         speaker_candidates=sorted(speaker_candidates),
         speaker_mappings=extracted.get("speaker_mappings", {}),
@@ -213,6 +223,7 @@ def _to_list_out(m: Meeting, upn: str) -> MeetingOut:
             requester_upn=p.user_upn,
             status=p.edit_access_status,
             requested_at=p.edit_requested_at,
+            requested_access="view" if p.access_type == "request_view" else "edit",
         )
         for p in m.participants
         if is_organizer and p.edit_access_status == "pending"
@@ -240,6 +251,7 @@ def _to_list_out(m: Meeting, upn: str) -> MeetingOut:
             and caller.edit_access_status in {"none", "pending", "denied"}
         ),
         edit_access_status="organizer" if is_organizer else (caller.edit_access_status if caller else "none"),
+        access_request_type=None,
         edit_access_requests=edit_requests,
         speaker_candidates=[],
         speaker_mappings={},
@@ -248,8 +260,9 @@ def _to_list_out(m: Meeting, upn: str) -> MeetingOut:
     )
 
 
-def _to_historical_out(m: Meeting) -> MeetingOut:
+def _to_historical_out(m: Meeting, upn: str | None = None) -> MeetingOut:
     """Return the stable MeetingOut shape with only historical-list content."""
+    request = _participant_for(m, upn) if hasattr(m, "participants") else None
     return MeetingOut(
         id=str(m.id),
         recorded_at=m.recorded_at,
@@ -263,6 +276,12 @@ def _to_historical_out(m: Meeting) -> MeetingOut:
         error=None,
         email_recipients=[],
         approved_recipients=[],
+        edit_access_status=request.edit_access_status if request else "none",
+        access_request_type=(
+            "view" if request and request.access_type == "request_view"
+            else "edit" if request and request.access_type == "request_edit"
+            else None
+        ),
         action_items=[],
     )
 
@@ -362,7 +381,10 @@ async def all_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(cu
     rows = (await db.scalars(
         select(Meeting)
         .join(MeetingParticipant)
-        .where(func.lower(MeetingParticipant.user_upn) == upn)
+        .where(
+            func.lower(MeetingParticipant.user_upn) == upn,
+            MeetingParticipant.access_type.notin_(PENDING_ACCESS_TYPES),
+        )
         .options(
             load_only(
                 Meeting.id,
@@ -415,6 +437,7 @@ async def historical_meetings(db: AsyncSession = Depends(get_db), upn: str = Dep
     participant_exists = exists().where(
         MeetingParticipant.meeting_id == Meeting.id,
         func.lower(MeetingParticipant.user_upn) == upn,
+        MeetingParticipant.access_type.notin_(PENDING_ACCESS_TYPES),
     )
     attendee = func.jsonb_array_elements(Meeting.attendees_raw).table_valued(
         column("value", JSONB)
@@ -448,9 +471,9 @@ async def historical_meetings(db: AsyncSession = Depends(get_db), upn: str = Dep
             Meeting.title,
             Meeting.state,
             Meeting.organizer_upn,
-        ))
+        ), selectinload(Meeting.participants))
     )).unique().all()
-    return [_to_historical_out(m) for m in rows]
+    return [_to_historical_out(m, upn) for m in rows]
 
 
 @router.get("/reviews/{meeting_id}", response_model=MeetingOut)
@@ -580,7 +603,6 @@ async def decide_edit_access(meeting_id: str, requester_upn: str, body: EditAcce
                              db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
     meeting = await _authorize(db, meeting_id, upn, for_update=True)
     _require_organizer(meeting, upn)
-    _require_awaiting_review(meeting)
     participant = _participant_for(meeting, normalize_upn(requester_upn))
     if (
         not _is_attendee_participant(meeting, participant)
@@ -590,11 +612,20 @@ async def decide_edit_access(meeting_id: str, requester_upn: str, body: EditAcce
         raise HTTPException(404, "Edit request not found")
     if participant.edit_access_status != "pending":
         raise HTTPException(409, "Only pending edit requests can be decided")
-    participant.edit_access_status = "approved" if body.approved else "denied"
+    requested_access = "view" if participant.access_type == "request_view" else "edit"
+    if body.approved:
+        participant.access_type = "historical" if participant.access_type in PENDING_ACCESS_TYPES else participant.access_type
+        participant.edit_access_status = "approved" if requested_access == "edit" else "none"
+    else:
+        participant.edit_access_status = "denied"
     participant.edit_decided_at = datetime.now(timezone.utc)
     participant.edit_decided_by = upn
     await db.commit()
-    return {"ok": True, "status": participant.edit_access_status}
+    return {
+        "ok": True,
+        "status": "approved" if body.approved else "denied",
+        "access_type": requested_access,
+    }
 
 
 @router.post("/reviews/{meeting_id}/approve")
@@ -759,14 +790,10 @@ async def share_meeting(meeting_id: str, body: ShareMeetingIn,
 
 
 @router.post("/reviews/{meeting_id}/request-access")
-async def request_historical_access(meeting_id: str, db: AsyncSession = Depends(get_db),
+async def request_historical_access(meeting_id: str, body: MeetingAccessRequestIn,
+                                    db: AsyncSession = Depends(get_db),
                                     upn: str = Depends(require_registered)):
-    """Auto-grant access to a historical meeting if the caller was an attendee.
-
-    Checks ``attendees_raw`` — if the caller's UPN is present, creates a
-    ``MeetingParticipant`` row with ``access_type='historical'`` immediately.
-    No approval step required: being listed as an attendee is proof of presence.
-    """
+    """Request owner-approved view or edit access to an attended meeting."""
     m = await db.scalar(
         select(Meeting)
         .where(Meeting.id == meeting_id)
@@ -785,14 +812,17 @@ async def request_historical_access(meeting_id: str, db: AsyncSession = Depends(
             func.lower(MeetingParticipant.user_upn) == upn,
         )
     )
-    if already:
-        return {"ok": True, "message": "Already have access"}
-
-    db.add(MeetingParticipant(
-        meeting_id=m.id,
-        user_upn=upn,
-        is_organizer=False,
-        access_type="historical",
-    ))
+    if already and _has_view_access(already):
+        raise HTTPException(409, "Already have access")
+    participant = already or MeetingParticipant(
+        meeting_id=m.id, user_upn=upn, is_organizer=False
+    )
+    participant.access_type = f"request_{body.access_type}"
+    participant.edit_access_status = "pending"
+    participant.edit_requested_at = datetime.now(timezone.utc)
+    participant.edit_decided_at = None
+    participant.edit_decided_by = None
+    if not already:
+        db.add(participant)
     await db.commit()
-    return {"ok": True, "message": "Access granted"}
+    return {"ok": True, "status": "pending", "access_type": body.access_type}

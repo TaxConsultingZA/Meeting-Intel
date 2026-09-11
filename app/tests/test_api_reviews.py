@@ -149,7 +149,7 @@ class TestHistoricalMeetingsEndpoint:
         assert "meetings.summary" not in sql
         assert "meetings.extracted_json" not in sql
         assert "meetings.attendees_raw" not in sql.split("FROM meetings", 1)[0]
-        assert len(statement._with_options) == 1
+        assert len(statement._with_options) == 2
 
     def test_historical_output_keeps_contract_without_detail_payload(self):
         from app.api.reviews import _to_historical_out
@@ -335,6 +335,30 @@ class TestEditAccessWorkflow:
         )
         return meeting, participant
 
+    @pytest.mark.parametrize("requested_access", ["view", "edit"])
+    async def test_historical_attendee_requests_selected_access(self, requested_access):
+        from app.api import reviews
+        from app.schemas import MeetingAccessRequestIn
+
+        meeting, _ = self._meeting()
+        meeting.participants = []
+        db = MagicMock()
+        db.scalar = AsyncMock(side_effect=[meeting, None])
+        db.commit = AsyncMock()
+
+        result = await reviews.request_historical_access(
+            "meeting-1", MeetingAccessRequestIn(access_type=requested_access),
+            db=db, upn="guest@taxconsulting.co.za",
+        )
+
+        participant = db.add.call_args.args[0]
+        assert participant.access_type == f"request_{requested_access}"
+        assert participant.edit_access_status == "pending"
+        assert result == {
+            "ok": True, "status": "pending", "access_type": requested_access
+        }
+        db.commit.assert_awaited_once()
+
     async def test_real_attendee_can_request_access(self, monkeypatch):
         from app.api import reviews
 
@@ -399,6 +423,59 @@ class TestEditAccessWorkflow:
         assert result["status"] == "approved"
         assert participant.edit_decided_by == "owner@taxconsulting.co.za"
         db.commit.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        ("request_type", "expected_edit_status"),
+        [("request_view", "none"), ("request_edit", "approved")],
+    )
+    async def test_organizer_grants_requested_access_type(
+        self, monkeypatch, request_type, expected_edit_status
+    ):
+        from app.api import reviews
+        from app.schemas import EditAccessDecisionIn
+
+        meeting, participant = self._meeting(access_type=request_type, status="pending")
+        db = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        result = await reviews.decide_edit_access(
+            "meeting-1", "guest@taxconsulting.co.za",
+            EditAccessDecisionIn(approved=True), db=db,
+            upn="owner@taxconsulting.co.za",
+        )
+
+        assert result == {
+            "ok": True,
+            "status": "approved",
+            "access_type": "view" if request_type == "request_view" else "edit",
+        }
+        assert participant.access_type == "historical"
+        assert participant.edit_access_status == expected_edit_status
+
+    async def test_pending_access_row_does_not_authorize_meeting_detail(self):
+        from fastapi import HTTPException
+        from app.api import reviews
+
+        meeting, _ = self._meeting(access_type="request_view", status="pending")
+        db = AsyncMock()
+        db.scalar.return_value = meeting
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews._authorize(db, "meeting-1", "guest@taxconsulting.co.za")
+
+        assert exc.value.status_code == 403
+
+    def test_view_access_cannot_edit_but_edit_access_can(self):
+        from fastapi import HTTPException
+        from app.api import reviews
+
+        view_meeting, _ = self._meeting(access_type="historical", status="none")
+        with pytest.raises(HTTPException) as exc:
+            reviews._require_editor(view_meeting, "guest@taxconsulting.co.za")
+        assert exc.value.status_code == 403
+
+        edit_meeting, _ = self._meeting(access_type="historical", status="approved")
+        reviews._require_editor(edit_meeting, "guest@taxconsulting.co.za")
 
     async def test_organizer_can_reject_pending_request(self, monkeypatch):
         from app.api import reviews

@@ -278,6 +278,8 @@ class MeetingParticipant(Base):
     - ``participant``: normal pipeline flow (was an attendee when processed)
     - ``shared``: meeting owner explicitly shared the transcript with this person
     - ``historical``: user registered after the meeting was processed and requested access
+    - ``request_view`` / ``request_edit``: pending owner approval; these rows do
+      not grant meeting visibility
     """
     __tablename__ = "meeting_participants"
     __table_args__ = (UniqueConstraint("meeting_id", "user_upn", name="uq_meeting_user"),)

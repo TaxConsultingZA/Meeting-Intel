@@ -153,12 +153,14 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
 
   async function handleAccessDecision(requesterUpn: string, approved: boolean) {
     try {
+      const request = meeting.edit_access_requests.find((item) => item.requester_upn === requesterUpn);
       await decideMeetingEditAccess(meeting.id, requesterUpn, approved, accessToken);
       setMeeting((current) => ({
         ...current,
         edit_access_requests: current.edit_access_requests.filter((request) => request.requester_upn !== requesterUpn),
       }));
-      toast.success(approved ? "Edit access approved." : "Edit access declined.");
+      const label = request?.requested_access === "view" ? "View access" : "Edit access";
+      toast.success(approved ? `${label} approved.` : `${label} declined.`);
     } catch (e) {
       toast.error(`Decision failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -238,10 +240,11 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             )}
             {isOrganizer && meeting.edit_access_requests.length > 0 && (
               <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
-                <p className="mb-2 text-xs font-bold text-[#003366]">Edit access requests</p>
+                <p className="mb-2 text-xs font-bold text-[#003366]">Access requests</p>
                 {meeting.edit_access_requests.map((request) => (
                   <div key={request.requester_upn} className="mb-2 last:mb-0">
                     <p className="break-all text-xs text-[#374151]">{request.requester_upn}</p>
+                    <p className="text-xs font-semibold text-[#003366]">{request.requested_access === "view" ? "View only" : "View and edit"}</p>
                     <div className="mt-1 flex gap-2">
                       <button onClick={() => handleAccessDecision(request.requester_upn, true)} className="text-xs font-semibold text-green-700">Approve</button>
                       <button onClick={() => handleAccessDecision(request.requester_upn, false)} className="text-xs font-semibold text-red-700">Decline</button>

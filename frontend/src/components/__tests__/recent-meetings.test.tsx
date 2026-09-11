@@ -83,7 +83,8 @@ it("renders all Recent actions and disables repeat actions for pending/queued", 
 it("merges historical meetings, removes stable-id duplicates, and reveals history on demand", async () => {
   vi.mocked(api.getRecentMeetings).mockResolvedValue([{ ...event("view"), meeting_id: "same", subject: "Recent copy" }]);
   const historical = [historicalMeeting("same", "Duplicate"), historicalMeeting("older", "Older historical", "2025-01-02T10:00:00Z")];
-  render(<RecentMeetings token="token" cacheIdentity="reviewer@example.test" isSubscribed historical={historical} onRequestHistoricalAccess={vi.fn()} />);
+  const requestAccess = vi.fn().mockResolvedValue(undefined);
+  render(<RecentMeetings token="token" cacheIdentity="reviewer@example.test" isSubscribed historical={historical} onRequestHistoricalAccess={requestAccess} />);
 
   expect(await screen.findByText("Recent copy")).toBeInTheDocument();
   expect(screen.queryByText("Duplicate")).not.toBeInTheDocument();
@@ -91,6 +92,11 @@ it("merges historical meetings, removes stable-id duplicates, and reveals histor
   fireEvent.change(screen.getByRole("combobox", { name: "Time" }), { target: { value: "all" } });
   expect(screen.getByText("Older historical")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Request Access" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Request Access" }));
+  expect(screen.getByRole("button", { name: "View only" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "View and edit" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "View and edit" }));
+  await waitFor(() => expect(requestAccess).toHaveBeenCalledWith("older", "edit"));
 });
 
 it("hides no-recording meetings by default and never offers a processing request for them", async () => {

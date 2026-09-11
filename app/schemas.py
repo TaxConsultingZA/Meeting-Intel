@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 from .models import Confidence, ProcessingState
@@ -108,10 +109,15 @@ class EditAccessDecisionIn(BaseModel):
     approved: bool
 
 
+class MeetingAccessRequestIn(BaseModel):
+    access_type: Literal["view", "edit"]
+
+
 class EditAccessRequestOut(BaseModel):
     requester_upn: str
     status: str
     requested_at: datetime | None = None
+    requested_access: Literal["view", "edit"] = "edit"
 
 
 class CalendarParticipantOut(BaseModel):
@@ -138,6 +144,7 @@ class MeetingOut(BaseModel):
     can_edit: bool = False
     can_request_edit_access: bool = False
     edit_access_status: str = "none"
+    access_request_type: Literal["view", "edit"] | None = None
     edit_access_requests: list[EditAccessRequestOut] = Field(default_factory=list)
     speaker_candidates: list[str] = Field(default_factory=list)
     speaker_mappings: dict[str, str | None] = Field(default_factory=dict)

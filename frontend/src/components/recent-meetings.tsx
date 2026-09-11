@@ -70,7 +70,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
   historical?: MeetingOut[];
   processingRequests?: RecordingProcessingRequest[];
   onRefreshProcessingRequests?: () => Promise<void>;
-  onRequestHistoricalAccess?: (meetingId: string) => Promise<void>;
+  onRequestHistoricalAccess?: (meetingId: string, accessType: "view" | "edit") => Promise<void>;
 }) {
   const [events, setEvents] = useState<RecentMeeting[]>([]);
   const [requests, setRequests] = useState<RecordingProcessingRequest[]>([]);
@@ -81,6 +81,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
   const [timeFilter, setTimeFilter] = useState<TimeFilter>("7");
   const [recordingFilter, setRecordingFilter] = useState<RecordingFilter>("with");
   const [organizerFilter, setOrganizerFilter] = useState<OrganizerFilter>("all");
+  const [choosingAccessFor, setChoosingAccessFor] = useState<string | null>(null);
   const controlledRequests = processingRequests !== undefined;
   const processingRequestsRef = useRef(processingRequests);
   processingRequestsRef.current = processingRequests;
@@ -214,7 +215,19 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
             <p className="my-2 text-sm text-[#6b7280]"><LocalDateTime value={historicalDate(meeting)} /></p>
             <p className="mb-3 text-xs text-[#6b7280]">Organised by {meeting.organizer_upn || "Unknown"}</p>
             <p className="mb-3 text-xs font-semibold text-[#6b7280]">Recording Available</p>
-            {onRequestHistoricalAccess && <button type="button" disabled={busy} className={buttonClass} onClick={() => void act(() => onRequestHistoricalAccess(meeting.id))}>Request Access</button>}
+            {meeting.edit_access_status === "pending" ? (
+              <span className="text-sm text-amber-800">
+                {meeting.access_request_type === "edit" ? "View and edit" : "View"} request pending
+              </span>
+            ) : onRequestHistoricalAccess && choosingAccessFor === meeting.id ? (
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Choose access type">
+                <button type="button" disabled={busy} className={buttonClass} onClick={() => void act(async () => { await onRequestHistoricalAccess(meeting.id, "view"); setChoosingAccessFor(null); })}>View only</button>
+                <button type="button" disabled={busy} className={buttonClass} onClick={() => void act(async () => { await onRequestHistoricalAccess(meeting.id, "edit"); setChoosingAccessFor(null); })}>View and edit</button>
+                <button type="button" disabled={busy} className="text-sm text-[#6b7280]" onClick={() => setChoosingAccessFor(null)}>Cancel</button>
+              </div>
+            ) : onRequestHistoricalAccess && (
+              <button type="button" disabled={busy} className={buttonClass} onClick={() => setChoosingAccessFor(meeting.id)}>Request Access</button>
+            )}
           </article>
         ); })())}
       </div>

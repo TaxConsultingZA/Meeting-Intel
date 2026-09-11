@@ -78,7 +78,8 @@ export interface MeetingOut {
   can_edit: boolean;
   can_request_edit_access: boolean;
   edit_access_status: "none" | "pending" | "approved" | "denied" | "organizer";
-  edit_access_requests: { requester_upn: string; status: string; requested_at: string | null }[];
+  access_request_type?: "view" | "edit" | null;
+  edit_access_requests: { requester_upn: string; status: string; requested_at: string | null; requested_access: "view" | "edit" }[];
   speaker_candidates: string[];
   speaker_mappings: Record<string, string | null>;
   speaker_sample_labels: string[];

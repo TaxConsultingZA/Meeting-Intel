@@ -191,13 +191,15 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     (loadErrors.length > 0 ? loadErrors : persistedSyncErrors).map(conciseMicrosoftError),
   ));
 
-  async function handleRequestAccess(meetingId: string) {
+  async function handleRequestAccess(meetingId: string, accessType: "view" | "edit") {
     try {
-      await requestHistoricalAccess(meetingId, accessToken);
-      setHistorical((prev) => prev.filter((m) => m.id !== meetingId));
-      alert("Access granted — the meeting will now appear in your Old Meetings tab.");
+      await requestHistoricalAccess(meetingId, accessToken, accessType);
+      setHistorical((prev) => prev.map((m) => m.id === meetingId
+        ? { ...m, edit_access_status: "pending", access_request_type: accessType }
+        : m));
+      alert(`${accessType === "view" ? "View" : "View and edit"} access requested. The meeting organiser will review it.`);
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : "Could not grant access");
+      alert(e instanceof Error ? e.message : "Could not request access");
     }
   }
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import RecentMeetings from "../recent-meetings";
 import * as api from "@/lib/api";
-import type { RecentMeeting, RecordingProcessingRequest } from "@/lib/types";
+import type { MeetingOut, RecentMeeting, RecordingProcessingRequest } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
   getRecentMeetings: vi.fn(), getProcessingRequests: vi.fn(), requestRecordingProcessing: vi.fn(),
@@ -46,14 +46,15 @@ it("shows expired cached meetings while silently refreshing them", async () => {
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
-it("describes the past 30 day window", () => {
+it("defaults to the last 7 days with recordings", () => {
   render(<RecentMeetings token="token" isSubscribed />);
-  expect(screen.getByText(/ended in the past 30 days/i)).toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Time" })).toHaveValue("7");
+  expect(screen.getByRole("combobox", { name: "Recording" })).toHaveValue("with");
 });
 
 function event(action: RecentMeeting["action"]): RecentMeeting {
-  return { event_id: action, subject: action, action, status: "ended", start: "2026-09-03T10:00:00Z",
-    end: "2026-09-03T11:00:00Z", start_tz: "UTC", organizer_name: "Organizer", organizer_email: "org@example.test",
+  return { event_id: action, subject: action, action, status: "ended", start: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    end: new Date(Date.now() - 23 * 60 * 60 * 1000).toISOString(), start_tz: "UTC", organizer_name: "Organizer", organizer_email: "org@example.test",
     attendees: [], attendee_count: 0, platform: "Teams", location: null, meeting_id: "meeting", processing_status: "pending" };
 }
 
@@ -69,13 +70,44 @@ it("renders all Recent actions and disables repeat actions for pending/queued", 
     event("processing"), event("no_recording"), event("unavailable"),
   ]);
   render(<RecentMeetings token="token" isSubscribed />);
+  fireEvent.change(screen.getByRole("combobox", { name: "Recording" }), { target: { value: "all" } });
   expect(await screen.findByRole("link", { name: "View" })).toHaveAttribute("href", "/meetings/meeting");
   expect(screen.getByRole("button", { name: "Process" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Request Processing" })).toBeEnabled();
-  for (const text of ["Request Pending", "Processing: Queued", "No recording found", "Unavailable"])
+  for (const text of ["Request Pending", "Processing: Queued", "Unavailable"])
     expect(screen.getByText(text)).toBeInTheDocument();
+  expect(screen.getAllByText("No Recording").length).toBeGreaterThan(0);
   expect(screen.getAllByRole("button", { name: "Request Processing" })).toHaveLength(1);
 });
+
+it("merges historical meetings, removes stable-id duplicates, and reveals history on demand", async () => {
+  vi.mocked(api.getRecentMeetings).mockResolvedValue([{ ...event("view"), meeting_id: "same", subject: "Recent copy" }]);
+  const historical = [historicalMeeting("same", "Duplicate"), historicalMeeting("older", "Older historical", "2025-01-02T10:00:00Z")];
+  render(<RecentMeetings token="token" cacheIdentity="reviewer@example.test" isSubscribed historical={historical} onRequestHistoricalAccess={vi.fn()} />);
+
+  expect(await screen.findByText("Recent copy")).toBeInTheDocument();
+  expect(screen.queryByText("Duplicate")).not.toBeInTheDocument();
+  expect(screen.queryByText("Older historical")).not.toBeInTheDocument();
+  fireEvent.change(screen.getByRole("combobox", { name: "Time" }), { target: { value: "all" } });
+  expect(screen.getByText("Older historical")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Request Access" })).toBeInTheDocument();
+});
+
+it("hides no-recording meetings by default and never offers a processing request for them", async () => {
+  vi.mocked(api.getRecentMeetings).mockResolvedValue([event("no_recording")]);
+  render(<RecentMeetings token="token" isSubscribed />);
+  await waitFor(() => expect(api.getRecentMeetings).toHaveBeenCalledOnce());
+  expect(screen.queryByText("no_recording")).not.toBeInTheDocument();
+  fireEvent.change(screen.getByRole("combobox", { name: "Recording" }), { target: { value: "without" } });
+  expect(screen.getAllByText("No Recording").length).toBeGreaterThan(0);
+  expect(screen.queryByRole("button", { name: "Request Processing" })).not.toBeInTheDocument();
+});
+
+function historicalMeeting(id: string, title: string, recordedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()): MeetingOut {
+  return { id, title, recorded_at: recordedAt, state: "approved", summary: null, action_items: [], calendar_participants: [],
+    organizer_upn: "owner@example.test", email_recipients: [], approved_recipients: [], is_organizer: false, can_edit: false,
+    can_request_edit_access: false, edit_access_status: "none", edit_access_requests: [], speaker_candidates: [], speaker_mappings: {}, speaker_sample_labels: [] };
+}
 
 it("sends only the Calendar event reference and refreshes to pending", async () => {
   vi.mocked(api.getRecentMeetings).mockResolvedValueOnce([event("request_processing")]).mockResolvedValue([event("request_pending")]);

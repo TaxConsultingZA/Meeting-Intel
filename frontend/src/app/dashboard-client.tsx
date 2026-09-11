@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Calendar, Users, ChevronRight, Upload, Mic, Video, Share2, History, Lock, Power } from "lucide-react";
+import { Calendar, Users, ChevronRight, Upload, Mic, Video, Share2, Power } from "lucide-react";
 import StateBadge from "@/components/state-badge";
 import LocalDateTime, { useUserTimeZone } from "@/components/local-date-time";
 import { formatEventTime, parseInstant } from "@/lib/time";
@@ -33,7 +33,7 @@ interface Props {
   deferInitialLoad?: boolean;
 }
 
-type Tab = "upcoming" | "recent" | "in_progress" | "review" | "old_meetings" | "historical" | "cancelled";
+type Tab = "upcoming" | "recent" | "in_progress" | "review" | "old_meetings" | "cancelled";
 
 function conciseMicrosoftError(error: string): string {
   const lower = error.toLowerCase();
@@ -289,12 +289,11 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       {/* Tabs */}
       <div className="flex flex-wrap border-b-2 border-[#dde1e8] mb-6 gap-0">
         {([
-          { id: "recent" as Tab, label: "Recent Meetings", count: null },
+          { id: "recent" as Tab, label: "Meetings", count: null },
           { id: "upcoming"    as Tab, label: "Upcoming Meetings",         count: upcomingEvents.length                          },
           { id: "in_progress" as Tab, label: "In Progress",               count: inProgressEvents.length + activeRecordingJobs.length + pipelineActive.length },
           { id: "review"      as Tab, label: "Awaiting Review",           count: pendingReview.length + pendingProcessingRequests.length },
           { id: "old_meetings"as Tab, label: "Old Meetings",               count: null                                          },
-          { id: "historical"  as Tab, label: "Historical Access",         count: historical.length || null                     },
           { id: "cancelled"   as Tab, label: "Failed / Cancelled",                 count: cancelled.length || null                      },
         ]).map(({ id, label, count }) => (
           <button
@@ -324,8 +323,10 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
             token={accessToken}
             cacheIdentity={upn}
             isSubscribed={isSubscribed}
+            historical={historical}
             processingRequests={processingRequests}
             onRefreshProcessingRequests={refreshProcessingRequests}
+            onRequestHistoricalAccess={handleRequestAccess}
           />
         </div>
       )}
@@ -455,54 +456,6 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
                             </button>
                           )}
                         </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-      )}
-
-      {/* Historical Access */}
-      {tab === "historical" && (
-        historical.length === 0
-          ? <EmptyState icon="🔓" title="No historical meetings found" sub="Meetings you attended before registering will appear here. Once you request access, they move to Old Meetings." />
-          : <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
-              <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 flex items-center gap-2 text-[12.5px] text-amber-700">
-                <History size={13} />
-                These meetings were processed before you registered. Click <strong>Request Access</strong> to unlock any you attended.
-              </div>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr>
-                    {["Meeting", "Date", "Organiser", "Action"].map((h) => (
-                      <th key={h} className="bg-[#003366] text-white text-xs font-semibold px-4 py-2.5 text-left border border-white/10">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {historical.map((m, i) => (
-                    <tr key={m.id} className={`${i % 2 === 1 ? "bg-[#f8fafc]" : ""} hover:bg-blue-50/30 transition-colors`}>
-                      <td className="px-4 py-2.5 border border-[#dde1e8] font-medium text-[13px]">
-                        <span className="flex items-center gap-1.5 text-[#6b7280]">
-                          <Lock size={11} className="shrink-0" />
-                          {m.title ?? "Untitled Meeting"}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px] whitespace-nowrap">
-                        {<LocalDateTime value={m.recorded_at ?? m.extracted_json?.meeting_time} />}
-                      </td>
-                      <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px]">
-                        {formatUpn(m.organizer_upn) || "—"}
-                      </td>
-                      <td className="px-4 py-2.5 border border-[#dde1e8]">
-                        <button
-                          type="button"
-                          onClick={() => handleRequestAccess(m.id)}
-                          className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#003366] bg-blue-50 hover:bg-blue-100 px-3 py-1 rounded-md transition-colors"
-                        >
-                          <History size={12} /> Request Access
-                        </button>
                       </td>
                     </tr>
                   ))}

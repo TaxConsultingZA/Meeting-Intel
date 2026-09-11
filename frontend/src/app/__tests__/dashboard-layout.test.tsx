@@ -261,7 +261,7 @@ it("does not overlap active dashboard polling requests", () => {
   expect(getAllMeetings).toHaveBeenCalledOnce();
 });
 
-it("keeps Recent Meetings mounted after its first visit", async () => {
+it("keeps Meetings mounted after its first visit", async () => {
   vi.mocked(getRecentMeetings).mockResolvedValue([]);
   vi.mocked(getProcessingRequests).mockResolvedValue([]);
   render(<DashboardClient meetings={[]} recordingJobs={[]} upcoming={[]} historical={[]}
@@ -269,14 +269,22 @@ it("keeps Recent Meetings mounted after its first visit", async () => {
     isSubscribed={true} syncStates={[]} loadErrors={[]} />);
 
   expect(getRecentMeetings).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Recent Meetings" }));
-  expect(await screen.findByText("No recently ended meetings.")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Meetings" }));
+  expect(await screen.findByText("No meetings match these filters.")).toBeInTheDocument();
   expect(getRecentMeetings).toHaveBeenCalledOnce();
   expect(getProcessingRequests).toHaveBeenCalledOnce();
 
   fireEvent.click(screen.getByRole("button", { name: "Upcoming Meetings" }));
-  fireEvent.click(screen.getByRole("button", { name: "Recent Meetings" }));
-  expect(screen.getByText("No recently ended meetings.")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Meetings" }));
+  expect(screen.getByText("No meetings match these filters.")).toBeInTheDocument();
   await waitFor(() => expect(getRecentMeetings).toHaveBeenCalledOnce());
   expect(getProcessingRequests).toHaveBeenCalledOnce();
+});
+
+it("shows a single Meetings tab without Historical Access", () => {
+  render(<DashboardClient meetings={[]} recordingJobs={[]} upcoming={[]} historical={[]}
+    upn="reviewer@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} />);
+  expect(screen.getByRole("button", { name: "Meetings" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Historical Access/ })).not.toBeInTheDocument();
 });

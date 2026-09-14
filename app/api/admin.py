@@ -11,7 +11,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..email_templates import build_welcome_email
 from ..graph import client as graph
-from ..models import BusinessUnit, RegisteredUser
+from ..models import BusinessUnit, Meeting, ProcessedItem, RecordingJob, RecordingProcessingRequest, RegisteredUser
 from ..schemas import BusinessUnitOut, RegisteredUserOut, RegisterUserIn, UpdateUserIn
 from .deps import current_user
 
@@ -60,6 +60,54 @@ async def list_users(db: AsyncSession = Depends(get_db), _upn: str = Depends(_re
         .order_by(RegisteredUser.registered_at)
     )).all()
     return [_user_to_out(u) for u in rows]
+
+
+@router.get("/meetings")
+async def list_operational_meetings(
+    db: AsyncSession = Depends(get_db), _upn: str = Depends(_require_admin),
+):
+    """Return cross-user operational metadata without transcript or note content."""
+    meetings = (await db.scalars(
+        select(Meeting).order_by(Meeting.created_at.desc()).limit(200)
+    )).all()
+    if not meetings:
+        return []
+    item_ids = [meeting.drive_item_id for meeting in meetings]
+    meeting_ids = [meeting.id for meeting in meetings]
+    jobs = (await db.scalars(
+        select(RecordingJob).where(RecordingJob.drive_item_id.in_(item_ids))
+        .order_by(RecordingJob.created_at.desc())
+    )).all()
+    requests = (await db.scalars(
+        select(RecordingProcessingRequest).where(
+            (RecordingProcessingRequest.meeting_id.in_(meeting_ids))
+            | (RecordingProcessingRequest.drive_item_id.in_(item_ids))
+        ).order_by(RecordingProcessingRequest.created_at.desc())
+    )).all()
+    tracked_items = set(await db.scalars(
+        select(ProcessedItem.drive_item_id).where(
+            ProcessedItem.drive_item_id.in_(item_ids), ProcessedItem.drive_id.is_not(None)
+        )
+    ))
+    latest_job = {}
+    for job in jobs:
+        latest_job.setdefault(job.drive_item_id, job)
+    latest_request = {}
+    for request in requests:
+        latest_request.setdefault(request.meeting_id or request.drive_item_id, request)
+    return [{
+        "id": str(meeting.id),
+        "title": meeting.title,
+        "recorded_at": meeting.recorded_at,
+        "organizer_upn": meeting.organizer_upn,
+        "owner_upn": latest_job[meeting.drive_item_id].owner_upn if meeting.drive_item_id in latest_job else meeting.organizer_upn,
+        "meeting_status": meeting.state.value,
+        "recording_status": "tracked" if meeting.drive_item_id in tracked_items else "unknown",
+        "job_status": latest_job[meeting.drive_item_id].status if meeting.drive_item_id in latest_job else None,
+        "request_status": (
+            latest_request.get(meeting.id) or latest_request.get(meeting.drive_item_id)
+        ).status if (meeting.id in latest_request or meeting.drive_item_id in latest_request) else None,
+    } for meeting in meetings]
 
 
 @router.post("/users", response_model=RegisteredUserOut, status_code=201)

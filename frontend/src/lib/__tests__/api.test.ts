@@ -55,6 +55,29 @@ describe("approveMeeting", () => {
   });
 });
 
+describe("getMe account-state errors", () => {
+  it("returns null only for the explicit application unregistered response", async () => {
+    mockFetch.mockResolvedValueOnce(makeResponse({ detail: "Not registered on the platform" }, 404));
+    const { getMe } = await import("../api");
+    await expect(getMe("token")).resolves.toBeNull();
+  });
+
+  it("rejects a platform or unexpected 404", async () => {
+    mockFetch.mockResolvedValueOnce(makeResponse("Application not found", 404));
+    const { getMe } = await import("../api");
+    await expect(getMe("token")).rejects.toThrow("404");
+  });
+
+  it.each([
+    ["backend 5xx", () => Promise.resolve(makeResponse({ detail: "Internal Server Error" }, 503))],
+    ["network failure", () => Promise.reject(new TypeError("Failed to fetch"))],
+  ])("rejects %s instead of returning an unregistered result", async (_label, response) => {
+    mockFetch.mockImplementationOnce(response);
+    const { getMe } = await import("../api");
+    await expect(getMe("token")).rejects.toThrow();
+  });
+});
+
 describe("sendMeetingCopyToSelf", () => {
   it("posts only the caller's fixed self-copy recipient", async () => {
     mockFetch.mockResolvedValueOnce(makeResponse({ ok: true, sent: true }));

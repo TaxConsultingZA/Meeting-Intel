@@ -48,7 +48,7 @@ async def create(body: EventReference, db=Depends(get_db), upn=Depends(require_s
 @router.get("")
 async def listing(db=Depends(get_db), user: RegisteredUser = Depends(registered_user)):
     requester = aliased(RegisteredUser)
-    rows = await db.execute(
+    query = (
         select(
             RecordingProcessingRequest.id,
             RecordingProcessingRequest.event_id,
@@ -63,12 +63,14 @@ async def listing(db=Depends(get_db), user: RegisteredUser = Depends(registered_
             requester.upn,
         )
         .outerjoin(requester, requester.id == RecordingProcessingRequest.requester_user_id)
-        .where(or_(
+        .order_by(RecordingProcessingRequest.created_at.desc())
+    )
+    if not user.is_admin:
+        query = query.where(or_(
             RecordingProcessingRequest.requester_user_id == user.id,
             RecordingProcessingRequest.recording_owner_user_id == user.id,
         ))
-        .order_by(RecordingProcessingRequest.created_at.desc())
-    )
+    rows = await db.execute(query)
     result = []
     for row in rows:
         request = row._mapping

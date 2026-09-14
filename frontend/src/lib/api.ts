@@ -1,7 +1,16 @@
-import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, AppNotification, RegisteredUser, BusinessUnit, SyncState, RecordingJobOut } from "./types";
+import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, AppNotification, RegisteredUser, BusinessUnit, SyncState, RecordingJobOut, AdminMeetingOut } from "./types";
 import type { RecentMeeting, RecordingProcessingRequest } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+
+class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly responseBody: string,
+  ) {
+    super(`${status}: ${responseBody}`);
+  }
+}
 
 export function getRecordingJobs(token: string, meetingId?: string): Promise<RecordingJobOut[]> {
   return apiFetch(`/recordings/jobs${meetingId ? `?meeting_id=${encodeURIComponent(meetingId)}` : ""}`, token);
@@ -13,6 +22,10 @@ export function retryRecordingJob(jobId: string, token: string) {
 
 export function cancelRecordingJob(jobId: string, token: string) {
   return apiFetch<{ ok: boolean; status: string }>(`/recordings/jobs/${encodeURIComponent(jobId)}/cancel`, token, { method: "POST" });
+}
+
+export function reprocessRecordingJob(jobId: string, token: string) {
+  return apiFetch<{ ok: boolean; queued: boolean }>(`/recordings/jobs/${encodeURIComponent(jobId)}/reprocess`, token, { method: "POST" });
 }
 
 /**
@@ -35,7 +48,7 @@ async function apiFetch<T>(
   });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
+    throw new ApiError(res.status, text);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -225,12 +238,19 @@ export async function reprocessRecording(
 
 // ── Registration / Admin ──────────────────────────────────────────────────────
 
-/** Check if the current user is registered on the platform. Returns null if not registered (404). */
+/** Check if the current user is registered on the platform. */
 export async function getMe(upn: string): Promise<RegisteredUser | null> {
   try {
     return await apiFetch<RegisteredUser>("/users/me", upn);
   } catch (e: unknown) {
-    if (e instanceof Error && e.message.startsWith("404")) return null;
+    if (e instanceof ApiError && e.status === 404) {
+      try {
+        const body = JSON.parse(e.responseBody) as { detail?: unknown };
+        if (body.detail === "Not registered on the platform") return null;
+      } catch {
+        // A platform or malformed 404 is not an application registration result.
+      }
+    }
     throw e;
   }
 }
@@ -322,4 +342,8 @@ export async function requestHistoricalAccess(
     method: "POST",
     body: JSON.stringify({ access_type: accessType }),
   });
+}
+
+export async function getAdminMeetings(token: string): Promise<AdminMeetingOut[]> {
+  return apiFetch<AdminMeetingOut[]>("/admin/meetings", token);
 }

@@ -249,6 +249,7 @@ export interface RecordingJobOut {
   drive_item_id: string;
   meeting_id: string | null;
   title: string | null;
+  owner_upn?: string | null;
   status: string;
   processing_status: RecordingProcessingStatus;
   review_status: MeetingReviewStatus | null;
@@ -260,5 +261,18 @@ export interface RecordingJobOut {
   can_retry: boolean;
   can_cancel: boolean;
   can_reprocess: boolean;
+  is_stuck?: boolean;
   processing_enabled: boolean;
+}
+
+export interface AdminMeetingOut {
+  id: string;
+  title: string | null;
+  recorded_at: string | null;
+  organizer_upn: string | null;
+  owner_upn: string | null;
+  meeting_status: string;
+  recording_status: "tracked" | "unknown";
+  job_status: string | null;
+  request_status: string | null;
 }

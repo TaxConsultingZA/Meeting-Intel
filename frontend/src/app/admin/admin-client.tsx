@@ -1,21 +1,41 @@
 "use client";
 import { useState } from "react";
 import { UserPlus, Trash2, Shield, Pencil } from "lucide-react";
-import { registerUser, removeUser, updateUser } from "@/lib/api";
-import type { RegisteredUser, BusinessUnit } from "@/lib/types";
+import { getRecordingJobs, registerUser, removeUser, reprocessRecordingJob, updateUser } from "@/lib/api";
+import type { RegisteredUser, BusinessUnit, RecordingJobOut, RecordingProcessingRequest, AdminMeetingOut } from "@/lib/types";
+import { JobControls } from "@/components/recording-jobs";
+import StateBadge from "@/components/state-badge";
 
 interface Props {
   initialUsers: RegisteredUser[];
   businessUnits: BusinessUnit[];
+  initialRequests: RecordingProcessingRequest[];
+  initialJobs: RecordingJobOut[];
+  initialMeetings: AdminMeetingOut[];
   callerUpn: string;
   accessToken: string;
 }
 
-export default function AdminClient({ initialUsers, businessUnits, callerUpn, accessToken }: Props) {
+export default function AdminClient({ initialUsers, businessUnits, initialRequests, initialJobs, initialMeetings, callerUpn, accessToken }: Props) {
   const [users, setUsers] = useState<RegisteredUser[]>(initialUsers);
   const [showAdd, setShowAdd] = useState(false);
   const [editUser, setEditUser] = useState<RegisteredUser | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [jobs, setJobs] = useState(initialJobs);
+
+  async function refreshJobs() {
+    setJobs(await getRecordingJobs(accessToken));
+  }
+
+  async function handleReprocess(job: RecordingJobOut) {
+    setError(null);
+    try {
+      await reprocessRecordingJob(job.job_id, accessToken);
+      await refreshJobs();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to reprocess recording");
+    }
+  }
 
   async function handleAdd(form: AddUserForm) {
     setError(null);
@@ -76,6 +96,47 @@ export default function AdminClient({ initialUsers, businessUnits, callerUpn, ac
           <UserPlus size={15} /> Register User
         </button>
       </div>
+
+      <section aria-labelledby="admin-meetings" className="mb-6 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
+        <div className="p-4"><h2 id="admin-meetings" className="font-semibold text-[#003366]">Meetings</h2><p className="text-xs text-[#6b7280]">Operational metadata across users. Meeting content remains restricted.</p></div>
+        <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr>{["Meeting", "Organizer / owner", "Recording", "Meeting", "Job", "Request"].map((label) => <th key={label} className="bg-[#003366] text-white px-3 py-2 text-left">{label}</th>)}</tr></thead>
+          <tbody>{initialMeetings.map((meeting) => <tr key={meeting.id} className="border-t"><td className="px-3 py-2 font-medium">{meeting.title ?? "Untitled meeting"}</td><td className="px-3 py-2">{meeting.organizer_upn ?? "Unknown"}{meeting.owner_upn && meeting.owner_upn !== meeting.organizer_upn ? ` / ${meeting.owner_upn}` : ""}</td><td className="px-3 py-2">{meeting.recording_status}</td><td className="px-3 py-2"><StatusText value={meeting.meeting_status} /></td><td className="px-3 py-2">{meeting.job_status ? <StatusText value={meeting.job_status} /> : "—"}</td><td className="px-3 py-2">{meeting.request_status ? <StatusText value={meeting.request_status} /> : "—"}</td></tr>)}</tbody>
+        </table></div>
+        {initialMeetings.length === 0 && <p className="p-4 text-sm text-[#9ca3af]">No meetings.</p>}
+      </section>
+
+      <section aria-labelledby="admin-jobs" className="mb-6 bg-white rounded-lg border border-[#dde1e8] shadow-sm p-4">
+        <h2 id="admin-jobs" className="font-semibold text-[#003366]">Processing jobs</h2>
+        <p className="text-xs text-[#6b7280] mb-3">Jobs across all registered users.</p>
+        {jobs.length === 0 && <p className="text-sm text-[#9ca3af]">No processing jobs.</p>}
+        {jobs.map((job) => (
+          <div key={job.job_id} className="border-t py-3 text-sm space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium">{job.title}</span>
+              <StateBadge state={job.processing_status} />
+            </div>
+            <p className="text-xs text-[#6b7280]">Owner: {job.owner_upn ?? "Unknown"}</p>
+            {job.is_stuck && <p className="text-xs font-semibold text-amber-800">Worker lease appears stuck.</p>}
+            {job.error && <p className="text-xs text-red-700">{job.error}</p>}
+            <div className="flex gap-3">
+              <JobControls job={job} token={accessToken} onChanged={refreshJobs} />
+              {job.can_reprocess && <button type="button" onClick={() => handleReprocess(job)} className="text-xs font-semibold text-blue-800">Reprocess</button>}
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section aria-labelledby="admin-requests" className="mb-6 bg-white rounded-lg border border-[#dde1e8] shadow-sm p-4">
+        <h2 id="admin-requests" className="font-semibold text-[#003366]">Processing requests</h2>
+        <p className="text-xs text-[#6b7280] mb-3">Requests across all registered users.</p>
+        {initialRequests.length === 0 && <p className="text-sm text-[#9ca3af]">No processing requests.</p>}
+        {initialRequests.map((request) => (
+          <div key={request.id} className="border-t py-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{request.subject ?? "Untitled meeting"}</span><StatusText value={request.status} /></div>
+            <p className="text-xs text-[#6b7280]">Requested by {request.requester_name ?? "Former user"} · Organizer: {request.organizer_email}</p>
+          </div>
+        ))}
+      </section>
 
       {error && (
         <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-[13px] px-4 py-3 rounded-lg">
@@ -174,6 +235,10 @@ export default function AdminClient({ initialUsers, businessUnits, callerUpn, ac
       )}
     </main>
   );
+}
+
+function StatusText({ value }: { value: string }) {
+  return <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-700">{value.replaceAll("_", " ")}</span>;
 }
 
 function formatUpn(upn: string): string {

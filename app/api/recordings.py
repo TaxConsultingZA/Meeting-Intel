@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import UUID
 
 from ..config import get_settings
 from ..db import get_db
@@ -15,7 +16,7 @@ from ..services.reprocessing import (
     is_clean_reprocess_candidate,
     is_meeting_organizer,
 )
-from .deps import require_subscribed
+from .deps import registered_user, require_subscribed
 
 settings = get_settings()
 router = APIRouter()
@@ -115,12 +116,40 @@ async def import_recording(
 async def reprocess_recording(
     req: ImportRequest,
     db: AsyncSession = Depends(get_db),
-    upn: str = Depends(require_subscribed),
+    user: RegisteredUser = Depends(registered_user),
 ):
     """Queue a fresh transcription for an untouched completed review draft."""
+    if not getattr(user, "is_admin", False) and not getattr(user, "is_subscribed", True):
+        raise HTTPException(403, "Subscribe before accessing Calendar or OneDrive")
+    return await _queue_reprocess(db, req.drive_item_id, user)
+
+
+@router.post("/recordings/jobs/{job_id}/reprocess")
+async def reprocess_recording_job(
+    job_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: RegisteredUser = Depends(registered_user),
+):
+    """Queue the existing safe reprocess workflow from a known completed job."""
+    job = await db.scalar(select(RecordingJob).where(RecordingJob.id == job_id))
+    if not job:
+        raise HTTPException(404, "Recording job not found")
+    actor_upn = getattr(user, "upn", user)
+    if job.owner_upn.lower() != actor_upn.lower() and not getattr(user, "is_admin", False):
+        raise HTTPException(403, "Only the recording owner can reprocess this recording")
+    return await _queue_reprocess(db, job.drive_item_id, user, job)
+
+
+async def _queue_reprocess(
+    db: AsyncSession,
+    drive_item_id: str,
+    user: RegisteredUser,
+    source_job: RecordingJob | None = None,
+):
+    upn = getattr(user, "upn", user)
     m = await db.scalar(
         select(Meeting)
-        .where(Meeting.drive_item_id == req.drive_item_id)
+        .where(Meeting.drive_item_id == drive_item_id)
         .options(selectinload(Meeting.participants), selectinload(Meeting.action_items))
         .with_for_update()
     )
@@ -131,31 +160,32 @@ async def reprocess_recording(
     if m.state != ProcessingState.awaiting_review:
         raise HTTPException(status_code=409, detail=f"Cannot reprocess: review state is {m.state.value}")
 
-    if not is_meeting_organizer(m, upn):
+    if not getattr(user, "is_admin", False) and not is_meeting_organizer(m, upn):
         raise HTTPException(403, "Only the meeting organiser can reprocess this recording")
     if not is_clean_reprocess_candidate(m):
         raise HTTPException(409, "Meeting results were edited or cannot be verified as untouched")
 
     ledger = await db.scalar(
-        select(ProcessedItem).where(ProcessedItem.drive_item_id == req.drive_item_id)
+        select(ProcessedItem).where(ProcessedItem.drive_item_id == drive_item_id)
     )
     if not ledger or not ledger.drive_id:
         raise HTTPException(409, "Original recording drive is unavailable")
-    await _verify_owned_drive_item(upn, ledger.drive_id, req.drive_item_id)
-    completed_job = await db.scalar(
+    owner_upn = source_job.owner_upn if source_job else upn
+    await _verify_owned_drive_item(owner_upn, ledger.drive_id, drive_item_id)
+    completed_job = source_job or await db.scalar(
         select(RecordingJob.id).where(
-            RecordingJob.drive_item_id == req.drive_item_id,
+            RecordingJob.drive_item_id == drive_item_id,
             RecordingJob.status == "completed",
         ).limit(1)
     )
-    if not completed_job:
+    if not completed_job or (source_job is not None and source_job.status != "completed"):
         raise HTTPException(409, "A completed recording job could not be verified")
 
     queued = await enqueue_retry_job(
         db,
-        drive_item_id=req.drive_item_id,
+        drive_item_id=drive_item_id,
         drive_id=ledger.drive_id,
-        owner_upn=upn,
+        owner_upn=owner_upn,
         source=MANUAL_REPROCESS_SOURCE,
     )
     if not queued:

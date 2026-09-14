@@ -16,7 +16,19 @@ export default async function DashboardPage() {
   // Check if the user is registered — unregistered domain users see the pending screen.
   // /users/me auto-registers valid company users on their first Entra login.
   // Do not turn backend/network failures into a misleading "Access Pending" page.
-  const me = await getMe(accessToken);
+  let me;
+  try {
+    me = await getMe(accessToken);
+  } catch {
+    return (
+      <main className="min-h-screen bg-[#f0f4ff] flex items-center justify-center px-4">
+        <div role="alert" className="w-full max-w-md rounded-xl bg-white p-8 text-center shadow-lg">
+          <h1 className="text-lg font-bold text-[#003366]">Service unavailable</h1>
+          <p className="mt-2 text-sm text-[#6b7280]">Unable to load account. Please try again shortly.</p>
+        </div>
+      </main>
+    );
+  }
   if (!me) {
     return <PendingAccess userEmail={upn} />;
   }

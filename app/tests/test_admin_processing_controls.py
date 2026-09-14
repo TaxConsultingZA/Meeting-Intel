@@ -8,6 +8,7 @@ from sqlalchemy.dialects import postgresql
 
 from app.api import admin as admin_api, recording_jobs, recording_processing_requests, recordings
 from app.models import ProcessingState
+from app.schemas import AdminRevokeAccessIn
 
 
 def actor(*, admin: bool):
@@ -86,7 +87,12 @@ async def test_admin_meeting_inventory_contains_only_operational_metadata():
     meeting = SimpleNamespace(id=uuid4(), drive_item_id="item", title="Private meeting",
                               recorded_at=None, organizer_upn="owner@example.test",
                               state=ProcessingState.awaiting_review, created_at=datetime.now(timezone.utc),
-                              transcript="must not leak", summary="must not leak")
+                              transcript="must not leak", summary="must not leak", participants=[
+                                  SimpleNamespace(user_upn="owner@example.test", is_organizer=True,
+                                                  access_type="participant", edit_access_status="none"),
+                                  SimpleNamespace(user_upn="editor@example.test", is_organizer=False,
+                                                  access_type="shared", edit_access_status="approved"),
+                              ])
     current_job = job("failed")
     request = SimpleNamespace(meeting_id=meeting.id, drive_item_id="item", status="approved",
                               created_at=datetime.now(timezone.utc))
@@ -108,4 +114,82 @@ async def test_admin_meeting_inventory_contains_only_operational_metadata():
     assert rows[0]["owner_upn"] == "owner@example.test"
     assert rows[0]["job_status"] == "failed" and rows[0]["request_status"] == "approved"
     assert rows[0]["recording_status"] == "tracked"
+    assert rows[0]["access"][1]["view_access"] and rows[0]["access"][1]["edit_access"]
     assert "transcript" not in rows[0] and "summary" not in rows[0]
+
+
+async def test_admin_revokes_edit_access_with_existing_audit_fields():
+    participant = SimpleNamespace(user_upn="editor@example.test", is_organizer=False,
+                                  access_type="historical", edit_access_status="approved",
+                                  edit_decided_at=None, edit_decided_by=None)
+    meeting = SimpleNamespace(id=uuid4(), organizer_upn="owner@example.test", participants=[participant])
+    db = db_with_scalars(meeting)
+
+    result = await admin_api.revoke_meeting_access(
+        str(meeting.id), participant.user_upn, AdminRevokeAccessIn(access_type="edit"),
+        db, "admin@example.test",
+    )
+
+    assert result["status"] == "revoked"
+    assert participant.access_type == "historical"
+    assert participant.edit_access_status == "denied"
+    assert participant.edit_decided_by == "admin@example.test"
+    assert participant.edit_decided_at is not None
+
+
+async def test_admin_revokes_view_without_deleting_participant_or_meeting_data():
+    participant = SimpleNamespace(user_upn="viewer@example.test", is_organizer=False,
+                                  access_type="shared", edit_access_status="none",
+                                  edit_decided_at=None, edit_decided_by=None)
+    meeting = SimpleNamespace(id=uuid4(), organizer_upn="owner@example.test", participants=[participant])
+    db = db_with_scalars(meeting)
+
+    await admin_api.revoke_meeting_access(
+        str(meeting.id), participant.user_upn, AdminRevokeAccessIn(access_type="view"),
+        db, "admin@example.test",
+    )
+
+    assert participant.access_type == "revoked"
+    assert participant.edit_access_status == "denied"
+    assert participant.edit_decided_by == "admin@example.test"
+    db.delete.assert_not_called()
+
+
+async def test_admin_access_request_feed_unifies_processing_view_and_edit_requests():
+    now = datetime.now(timezone.utc)
+    requester_id, owner_id = uuid4(), uuid4()
+    processing = SimpleNamespace(
+        id=uuid4(), meeting_id=None, requester_user_id=requester_id,
+        recording_owner_user_id=owner_id, event_snapshot={"subject": "Processing meeting"},
+        status="pending", created_at=now,
+    )
+    view_meeting = SimpleNamespace(title="View meeting", organizer_upn="owner@example.test")
+    view_request = SimpleNamespace(
+        id=uuid4(), meeting_id=uuid4(), meeting=view_meeting, user_upn="viewer@example.test",
+        access_type="request_view", edit_access_status="pending", edit_requested_at=now,
+        edit_decided_at=None,
+    )
+    edit_meeting = SimpleNamespace(title="Edit meeting", organizer_upn="owner@example.test")
+    edit_request = SimpleNamespace(
+        id=uuid4(), meeting_id=uuid4(), meeting=edit_meeting, user_upn="editor@example.test",
+        access_type="participant", edit_access_status="approved", edit_requested_at=now,
+        edit_decided_at=now,
+    )
+    requester = SimpleNamespace(id=requester_id, upn="requester@example.test", display_name="Requester")
+    owner = SimpleNamespace(id=owner_id, upn="owner@example.test", display_name="Owner")
+
+    def scalar_result(values):
+        result = MagicMock()
+        result.all.return_value = values
+        return result
+
+    db = MagicMock()
+    db.scalars = AsyncMock(side_effect=[
+        scalar_result([processing]), scalar_result([view_request, edit_request]),
+        scalar_result([requester, owner]),
+    ])
+
+    rows = await admin_api.list_access_requests(db, "admin@example.test")
+
+    assert {row["request_type"] for row in rows} == {"processing", "view", "edit"}
+    assert all({"meeting", "requester_upn", "owner_upn", "status"} <= row.keys() for row in rows)

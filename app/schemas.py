@@ -47,6 +47,11 @@ class UpdateUserIn(BaseModel):
     is_admin: bool | None = None
 
 
+class AdminRevokeAccessIn(BaseModel):
+    """The single existing permission an admin intends to revoke."""
+    access_type: Literal["view", "edit"]
+
+
 class SubscriptionOut(BaseModel):
     is_subscribed: bool
     subscribed_at: str | None

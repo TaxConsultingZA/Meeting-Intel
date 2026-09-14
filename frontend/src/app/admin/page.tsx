@@ -1,6 +1,6 @@
 import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
-import { getMe, getRegisteredUsers, getBusinessUnits, getProcessingRequests, getRecordingJobs, getAdminMeetings } from "@/lib/api";
+import { getMe, getRegisteredUsers, getBusinessUnits, getAdminAccessRequests, getRecordingJobs, getAdminMeetings } from "@/lib/api";
 import Nav from "@/components/nav";
 import AdminClient from "./admin-client";
 
@@ -18,7 +18,7 @@ export default async function AdminPage() {
   const [users, businessUnits, processingRequests, jobs, meetings] = await Promise.all([
     getRegisteredUsers(accessToken).catch(() => []),
     getBusinessUnits(accessToken).catch(() => []),
-    getProcessingRequests(accessToken).catch(() => []),
+    getAdminAccessRequests(accessToken).catch(() => []),
     getRecordingJobs(accessToken).catch(() => []),
     getAdminMeetings(accessToken).catch(() => []),
   ]);

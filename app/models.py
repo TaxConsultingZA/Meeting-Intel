@@ -280,6 +280,7 @@ class MeetingParticipant(Base):
     - ``historical``: user registered after the meeting was processed and requested access
     - ``request_view`` / ``request_edit``: pending owner approval; these rows do
       not grant meeting visibility
+    - ``revoked``: an admin revoked view access; the row remains for attribution
     """
     __tablename__ = "meeting_participants"
     __table_args__ = (UniqueConstraint("meeting_id", "user_upn", name="uq_meeting_user"),)

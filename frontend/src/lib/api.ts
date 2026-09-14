@@ -1,4 +1,4 @@
-import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, AppNotification, RegisteredUser, BusinessUnit, SyncState, RecordingJobOut, AdminMeetingOut } from "./types";
+import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, AppNotification, RegisteredUser, BusinessUnit, SyncState, RecordingJobOut, AdminMeetingOut, AdminAccessRequest } from "./types";
 import type { RecentMeeting, RecordingProcessingRequest } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
@@ -346,4 +346,16 @@ export async function requestHistoricalAccess(
 
 export async function getAdminMeetings(token: string): Promise<AdminMeetingOut[]> {
   return apiFetch<AdminMeetingOut[]>("/admin/meetings", token);
+}
+
+export async function getAdminAccessRequests(token: string): Promise<AdminAccessRequest[]> {
+  return apiFetch<AdminAccessRequest[]>("/admin/access-requests", token);
+}
+
+export async function revokeAdminMeetingAccess(
+  meetingId: string, userUpn: string, accessType: "view" | "edit", token: string,
+): Promise<void> {
+  await apiFetch(`/admin/meetings/${encodeURIComponent(meetingId)}/access/${encodeURIComponent(userUpn)}/revoke`, token, {
+    method: "POST", body: JSON.stringify({ access_type: accessType }),
+  });
 }

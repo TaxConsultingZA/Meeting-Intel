@@ -1,15 +1,15 @@
 "use client";
 import { useState } from "react";
 import { UserPlus, Trash2, Shield, Pencil } from "lucide-react";
-import { getRecordingJobs, registerUser, removeUser, reprocessRecordingJob, updateUser } from "@/lib/api";
-import type { RegisteredUser, BusinessUnit, RecordingJobOut, RecordingProcessingRequest, AdminMeetingOut } from "@/lib/types";
+import { decideMeetingEditAccess, getRecordingJobs, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
+import type { RegisteredUser, BusinessUnit, RecordingJobOut, AdminAccessRequest, AdminMeetingOut } from "@/lib/types";
 import { JobControls } from "@/components/recording-jobs";
 import StateBadge from "@/components/state-badge";
 
 interface Props {
   initialUsers: RegisteredUser[];
   businessUnits: BusinessUnit[];
-  initialRequests: RecordingProcessingRequest[];
+  initialRequests: AdminAccessRequest[];
   initialJobs: RecordingJobOut[];
   initialMeetings: AdminMeetingOut[];
   callerUpn: string;
@@ -22,6 +22,38 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
   const [editUser, setEditUser] = useState<RegisteredUser | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [jobs, setJobs] = useState(initialJobs);
+  const [meetings, setMeetings] = useState(initialMeetings);
+  const [requests, setRequests] = useState(initialRequests);
+
+  async function handleAccessDecision(request: AdminAccessRequest, approved: boolean) {
+    if (!request.meeting_id || !request.requester_upn) return;
+    if (!confirm(`${approved ? "Approve" : "Reject"} ${request.request_type} access for ${request.requester_upn}?`)) return;
+    setError(null);
+    try {
+      await decideMeetingEditAccess(request.meeting_id, request.requester_upn, approved, accessToken);
+      setRequests((current) => current.map((entry) => entry.id === request.id
+        ? { ...entry, status: approved ? "approved" : "denied" }
+        : entry));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to decide access request");
+    }
+  }
+
+  async function handleRevoke(meetingId: string, userUpn: string, accessType: "view" | "edit") {
+    if (!confirm(`Revoke ${accessType} access for ${userUpn}?`)) return;
+    setError(null);
+    try {
+      await revokeAdminMeetingAccess(meetingId, userUpn, accessType, accessToken);
+      setMeetings((current) => current.map((meeting) => meeting.id !== meetingId ? meeting : {
+        ...meeting,
+        access: accessType === "view"
+          ? meeting.access.filter((entry) => entry.user_upn !== userUpn)
+          : meeting.access.map((entry) => entry.user_upn === userUpn ? { ...entry, edit_access: false } : entry),
+      }));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : `Failed to revoke ${accessType} access`);
+    }
+  }
 
   async function refreshJobs() {
     setJobs(await getRecordingJobs(accessToken));
@@ -100,9 +132,9 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
       <section aria-labelledby="admin-meetings" className="mb-6 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
         <div className="p-4"><h2 id="admin-meetings" className="font-semibold text-[#003366]">Meetings</h2><p className="text-xs text-[#6b7280]">Operational metadata across users. Meeting content remains restricted.</p></div>
         <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr>{["Meeting", "Organizer / owner", "Recording", "Meeting", "Job", "Request"].map((label) => <th key={label} className="bg-[#003366] text-white px-3 py-2 text-left">{label}</th>)}</tr></thead>
-          <tbody>{initialMeetings.map((meeting) => <tr key={meeting.id} className="border-t"><td className="px-3 py-2 font-medium">{meeting.title ?? "Untitled meeting"}</td><td className="px-3 py-2">{meeting.organizer_upn ?? "Unknown"}{meeting.owner_upn && meeting.owner_upn !== meeting.organizer_upn ? ` / ${meeting.owner_upn}` : ""}</td><td className="px-3 py-2">{meeting.recording_status}</td><td className="px-3 py-2"><StatusText value={meeting.meeting_status} /></td><td className="px-3 py-2">{meeting.job_status ? <StatusText value={meeting.job_status} /> : "—"}</td><td className="px-3 py-2">{meeting.request_status ? <StatusText value={meeting.request_status} /> : "—"}</td></tr>)}</tbody>
+          <tbody>{meetings.map((meeting) => <tr key={meeting.id} className="border-t align-top"><td className="px-3 py-2 font-medium">{meeting.title ?? "Untitled meeting"}</td><td className="px-3 py-2">{meeting.organizer_upn ?? "Unknown"}{meeting.owner_upn && meeting.owner_upn !== meeting.organizer_upn ? ` / ${meeting.owner_upn}` : ""}<AccessList meeting={meeting} onRevoke={handleRevoke} /></td><td className="px-3 py-2">{meeting.recording_status}</td><td className="px-3 py-2"><StatusText value={meeting.meeting_status} /></td><td className="px-3 py-2">{meeting.job_status ? <StatusText value={meeting.job_status} /> : "—"}</td><td className="px-3 py-2">{meeting.request_status ? <StatusText value={meeting.request_status} /> : "—"}</td></tr>)}</tbody>
         </table></div>
-        {initialMeetings.length === 0 && <p className="p-4 text-sm text-[#9ca3af]">No meetings.</p>}
+        {meetings.length === 0 && <p className="p-4 text-sm text-[#9ca3af]">No meetings.</p>}
       </section>
 
       <section aria-labelledby="admin-jobs" className="mb-6 bg-white rounded-lg border border-[#dde1e8] shadow-sm p-4">
@@ -127,13 +159,19 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
       </section>
 
       <section aria-labelledby="admin-requests" className="mb-6 bg-white rounded-lg border border-[#dde1e8] shadow-sm p-4">
-        <h2 id="admin-requests" className="font-semibold text-[#003366]">Processing requests</h2>
-        <p className="text-xs text-[#6b7280] mb-3">Requests across all registered users.</p>
-        {initialRequests.length === 0 && <p className="text-sm text-[#9ca3af]">No processing requests.</p>}
-        {initialRequests.map((request) => (
+        <h2 id="admin-requests" className="font-semibold text-[#003366]">Access requests</h2>
+        <p className="text-xs text-[#6b7280] mb-3">Processing, view, and edit requests across all users. Decisions remain with recording owners and organizers.</p>
+        {requests.length === 0 && <p className="text-sm text-[#9ca3af]">No access requests.</p>}
+        {requests.map((request) => (
           <div key={request.id} className="border-t py-3 text-sm">
-            <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{request.subject ?? "Untitled meeting"}</span><StatusText value={request.status} /></div>
-            <p className="text-xs text-[#6b7280]">Requested by {request.requester_name ?? "Former user"} · Organizer: {request.organizer_email}</p>
+            <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{request.meeting}</span><StatusText value={request.status} /></div>
+            <p className="text-xs text-[#6b7280]">{request.request_type.replace(/^./, (letter) => letter.toUpperCase())} · Requested by {request.requester_name ?? request.requester_upn ?? "Former user"} · Owner / organizer: {request.owner_upn ?? request.organizer_upn ?? "Unknown"}</p>
+            {request.status === "pending" && request.request_type !== "processing" && request.meeting_id && request.requester_upn && (
+              <div className="mt-2 flex gap-3">
+                <button type="button" onClick={() => handleAccessDecision(request, true)} className="text-xs font-semibold text-emerald-700">Approve</button>
+                <button type="button" onClick={() => handleAccessDecision(request, false)} className="text-xs font-semibold text-red-700">Reject</button>
+              </div>
+            )}
           </div>
         ))}
       </section>
@@ -149,7 +187,7 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
         <table className="w-full text-sm">
           <thead>
             <tr>
-              {["Name / Email", "Business Unit", "Role", "Registered", "Actions"].map((h) => (
+              {["Name / Email", "Business Unit", "Role", "Subscribed", "Registered", "Actions"].map((h) => (
                 <th key={h} className="bg-[#003366] text-white text-xs font-semibold px-4 py-2.5 text-left border border-white/10">
                   {h}
                 </th>
@@ -159,7 +197,7 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
           <tbody>
             {users.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-[#9ca3af] text-[13px]">
+                <td colSpan={6} className="px-4 py-8 text-center text-[#9ca3af] text-[13px]">
                   No users registered yet. Add one using the button above.
                 </td>
               </tr>
@@ -183,6 +221,11 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
                   ) : (
                     <span className="text-[12px] text-[#6b7280]">Member</span>
                   )}
+                </td>
+                <td className="px-4 py-2.5 border border-[#dde1e8] text-[12px]">
+                  <span className={u.is_subscribed ? "text-emerald-700" : "text-[#6b7280]"}>
+                    {u.is_subscribed ? "Subscribed" : "Not subscribed"}
+                  </span>
                 </td>
                 <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12px] whitespace-nowrap">
                   {new Date(u.registered_at).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" })}
@@ -239,6 +282,27 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
 
 function StatusText({ value }: { value: string }) {
   return <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-700">{value.replaceAll("_", " ")}</span>;
+}
+
+function AccessList({ meeting, onRevoke }: {
+  meeting: AdminMeetingOut;
+  onRevoke: (meetingId: string, userUpn: string, accessType: "view" | "edit") => void;
+}) {
+  return (
+    <div className="mt-2 space-y-1 border-t pt-2">
+      {meeting.access.length === 0 && <span className="text-[#9ca3af]">No current access</span>}
+      {meeting.access.map((entry) => (
+        <div key={entry.user_upn} className="flex flex-wrap items-center gap-1">
+          <span className="mr-1 text-[11px]">{entry.user_upn}</span>
+          <span className="rounded bg-blue-50 px-1 text-[10px] text-blue-800">View</span>
+          {entry.edit_access && <span className="rounded bg-amber-50 px-1 text-[10px] text-amber-800">Edit</span>}
+          {!entry.is_organizer && entry.edit_access && <button type="button" onClick={() => onRevoke(meeting.id, entry.user_upn, "edit")} className="text-[10px] font-semibold text-red-700">Revoke edit</button>}
+          {!entry.is_organizer && <button type="button" onClick={() => onRevoke(meeting.id, entry.user_upn, "view")} className="text-[10px] font-semibold text-red-700">Revoke view</button>}
+          {entry.is_organizer && <span className="text-[10px] text-[#6b7280]">Organizer</span>}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function formatUpn(upn: string): string {

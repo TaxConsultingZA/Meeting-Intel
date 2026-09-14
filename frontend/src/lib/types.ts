@@ -275,4 +275,25 @@ export interface AdminMeetingOut {
   recording_status: "tracked" | "unknown";
   job_status: string | null;
   request_status: string | null;
+  access: AdminMeetingAccess[];
+}
+
+export interface AdminMeetingAccess {
+  user_upn: string;
+  is_organizer: boolean;
+  view_access: boolean;
+  edit_access: boolean;
+}
+
+export interface AdminAccessRequest {
+  id: string;
+  meeting_id: string | null;
+  meeting: string;
+  requester_upn: string | null;
+  requester_name: string | null;
+  owner_upn: string | null;
+  organizer_upn: string | null;
+  request_type: "processing" | "view" | "edit";
+  status: string;
+  requested_at: string | null;
 }

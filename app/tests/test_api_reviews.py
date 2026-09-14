@@ -424,6 +424,65 @@ class TestEditAccessWorkflow:
         assert participant.edit_decided_by == "owner@taxconsulting.co.za"
         db.commit.assert_awaited_once()
 
+    @pytest.mark.parametrize("request_type", ["request_view", "request_edit"])
+    @pytest.mark.parametrize("approved", [True, False])
+    async def test_admin_can_decide_pending_view_and_edit_requests(
+        self, monkeypatch, request_type, approved
+    ):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import EditAccessDecisionIn
+
+        meeting, participant = self._meeting(access_type=request_type, status="pending")
+        admin = MagicMock(upn="admin@taxconsulting.co.za", is_admin=True)
+        db = AsyncMock()
+        db.scalar = AsyncMock(side_effect=[admin, meeting])
+        monkeypatch.setattr(
+            reviews, "_authorize",
+            AsyncMock(side_effect=HTTPException(403, "Not a participant of this meeting")),
+        )
+
+        result = await reviews.decide_edit_access(
+            "meeting-1", "guest@taxconsulting.co.za",
+            EditAccessDecisionIn(approved=approved), db=db,
+            upn="admin@taxconsulting.co.za",
+        )
+
+        assert result == {
+            "ok": True,
+            "status": "approved" if approved else "denied",
+            "access_type": "view" if request_type == "request_view" else "edit",
+        }
+        assert participant.edit_decided_by == "admin@taxconsulting.co.za"
+        if approved:
+            assert participant.access_type == "historical"
+            assert participant.edit_access_status == ("none" if request_type == "request_view" else "approved")
+        else:
+            assert participant.access_type == request_type
+            assert participant.edit_access_status == "denied"
+
+    @pytest.mark.parametrize("decided_status", ["approved", "denied"])
+    async def test_admin_cannot_decide_request_twice(self, monkeypatch, decided_status):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import EditAccessDecisionIn
+
+        meeting, _ = self._meeting(access_type="request_edit", status=decided_status)
+        admin = MagicMock(upn="admin@taxconsulting.co.za", is_admin=True)
+        db = AsyncMock()
+        db.scalar = AsyncMock(side_effect=[admin, meeting])
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(side_effect=HTTPException(403)))
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.decide_edit_access(
+                "meeting-1", "guest@taxconsulting.co.za",
+                EditAccessDecisionIn(approved=True), db=db,
+                upn="admin@taxconsulting.co.za",
+            )
+
+        assert exc.value.status_code == 409
+        db.commit.assert_not_awaited()
+
     @pytest.mark.parametrize(
         ("request_type", "expected_edit_status"),
         [("request_view", "none"), ("request_edit", "approved")],

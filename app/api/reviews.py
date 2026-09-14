@@ -31,10 +31,11 @@ from .deps import current_user, require_registered  # noqa: F401 — re-exported
 settings = get_settings()
 router = APIRouter()
 PENDING_ACCESS_TYPES = {"request_view", "request_edit"}
+NO_VIEW_ACCESS_TYPES = PENDING_ACCESS_TYPES | {"revoked"}
 
 
 def _has_view_access(participant: MeetingParticipant) -> bool:
-    return participant.access_type not in PENDING_ACCESS_TYPES
+    return participant.access_type not in NO_VIEW_ACCESS_TYPES
 
 
 def is_local_test_meeting(meeting) -> bool:
@@ -383,7 +384,7 @@ async def all_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(cu
         .join(MeetingParticipant)
         .where(
             func.lower(MeetingParticipant.user_upn) == upn,
-            MeetingParticipant.access_type.notin_(PENDING_ACCESS_TYPES),
+            MeetingParticipant.access_type.notin_(NO_VIEW_ACCESS_TYPES),
         )
         .options(
             load_only(
@@ -437,7 +438,7 @@ async def historical_meetings(db: AsyncSession = Depends(get_db), upn: str = Dep
     participant_exists = exists().where(
         MeetingParticipant.meeting_id == Meeting.id,
         func.lower(MeetingParticipant.user_upn) == upn,
-        MeetingParticipant.access_type.notin_(PENDING_ACCESS_TYPES),
+        MeetingParticipant.access_type.notin_(NO_VIEW_ACCESS_TYPES),
     )
     attendee = func.jsonb_array_elements(Meeting.attendees_raw).table_valued(
         column("value", JSONB)
@@ -601,8 +602,19 @@ async def request_edit_access(meeting_id: str, db: AsyncSession = Depends(get_db
 @router.patch("/reviews/{meeting_id}/edit-access/{requester_upn}")
 async def decide_edit_access(meeting_id: str, requester_upn: str, body: EditAccessDecisionIn,
                              db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
-    meeting = await _authorize(db, meeting_id, upn, for_update=True)
-    _require_organizer(meeting, upn)
+    try:
+        meeting = await _authorize(db, meeting_id, upn, for_update=True)
+        _require_organizer(meeting, upn)
+    except HTTPException as authorization_error:
+        admin = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
+        if not admin or admin.is_admin is not True:
+            raise authorization_error
+        meeting = await db.scalar(
+            select(Meeting).where(Meeting.id == meeting_id)
+            .options(selectinload(Meeting.participants)).with_for_update()
+        )
+        if not meeting:
+            raise HTTPException(404, "Meeting not found")
     participant = _participant_for(meeting, normalize_upn(requester_upn))
     if (
         not _is_attendee_participant(meeting, participant)

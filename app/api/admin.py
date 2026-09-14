@@ -1,23 +1,28 @@
-"""Admin API — user registration management and business unit lookups.
+"""Admin API — user registration and operational access visibility.
 
 All endpoints require the caller to be a registered admin (``is_admin=True``).
 The first admin is bootstrapped via the ``ADMIN_UPNS`` env var at application startup.
 """
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ..config import get_settings
 from ..db import get_db
 from ..email_templates import build_welcome_email
 from ..graph import client as graph
-from ..models import BusinessUnit, Meeting, ProcessedItem, RecordingJob, RecordingProcessingRequest, RegisteredUser
-from ..schemas import BusinessUnitOut, RegisteredUserOut, RegisterUserIn, UpdateUserIn
+from ..models import BusinessUnit, Meeting, MeetingParticipant, ProcessedItem, RecordingJob, RecordingProcessingRequest, RegisteredUser
+from ..schemas import AdminRevokeAccessIn, BusinessUnitOut, RegisteredUserOut, RegisterUserIn, UpdateUserIn
+from ..utils.identity import normalize_upn
 from .deps import current_user
 
 settings = get_settings()
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+NO_VIEW_ACCESS_TYPES = {"request_view", "request_edit", "revoked"}
 
 
 async def _require_admin(upn: str = Depends(current_user), db: AsyncSession = Depends(get_db)) -> str:
@@ -68,7 +73,8 @@ async def list_operational_meetings(
 ):
     """Return cross-user operational metadata without transcript or note content."""
     meetings = (await db.scalars(
-        select(Meeting).order_by(Meeting.created_at.desc()).limit(200)
+        select(Meeting).options(selectinload(Meeting.participants))
+        .order_by(Meeting.created_at.desc()).limit(200)
     )).all()
     if not meetings:
         return []
@@ -107,7 +113,91 @@ async def list_operational_meetings(
         "request_status": (
             latest_request.get(meeting.id) or latest_request.get(meeting.drive_item_id)
         ).status if (meeting.id in latest_request or meeting.drive_item_id in latest_request) else None,
+        "access": [{
+            "user_upn": participant.user_upn,
+            "is_organizer": participant.is_organizer or normalize_upn(participant.user_upn) == normalize_upn(meeting.organizer_upn),
+            "view_access": True,
+            "edit_access": participant.edit_access_status == "approved" or participant.is_organizer or normalize_upn(participant.user_upn) == normalize_upn(meeting.organizer_upn),
+        } for participant in meeting.participants if participant.access_type not in NO_VIEW_ACCESS_TYPES],
     } for meeting in meetings]
+
+
+@router.get("/access-requests")
+async def list_access_requests(db: AsyncSession = Depends(get_db), _upn: str = Depends(_require_admin)):
+    """Return processing, view, and edit requests across every meeting."""
+    processing = (await db.scalars(select(RecordingProcessingRequest).order_by(RecordingProcessingRequest.created_at.desc()))).all()
+    participants = (await db.scalars(
+        select(MeetingParticipant)
+        .where(or_(
+            MeetingParticipant.access_type.in_({"request_view", "request_edit"}),
+            (MeetingParticipant.edit_requested_at.is_not(None)) & (MeetingParticipant.access_type != "revoked"),
+        ))
+        .options(selectinload(MeetingParticipant.meeting))
+        .order_by(MeetingParticipant.edit_requested_at.desc())
+    )).all()
+    user_ids = {request.requester_user_id for request in processing} | {request.recording_owner_user_id for request in processing}
+    users = (await db.scalars(select(RegisteredUser).where(RegisteredUser.id.in_(user_ids)))).all() if user_ids else []
+    users_by_id = {user.id: user for user in users}
+    rows = []
+    for request in processing:
+        event = request.event_snapshot or {}
+        requester = users_by_id.get(request.requester_user_id)
+        owner = users_by_id.get(request.recording_owner_user_id)
+        rows.append({
+            "id": str(request.id), "meeting_id": str(request.meeting_id) if request.meeting_id else None,
+            "meeting": event.get("subject") or "Untitled meeting",
+            "requester_upn": requester.upn if requester else None, "requester_name": requester.display_name if requester else None,
+            "owner_upn": owner.upn if owner else None,
+            "organizer_upn": (event.get("organizer") or {}).get("emailAddress", {}).get("address"),
+            "request_type": "processing", "status": request.status, "requested_at": request.created_at,
+        })
+    for participant in participants:
+        meeting = participant.meeting
+        is_view_request = participant.access_type == "request_view" or (
+            participant.access_type == "historical"
+            and participant.edit_access_status == "none"
+            and participant.edit_decided_at is not None
+        )
+        status = "approved" if is_view_request and participant.edit_decided_at is not None and participant.edit_access_status == "none" else participant.edit_access_status
+        rows.append({
+            "id": str(participant.id), "meeting_id": str(participant.meeting_id),
+            "meeting": meeting.title or "Untitled meeting", "requester_upn": participant.user_upn,
+            "requester_name": None, "owner_upn": meeting.organizer_upn, "organizer_upn": meeting.organizer_upn,
+            "request_type": "view" if is_view_request else "edit",
+            "status": status, "requested_at": participant.edit_requested_at,
+        })
+    return sorted(rows, key=lambda row: row["requested_at"].timestamp() if row["requested_at"] else float("-inf"), reverse=True)
+
+
+@router.post("/meetings/{meeting_id}/access/{user_upn}/revoke")
+async def revoke_meeting_access(meeting_id: str, user_upn: str, body: AdminRevokeAccessIn,
+                                db: AsyncSession = Depends(get_db), admin_upn: str = Depends(_require_admin)):
+    """Revoke one non-organizer permission while retaining its participant audit row."""
+    meeting = await db.scalar(
+        select(Meeting).where(Meeting.id == meeting_id)
+        .options(selectinload(Meeting.participants)).with_for_update()
+    )
+    if not meeting:
+        raise HTTPException(404, "Meeting not found")
+    participant = next((row for row in meeting.participants if normalize_upn(row.user_upn) == normalize_upn(user_upn)), None)
+    if not participant:
+        raise HTTPException(404, "Meeting access not found")
+    if participant.is_organizer or normalize_upn(participant.user_upn) == normalize_upn(meeting.organizer_upn):
+        raise HTTPException(409, "Organizer access cannot be revoked")
+    now = datetime.now(timezone.utc)
+    if body.access_type == "view":
+        if participant.access_type in NO_VIEW_ACCESS_TYPES:
+            raise HTTPException(409, "View access is not currently granted")
+        participant.access_type = "revoked"
+        participant.edit_access_status = "denied"
+    else:
+        if participant.edit_access_status != "approved":
+            raise HTTPException(409, "Edit access is not currently granted")
+        participant.edit_access_status = "denied"
+    participant.edit_decided_at = now
+    participant.edit_decided_by = admin_upn
+    await db.commit()
+    return {"ok": True, "access_type": body.access_type, "status": "revoked"}
 
 
 @router.post("/users", response_model=RegisteredUserOut, status_code=201)

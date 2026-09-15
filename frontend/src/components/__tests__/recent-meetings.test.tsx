@@ -33,8 +33,8 @@ it("restores cached meetings immediately after remount and revalidates in the ba
 
 it("shows expired cached meetings while silently refreshing them", async () => {
   sessionStorage.setItem(
-    "meeting-intel:recent-meetings:v2:reviewer%40example.test",
-    JSON.stringify({ version: 2, cachedAt: Date.now() - 10 * 60 * 1000, events: [event("view")] }),
+    "meeting-intel:recent-meetings:v3:reviewer%40example.test",
+    JSON.stringify({ version: 3, cachedAt: Date.now() - 10 * 60 * 1000, events: [event("view")] }),
   );
   vi.mocked(api.getRecentMeetings).mockRejectedValue(new Error("calendar unavailable"));
 
@@ -80,18 +80,26 @@ it("renders all Recent actions and disables repeat actions for pending/queued", 
   expect(screen.getAllByRole("button", { name: "Request Processing" })).toHaveLength(1);
 });
 
-it("renders revoked view access as a fresh view request and pending view access without a duplicate action", async () => {
+it("renders distinct View/Edit request eligibility and pending card states", async () => {
   vi.mocked(api.getRecentMeetings).mockResolvedValue([
-    { ...event("request_view_access"), event_id: "revoked", subject: "Revoked" },
-    { ...event("access_pending"), event_id: "pending", subject: "Pending" },
+    { ...event("request_access"), event_id: "eligible", meeting_id: "eligible", subject: "Eligible", can_request_view_access: true, can_request_edit_access: true },
+    { ...event("request_access"), event_id: "view-pending", meeting_id: "view-pending", subject: "View pending", pending_access_type: "view" },
+    { ...event("view"), event_id: "edit-pending", meeting_id: "edit-pending", subject: "Edit pending", pending_access_type: "edit" },
+    { ...event("view"), event_id: "viewer", meeting_id: "viewer", subject: "Viewer", can_request_edit_access: true },
   ]);
   const requestAccess = vi.fn().mockResolvedValue(undefined);
-  render(<RecentMeetings token="token" isSubscribed onRequestHistoricalAccess={requestAccess} />);
+  const requestEditAccess = vi.fn().mockResolvedValue(undefined);
+  render(<RecentMeetings token="token" isSubscribed onRequestHistoricalAccess={requestAccess} onRequestMeetingEditAccess={requestEditAccess} />);
 
-  fireEvent.click(await screen.findByRole("button", { name: "Request View Access" }));
-  await waitFor(() => expect(requestAccess).toHaveBeenCalledWith("meeting", "view"));
-  expect(screen.getByText("Access Pending")).toBeInTheDocument();
-  expect(screen.queryByRole("link", { name: "View" })).not.toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("button", { name: "Request View" }));
+  await waitFor(() => expect(requestAccess).toHaveBeenCalledWith("eligible", "view"));
+  fireEvent.click(screen.getAllByRole("button", { name: "Request Edit" })[0]);
+  await waitFor(() => expect(requestAccess).toHaveBeenCalledWith("eligible", "edit"));
+  fireEvent.click(screen.getAllByRole("button", { name: "Request Edit" })[1]);
+  await waitFor(() => expect(requestEditAccess).toHaveBeenCalledWith("viewer"));
+  expect(screen.getByText("View Pending")).toBeInTheDocument();
+  expect(screen.getByText("Edit Pending")).toBeInTheDocument();
+  expect(screen.getAllByRole("link", { name: "View" })).toHaveLength(2);
 });
 
 it("merges historical meetings, removes stable-id duplicates, and reveals history on demand", async () => {

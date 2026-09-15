@@ -167,13 +167,14 @@ async def test_recent_request_uses_durable_state_without_graph_scans(ctx, monkey
 @pytest.mark.parametrize(
     ("access_type", "edit_status", "is_organizer", "is_admin", "expected"),
     [
-        ("revoked", "denied", False, False, "request_view_access"),
-        ("request_view", "denied", False, False, "request_view_access"),
-        ("request_view", "pending", False, False, "access_pending"),
-        ("historical", "none", False, False, "view"),
-        ("revoked", "approved", False, False, "view"),
-        ("revoked", "denied", True, False, "view"),
-        ("revoked", "denied", False, True, "view"),
+        ("revoked", "denied", False, False, ("request_access", True, True, None)),
+        ("request_view", "denied", False, False, ("request_access", True, True, None)),
+        ("request_view", "pending", False, False, ("request_access", False, False, "view")),
+        ("historical", "none", False, False, ("view", False, True, None)),
+        ("historical", "pending", False, False, ("view", False, False, "edit")),
+        ("revoked", "approved", False, False, ("view", False, False, None)),
+        ("revoked", "denied", True, False, ("view", False, False, None)),
+        ("revoked", "denied", False, True, ("view", False, False, None)),
     ],
 )
 async def test_recent_card_uses_effective_meeting_access(
@@ -185,6 +186,7 @@ async def test_recent_card_uses_effective_meeting_access(
         title=ctx.event["subject"],
         recorded_at=service.parse_graph_datetime(ctx.event["start"]),
         state=ProcessingState.awaiting_review,
+        attendees_raw=ctx.event["attendees"],
         extracted_json={"calendar_occurrence_key": service.occurrence_key(ctx.event)},
     )
     participant = MeetingParticipant(
@@ -202,7 +204,12 @@ async def test_recent_card_uses_effective_meeting_access(
         service.occurrence_key(ctx.event)
     ]
 
-    assert state["action"] == expected
+    assert (
+        state["action"],
+        state["can_request_view_access"],
+        state["can_request_edit_access"],
+        state["pending_access_type"],
+    ) == expected
     assert state["meeting_id"] == str(meeting.id)
 
 

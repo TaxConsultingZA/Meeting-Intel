@@ -328,22 +328,34 @@ async def recent_states(db, requester, events):
         match = visible_by_key.get(key)
         if match:
             meeting, participant = match
-            has_authority = bool(
+            is_privileged = bool(
                 requester.is_admin
                 or participant.is_organizer
                 or (meeting.organizer_upn or "").lower() == requester.upn
+            )
+            has_authority = bool(
+                is_privileged
                 or participant.edit_access_status == "approved"
                 or participant.access_type not in {"request_view", "request_edit", "revoked"}
             )
-            if not has_authority:
-                result[key] = {
-                    "action": "access_pending"
-                    if participant.access_type == "request_view" and participant.edit_access_status == "pending"
-                    else "request_view_access",
-                    "meeting_id": str(meeting.id),
-                }
-                continue
-            result[key] = {"action": "view", "meeting_id": str(meeting.id)}
+            is_attendee = (
+                participant.access_type in {"participant", "historical"}
+                or requester.upn in people({"attendees": meeting.attendees_raw or []})
+            )
+            pending_access_type = None
+            if participant.edit_access_status == "pending":
+                pending_access_type = "view" if participant.access_type == "request_view" else "edit"
+            result[key] = {
+                "action": "view" if has_authority else "request_access",
+                "meeting_id": str(meeting.id),
+                "can_request_view_access": bool(is_attendee and not has_authority and not pending_access_type),
+                "can_request_edit_access": bool(
+                    is_attendee
+                    and not is_privileged
+                    and participant.edit_access_status in {"none", "denied"}
+                ),
+                "pending_access_type": pending_access_type,
+            }
             continue
         request = request_by_key.get(key)
         if not request:

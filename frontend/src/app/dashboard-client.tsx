@@ -9,7 +9,7 @@ import { formatEventTime, parseInstant } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
 import RecentMeetings from "@/components/recent-meetings";
 import { JobControls } from "@/components/recording-jobs";
-import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecordingJobs, getSyncStatus, getUpcomingMeetings, requestHistoricalAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
+import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecordingJobs, getSyncStatus, getUpcomingMeetings, requestHistoricalAccess, requestMeetingEditAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
 import type { AvailableRecording, MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
 
 /** Convert a UPN like "jane.doe@taxconsulting.co.za" to a display name "Jane Doe". */
@@ -203,6 +203,11 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     }
   }
 
+  async function handleRequestMeetingEditAccess(meetingId: string) {
+    await requestMeetingEditAccess(meetingId, accessToken);
+    alert("Edit access requested. The meeting organiser will review it.");
+  }
+
   const stats: { icon: string; num: number; label: string; color: string; tab: Tab }[] = [
     { icon: "📅", num: upcomingEvents.length,                  label: "Upcoming",         color: "bg-blue-50",   tab: "upcoming"     },
     { icon: "⚙️", num: inProgressEvents.length + activeRecordingJobs.length + pipelineActive.length, label: "In Progress", color: "bg-indigo-50", tab: "in_progress"  },
@@ -329,6 +334,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
             processingRequests={processingRequests}
             onRefreshProcessingRequests={refreshProcessingRequests}
             onRequestHistoricalAccess={handleRequestAccess}
+            onRequestMeetingEditAccess={handleRequestMeetingEditAccess}
           />
         </div>
       )}

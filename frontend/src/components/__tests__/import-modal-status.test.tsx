@@ -24,6 +24,24 @@ const cachedRecording = {
   meeting_id: null, meeting_state: null, meeting_error: null,
 };
 
+it("opens immediately with a skeleton while recordings load asynchronously", async () => {
+  let resolveRecordings!: (recordings: typeof cachedRecording[]) => void;
+  vi.mocked(getAvailableRecordings).mockReturnValue(new Promise((resolve) => {
+    resolveRecordings = resolve;
+  }));
+  vi.mocked(getRecordingJobs).mockResolvedValue([]);
+
+  render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()} />);
+
+  expect(screen.getByRole("dialog", { name: "Process a Past Recording" })).toBeInTheDocument();
+  expect(screen.getByRole("status", { name: "Loading recordings" })).toBeInTheDocument();
+  await waitFor(() => expect(getAvailableRecordings).toHaveBeenCalledOnce());
+
+  resolveRecordings([cachedRecording]);
+  expect(await screen.findByText("cached")).toBeInTheDocument();
+  expect(screen.queryByRole("status", { name: "Loading recordings" })).not.toBeInTheDocument();
+});
+
 it("shows completed processing separately from awaiting review", async () => {
   vi.mocked(getAvailableRecordings).mockResolvedValue([{
     drive_item_id: "item-1",

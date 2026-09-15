@@ -48,7 +48,8 @@ def is_local_test_meeting(meeting) -> bool:
 
 
 async def _authorize(
-    db: AsyncSession, meeting_id, upn: str, *, for_update: bool = False
+    db: AsyncSession, meeting_id, upn: str, *, for_update: bool = False,
+    allow_admin: bool = False,
 ) -> Meeting:
     """Row-level authorisation: load a meeting and verify the caller is a participant.
 
@@ -65,12 +66,18 @@ async def _authorize(
     m = await db.scalar(query)
     if not m:
         raise HTTPException(404)
-    if not any(
+    has_participant_access = any(
         normalize_upn(p.user_upn) == upn and _has_view_access(p)
         for p in m.participants
-    ):
+    )
+    if not has_participant_access and not allow_admin:
         raise HTTPException(403, "Not a participant of this meeting")
     return m
+
+
+async def _is_admin(db: AsyncSession, upn: str) -> bool:
+    user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
+    return bool(user and getattr(user, "is_admin", False) is True)
 
 
 def _participant_for(m: Meeting, upn: str | None) -> MeetingParticipant | None:
@@ -136,7 +143,7 @@ def _calendar_participants(m: Meeting) -> list[CalendarParticipantOut]:
     ]
 
 
-def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
+def _to_out(m: Meeting, upn: str | None = None, *, is_admin: bool = False) -> MeetingOut:
     """Convert a Meeting ORM instance to its Pydantic API output schema."""
     known_recipients = set(normalize_upns(m.attendees_raw))
     known_recipients.update(p.user_upn.lower() for p in m.participants)
@@ -159,7 +166,7 @@ def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
         if value:
             speaker_candidates.add(value)
     sample_labels = []
-    if is_organizer:
+    if is_organizer or is_admin:
         sample_labels = list(dict.fromkeys(
             str(segment.get("speaker") or "").strip()
             for segment in (extracted.get("transcript_segments") or [])
@@ -184,9 +191,10 @@ def _to_out(m: Meeting, upn: str | None = None) -> MeetingOut:
         email_recipients=sorted(known_recipients),
         approved_recipients=m.approved_recipients or [],
         is_organizer=is_organizer,
-        can_edit=is_organizer or bool(
+        can_edit=is_admin or is_organizer or bool(
             _is_attendee_participant(m, caller) and caller.edit_access_status == "approved"
         ),
+        can_approve=is_admin or is_organizer,
         can_request_edit_access=bool(
             not is_organizer
             and _is_attendee_participant(m, caller)
@@ -287,17 +295,19 @@ def _to_historical_out(m: Meeting, upn: str | None = None) -> MeetingOut:
     )
 
 
-def _require_organizer(m: Meeting, upn: str) -> None:
+def _require_organizer(m: Meeting, upn: str, *, is_admin: bool = False) -> None:
     """The human-in-the-loop reviewer is the meeting organiser only."""
     organizer = (m.organizer_upn or "").lower()
     participant_marks_organizer = any(
         p.user_upn.lower() == upn and p.is_organizer for p in m.participants
     )
-    if organizer != upn and not participant_marks_organizer:
+    if not is_admin and organizer != upn and not participant_marks_organizer:
         raise HTTPException(403, "Only the meeting organiser can review and approve")
 
 
-def _require_editor(m: Meeting, upn: str) -> None:
+def _require_editor(m: Meeting, upn: str, *, is_admin: bool = False) -> None:
+    if is_admin:
+        return
     try:
         _require_organizer(m, upn)
         return
@@ -347,7 +357,9 @@ def _speaker_sample_window(m: Meeting, speaker_label: str) -> tuple[float, float
         return None
     start, end = max(matches, key=lambda pair: pair[1] - pair[0])
     sample_start = max(0.0, start - 0.25)
-    return sample_start, min(end + 0.25, sample_start + 12.0)
+    # Keep previews long enough to identify a voice, but never exceed the
+    # requested ten-second review window.
+    return sample_start, min(max(end + 0.25, sample_start + 5.0), sample_start + 10.0)
 
 
 async def _build_speaker_sample(
@@ -480,15 +492,16 @@ async def historical_meetings(db: AsyncSession = Depends(get_db), upn: str = Dep
 @router.get("/reviews/{meeting_id}", response_model=MeetingOut)
 async def get_meeting(meeting_id: str, db: AsyncSession = Depends(get_db),
                       upn: str = Depends(current_user)):
-    m = await _authorize(db, meeting_id, upn)
-    return _to_out(m, upn)
+    is_admin = await _is_admin(db, upn)
+    m = await _authorize(db, meeting_id, upn, allow_admin=is_admin)
+    return _to_out(m, upn, is_admin=is_admin)
 
 
 @router.get("/reviews/{meeting_id}/email-preview", response_model=EmailPreviewOut)
 async def email_preview(meeting_id: str, db: AsyncSession = Depends(get_db),
                         upn: str = Depends(current_user)):
     """Render the exact branded HTML that approval would send, without sending it."""
-    m = await _authorize(db, meeting_id, upn)
+    m = await _authorize(db, meeting_id, upn, allow_admin=await _is_admin(db, upn))
     subject, html = build_meeting_email(m)
     return EmailPreviewOut(subject=subject, html=html)
 
@@ -499,8 +512,9 @@ async def edit_item(item_id: str, edit: ActionItemEdit,
     item = await db.get(ActionItem, item_id)
     if not item:
         raise HTTPException(404)
-    meeting = await _authorize(db, item.meeting_id, upn)
-    _require_editor(meeting, upn)
+    is_admin = await _is_admin(db, upn)
+    meeting = await _authorize(db, item.meeting_id, upn, allow_admin=is_admin)
+    _require_editor(meeting, upn, is_admin=is_admin)
     _require_awaiting_review(meeting)
     for field, val in edit.model_dump(exclude_unset=True).items():
         setattr(item, field, val)
@@ -512,8 +526,9 @@ async def edit_item(item_id: str, edit: ActionItemEdit,
 @router.patch("/reviews/{meeting_id}/transcript")
 async def edit_transcript(meeting_id: str, body: TranscriptEdit,
                           db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
-    meeting = await _authorize(db, meeting_id, upn)
-    _require_editor(meeting, upn)
+    is_admin = await _is_admin(db, upn)
+    meeting = await _authorize(db, meeting_id, upn, allow_admin=is_admin)
+    _require_editor(meeting, upn, is_admin=is_admin)
     _require_awaiting_review(meeting)
     meeting.transcript = body.transcript
     await db.commit()
@@ -523,8 +538,9 @@ async def edit_transcript(meeting_id: str, body: TranscriptEdit,
 @router.put("/reviews/{meeting_id}/speaker-mappings")
 async def save_speaker_mappings(meeting_id: str, body: SpeakerMappingIn,
                                 db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
-    meeting = await _authorize(db, meeting_id, upn)
-    _require_editor(meeting, upn)
+    is_admin = await _is_admin(db, upn)
+    meeting = await _authorize(db, meeting_id, upn, allow_admin=is_admin)
+    _require_editor(meeting, upn, is_admin=is_admin)
     _require_awaiting_review(meeting)
     allowed = set(normalize_upns(meeting.attendees_raw))
     allowed.update(normalize_upn(p.user_upn) for p in meeting.participants)
@@ -549,8 +565,9 @@ async def speaker_sample(meeting_id: str, speaker_label: str,
                          db: AsyncSession = Depends(get_db),
                          upn: str = Depends(current_user)):
     """Return a short voice sample. Only the meeting reviewer may listen."""
-    meeting = await _authorize(db, meeting_id, upn)
-    _require_organizer(meeting, upn)
+    is_admin = await _is_admin(db, upn)
+    meeting = await _authorize(db, meeting_id, upn, allow_admin=is_admin)
+    _require_organizer(meeting, upn, is_admin=is_admin)
     window = _speaker_sample_window(meeting, speaker_label)
     if not window:
         raise HTTPException(404, "No timed transcript segment exists for this speaker")
@@ -646,8 +663,9 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
                   body: ApproveMeetingIn = Body(default=ApproveMeetingIn())):
     # Serialize concurrent approvals. Without this lock, two browser requests
     # can both observe awaiting_review and send the same email twice.
-    m = await _authorize(db, meeting_id, upn, for_update=True)
-    _require_organizer(m, upn)
+    is_admin = await _is_admin(db, upn)
+    m = await _authorize(db, meeting_id, upn, for_update=True, allow_admin=is_admin)
+    _require_organizer(m, upn, is_admin=is_admin)
 
     known_recipients = set(normalize_upns(m.attendees_raw))
     known_recipients.update(p.user_upn.lower() for p in m.participants)

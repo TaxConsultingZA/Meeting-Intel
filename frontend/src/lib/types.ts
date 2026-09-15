@@ -76,6 +76,7 @@ export interface MeetingOut {
   approved_recipients: string[];
   is_organizer: boolean;
   can_edit: boolean;
+  can_approve?: boolean;
   can_request_edit_access: boolean;
   edit_access_status: "none" | "pending" | "approved" | "denied" | "organizer";
   access_request_type?: "view" | "edit" | null;
@@ -296,4 +297,5 @@ export interface AdminAccessRequest {
   request_type: "processing" | "view" | "edit";
   status: string;
   requested_at: string | null;
+  can_approve?: boolean;
 }

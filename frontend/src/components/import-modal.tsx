@@ -28,6 +28,7 @@ const STATE_LABEL: Record<ProcessingState, string> = {
 };
 
 const IN_PROGRESS: ProcessingState[] = ["queued", "downloading", "transcribing", "extracting"];
+const TABLE_HEADERS = ["Recording", "Date", "Size", "Processing", "Review", "Actions"];
 
 interface Props {
   upn: string;
@@ -185,10 +186,15 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl overflow-hidden">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-recording-title"
+        className="bg-white rounded-lg shadow-xl w-full max-w-5xl overflow-hidden"
+      >
         <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-6 py-5 flex items-center justify-between">
           <div>
-            <h2 className="text-white font-semibold text-[15px]">Process a Past Recording</h2>
+            <h2 id="import-recording-title" className="text-white font-semibold text-[15px]">Process a Past Recording</h2>
             <p className="text-white/60 text-[13px] mt-0.5">
               View or process MP4 recordings from your OneDrive Recordings folder
             </p>
@@ -200,9 +206,23 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
 
         <div className="max-h-[60vh] overflow-auto">
           {refreshing && !hasLoaded && (
-            <div className="flex flex-col items-center justify-center py-16 text-[#6b7280]">
-              <Loader2 size={28} className="animate-spin mb-3 text-[#003366]" />
-              <p className="text-[13.5px]">Scanning your OneDrive…</p>
+            <div role="status" aria-label="Loading recordings" className="min-h-72 animate-pulse" aria-live="polite">
+              <span className="sr-only">Loading recordings…</span>
+              <div className="grid grid-cols-[2fr_1fr_0.7fr_1fr_1fr_1fr] border-b border-[#dde1e8] bg-[#f8fafc] px-6 py-3">
+                {TABLE_HEADERS.map((header) => (
+                  <div key={header} className="text-xs font-semibold text-[#374151]">{header}</div>
+                ))}
+              </div>
+              {[0, 1, 2, 3].map((row) => (
+                <div key={row} className="grid grid-cols-[2fr_1fr_0.7fr_1fr_1fr_1fr] items-center gap-4 border-b border-[#eef1f4] px-6 py-4">
+                  <div className="h-3 w-3/4 rounded bg-slate-200" />
+                  <div className="h-3 w-4/5 rounded bg-slate-200" />
+                  <div className="h-3 w-2/3 rounded bg-slate-200" />
+                  <div className="h-5 w-16 rounded-full bg-slate-200" />
+                  <div className="h-5 w-14 rounded-full bg-slate-200" />
+                  <div className="ml-auto h-7 w-20 rounded bg-slate-200" />
+                </div>
+              ))}
             </div>
           )}
 
@@ -235,7 +255,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
             <table className="w-full min-w-[850px] text-sm">
               <thead>
                 <tr>
-                  {["Recording", "Date", "Size", "Processing", "Review", "Actions"].map((h) => (
+                  {TABLE_HEADERS.map((h) => (
                     <th key={h} className="bg-[#f8fafc] text-[#374151] text-xs font-semibold px-4 py-2.5 text-left border-b border-[#dde1e8] first:pl-6 last:pr-6">
                       {h}
                     </th>

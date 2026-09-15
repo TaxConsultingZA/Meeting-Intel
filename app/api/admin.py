@@ -14,7 +14,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..email_templates import build_welcome_email
 from ..graph import client as graph
-from ..models import BusinessUnit, Meeting, MeetingParticipant, ProcessedItem, RecordingJob, RecordingProcessingRequest, RegisteredUser
+from ..models import BusinessUnit, Meeting, MeetingParticipant, ProcessedItem, ProcessingState, RecordingJob, RecordingProcessingRequest, RegisteredUser
 from ..schemas import AdminRevokeAccessIn, BusinessUnitOut, RegisteredUserOut, RegisterUserIn, UpdateUserIn
 from ..utils.identity import normalize_upn
 from .deps import current_user
@@ -23,6 +23,9 @@ settings = get_settings()
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 NO_VIEW_ACCESS_TYPES = {"request_view", "request_edit", "revoked"}
+NO_ADMIN_PROCESSING_APPROVAL_STATES = {
+    ProcessingState.awaiting_review, ProcessingState.approved, ProcessingState.sent,
+}
 
 
 async def _require_admin(upn: str = Depends(current_user), db: AsyncSession = Depends(get_db)) -> str:
@@ -138,11 +141,25 @@ async def list_access_requests(db: AsyncSession = Depends(get_db), _upn: str = D
     user_ids = {request.requester_user_id for request in processing} | {request.recording_owner_user_id for request in processing}
     users = (await db.scalars(select(RegisteredUser).where(RegisteredUser.id.in_(user_ids)))).all() if user_ids else []
     users_by_id = {user.id: user for user in users}
+    processing_item_ids = {request.drive_item_id for request in processing}
+    processing_meetings = (await db.scalars(
+        select(Meeting).where(Meeting.drive_item_id.in_(processing_item_ids))
+    )).all() if processing_item_ids else []
+    meetings_by_item = {meeting.drive_item_id: meeting for meeting in processing_meetings}
+    completed_item_ids = set(await db.scalars(
+        select(RecordingJob.drive_item_id).where(
+            RecordingJob.drive_item_id.in_(processing_item_ids), RecordingJob.status == "completed",
+        )
+    )) if processing_item_ids else set()
     rows = []
     for request in processing:
         event = request.event_snapshot or {}
         requester = users_by_id.get(request.requester_user_id)
         owner = users_by_id.get(request.recording_owner_user_id)
+        existing_meeting = meetings_by_item.get(request.drive_item_id)
+        has_previous_result = bool(existing_meeting and (
+            existing_meeting.transcript or existing_meeting.state in NO_ADMIN_PROCESSING_APPROVAL_STATES
+        )) or request.drive_item_id in completed_item_ids
         rows.append({
             "id": str(request.id), "meeting_id": str(request.meeting_id) if request.meeting_id else None,
             "meeting": event.get("subject") or "Untitled meeting",
@@ -150,6 +167,7 @@ async def list_access_requests(db: AsyncSession = Depends(get_db), _upn: str = D
             "owner_upn": owner.upn if owner else None,
             "organizer_upn": (event.get("organizer") or {}).get("emailAddress", {}).get("address"),
             "request_type": "processing", "status": request.status, "requested_at": request.created_at,
+            "can_approve": request.status == "pending" and not has_previous_result,
         })
     for participant in participants:
         meeting = participant.meeting

@@ -2,7 +2,7 @@
 import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,7 +10,8 @@ from ..config import get_settings
 from ..db import get_db
 from ..email_templates import build_welcome_email
 from ..graph import client as graph
-from ..models import RegisteredUser, UserSyncState
+from ..models import RegisteredUser, RecordingJob, UserSyncState
+from ..services.job_control import public_job_error
 from ..schemas import RegisteredUserOut, SubscriptionOut, SyncStateOut
 from .deps import current_user
 
@@ -136,11 +137,28 @@ async def unsubscribe(
     upn: str = Depends(current_user),
 ):
     """Stop all future background Calendar/OneDrive processing for the user."""
-    user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
+    user = await db.scalar(
+        select(RegisteredUser).where(RegisteredUser.upn == upn).with_for_update()
+    )
     if not user:
         raise HTTPException(404, "User not found")
     user.is_subscribed = False
     user.subscribed_at = None
     user.graph_drive_id = None
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        update(RecordingJob)
+        .where(
+            RecordingJob.owner_upn == upn,
+            RecordingJob.status == "pending",
+        )
+        .values(
+            status="cancelled",
+            cancel_requested_at=now,
+            last_error=public_job_error("cancelled"),
+            lease_token=None,
+            locked_at=None,
+        )
+    )
     await db.commit()
     return SubscriptionOut(is_subscribed=False, subscribed_at=None)

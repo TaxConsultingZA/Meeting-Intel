@@ -161,7 +161,7 @@ async def test_admin_access_request_feed_unifies_processing_view_and_edit_reques
     processing = SimpleNamespace(
         id=uuid4(), meeting_id=None, requester_user_id=requester_id,
         recording_owner_user_id=owner_id, event_snapshot={"subject": "Processing meeting"},
-        status="pending", created_at=now,
+        drive_item_id="processing-item", status="pending", created_at=now,
     )
     view_meeting = SimpleNamespace(title="View meeting", organizer_upn="owner@example.test")
     view_request = SimpleNamespace(
@@ -186,10 +186,11 @@ async def test_admin_access_request_feed_unifies_processing_view_and_edit_reques
     db = MagicMock()
     db.scalars = AsyncMock(side_effect=[
         scalar_result([processing]), scalar_result([view_request, edit_request]),
-        scalar_result([requester, owner]),
+        scalar_result([requester, owner]), scalar_result([]), scalar_result([]),
     ])
 
     rows = await admin_api.list_access_requests(db, "admin@example.test")
 
     assert {row["request_type"] for row in rows} == {"processing", "view", "edit"}
     assert all({"meeting", "requester_upn", "owner_upn", "status"} <= row.keys() for row in rows)
+    assert next(row for row in rows if row["request_type"] == "processing")["can_approve"] is True

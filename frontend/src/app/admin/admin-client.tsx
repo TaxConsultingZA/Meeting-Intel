@@ -1,7 +1,8 @@
 "use client";
 import { useState } from "react";
+import Link from "next/link";
 import { UserPlus, Trash2, Shield, Pencil } from "lucide-react";
-import { decideMeetingEditAccess, getRecordingJobs, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
+import { decideMeetingEditAccess, decideRecordingProcessing, getRecordingJobs, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
 import type { RegisteredUser, BusinessUnit, RecordingJobOut, AdminAccessRequest, AdminMeetingOut } from "@/lib/types";
 import { JobControls } from "@/components/recording-jobs";
 import StateBadge from "@/components/state-badge";
@@ -36,6 +37,19 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
         : entry));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to decide access request");
+    }
+  }
+
+  async function handleProcessingDecision(request: AdminAccessRequest, approved: boolean) {
+    if (!confirm(`${approved ? "Approve" : "Reject"} processing request for ${request.meeting}?`)) return;
+    setError(null);
+    try {
+      await decideRecordingProcessing(request.id, approved, accessToken);
+      setRequests((current) => current.map((entry) => entry.id === request.id
+        ? { ...entry, status: approved ? "approved" : "denied", can_approve: false }
+        : entry));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : `Failed to ${approved ? "approve" : "reject"} processing request`);
     }
   }
 
@@ -132,7 +146,7 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
       <section aria-labelledby="admin-meetings" className="mb-6 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
         <div className="p-4"><h2 id="admin-meetings" className="font-semibold text-[#003366]">Meetings</h2><p className="text-xs text-[#6b7280]">Operational metadata across users. Meeting content remains restricted.</p></div>
         <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr>{["Meeting", "Organizer / owner", "Recording", "Meeting", "Job", "Request"].map((label) => <th key={label} className="bg-[#003366] text-white px-3 py-2 text-left">{label}</th>)}</tr></thead>
-          <tbody>{meetings.map((meeting) => <tr key={meeting.id} className="border-t align-top"><td className="px-3 py-2 font-medium">{meeting.title ?? "Untitled meeting"}</td><td className="px-3 py-2">{meeting.organizer_upn ?? "Unknown"}{meeting.owner_upn && meeting.owner_upn !== meeting.organizer_upn ? ` / ${meeting.owner_upn}` : ""}<AccessList meeting={meeting} onRevoke={handleRevoke} /></td><td className="px-3 py-2">{meeting.recording_status}</td><td className="px-3 py-2"><StatusText value={meeting.meeting_status} /></td><td className="px-3 py-2">{meeting.job_status ? <StatusText value={meeting.job_status} /> : "—"}</td><td className="px-3 py-2">{meeting.request_status ? <StatusText value={meeting.request_status} /> : "—"}</td></tr>)}</tbody>
+          <tbody>{meetings.map((meeting) => <tr key={meeting.id} className="border-t align-top"><td className="px-3 py-2 font-medium"><Link href={`/meetings/${meeting.id}`} className="text-[#003366] underline-offset-2 hover:underline">{meeting.title ?? "Untitled meeting"}</Link></td><td className="px-3 py-2">{meeting.organizer_upn ?? "Unknown"}{meeting.owner_upn && meeting.owner_upn !== meeting.organizer_upn ? ` / ${meeting.owner_upn}` : ""}<AccessList meeting={meeting} onRevoke={handleRevoke} /></td><td className="px-3 py-2">{meeting.recording_status}</td><td className="px-3 py-2"><StatusText value={meeting.meeting_status} /></td><td className="px-3 py-2">{meeting.job_status ? <StatusText value={meeting.job_status} /> : "—"}</td><td className="px-3 py-2">{meeting.request_status ? <StatusText value={meeting.request_status} /> : "—"}</td></tr>)}</tbody>
         </table></div>
         {meetings.length === 0 && <p className="p-4 text-sm text-[#9ca3af]">No meetings.</p>}
       </section>
@@ -160,12 +174,18 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
 
       <section aria-labelledby="admin-requests" className="mb-6 bg-white rounded-lg border border-[#dde1e8] shadow-sm p-4">
         <h2 id="admin-requests" className="font-semibold text-[#003366]">Access requests</h2>
-        <p className="text-xs text-[#6b7280] mb-3">Processing, view, and edit requests across all users. Decisions remain with recording owners and organizers.</p>
+        <p className="text-xs text-[#6b7280] mb-3">Processing, view, and edit requests across all users. Admins may approve eligible processing requests; other decisions remain with recording owners and organizers.</p>
         {requests.length === 0 && <p className="text-sm text-[#9ca3af]">No access requests.</p>}
         {requests.map((request) => (
           <div key={request.id} className="border-t py-3 text-sm">
             <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{request.meeting}</span><StatusText value={request.status} /></div>
             <p className="text-xs text-[#6b7280]">{request.request_type.replace(/^./, (letter) => letter.toUpperCase())} · Requested by {request.requester_name ?? request.requester_upn ?? "Former user"} · Owner / organizer: {request.owner_upn ?? request.organizer_upn ?? "Unknown"}</p>
+            {request.request_type === "processing" && request.status === "pending" && (
+              <div className="mt-2 flex gap-3">
+                {request.can_approve && <button type="button" onClick={() => handleProcessingDecision(request, true)} className="text-xs font-semibold text-emerald-700">Approve</button>}
+                <button type="button" onClick={() => handleProcessingDecision(request, false)} className="text-xs font-semibold text-red-700">Reject</button>
+              </div>
+            )}
             {request.status === "pending" && request.request_type !== "processing" && request.meeting_id && request.requester_upn && (
               <div className="mt-2 flex gap-3">
                 <button type="button" onClick={() => handleAccessDecision(request, true)} className="text-xs font-semibold text-emerald-700">Approve</button>

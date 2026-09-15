@@ -116,26 +116,41 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
         *,
         ignore_forbidden: bool = False,
         branch_name: str = "Recordings folder",
+        recursive: bool = False,
     ) -> None:
-        url: str | None = initial_url
-        seen_urls: set[str] = set()
-        while url and url not in seen_urls:
-            seen_urls.add(url)
-            response = await graph_get(client, url)
-            if response.status_code == 404:
-                return
-            if response.status_code == 403 and ignore_forbidden and not strict:
-                logger.warning(
-                    "Skipped inaccessible optional OneDrive branch: %s",
-                    branch_name,
-                )
-                return
-            response.raise_for_status()
-            data = response.json()
-            for item in data.get("value", []):
-                if item.get("name", "").endswith(".mp4") and item.get("id"):
-                    recordings_by_id[item["id"]] = item
-            url = data.get("@odata.nextLink")
+        queue: list[tuple[str, int]] = [(initial_url, 0)]
+        seen_folder_ids: set[str] = set()
+        requests = 0
+        while queue:
+            first_url, depth = queue.pop(0)
+            url: str | None = first_url
+            seen_urls: set[str] = set()
+            while url and url not in seen_urls:
+                if requests >= RECORDINGS_TRAVERSAL_MAX_REQUESTS:
+                    if strict:
+                        raise RuntimeError("OneDrive recording-folder traversal incomplete")
+                    return
+                requests += 1
+                seen_urls.add(url)
+                response = await graph_get(client, url)
+                if response.status_code == 404:
+                    break
+                if response.status_code == 403 and ignore_forbidden and not strict:
+                    logger.warning("Skipped inaccessible optional OneDrive branch: %s", branch_name)
+                    break
+                response.raise_for_status()
+                data = response.json()
+                for item in data.get("value", []):
+                    item_id = item.get("id")
+                    if item.get("name", "").lower().endswith(".mp4") and item_id:
+                        recordings_by_id[item_id] = item
+                    elif (recursive and item.get("folder") is not None and item_id
+                          and depth < RECORDINGS_TRAVERSAL_MAX_DEPTH
+                          and len(seen_folder_ids) < RECORDINGS_TRAVERSAL_MAX_FOLDERS
+                          and item_id not in seen_folder_ids):
+                        seen_folder_ids.add(item_id)
+                        queue.append((f"{drive_url}/items/{item_id}/children", depth + 1))
+                url = data.get("@odata.nextLink")
 
     async def discover_recordings_folder_ids(
         client: httpx.AsyncClient,
@@ -239,6 +254,7 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
             c,
             f"{drive_url}/root:/Recordings:/children",
             root_recordings,
+            recursive=True,
         )
         documents_task = collect_mp4_children(
             c,
@@ -246,6 +262,7 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
             documents_recordings,
             ignore_forbidden=True,
             branch_name="Documents/Recordings",
+            recursive=True,
         )
         root_result, documents_result, discovered_result = await asyncio.gather(
             root_task,
@@ -270,6 +287,7 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
                 folder_recordings,
                 ignore_forbidden=True,
                 branch_name="discovered Recordings folder",
+                recursive=True,
             ))
         if discovered_tasks:
             await asyncio.gather(*discovered_tasks)

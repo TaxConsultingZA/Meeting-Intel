@@ -66,6 +66,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const isTranscriptOnly = data.extraction_mode === "transcript_only";
   const isReviewable = meeting.state === "awaiting_review";
   const isOrganizer = meeting.is_organizer ?? meeting.organizer_upn?.toLowerCase() === upn.toLowerCase();
+  const canApprove = meeting.can_approve ?? isOrganizer;
   const canEdit = isReviewable && (meeting.can_edit || isOrganizer);
   const speakerLabels = Array.from(
     new Set(Array.from((meeting.transcript ?? "").matchAll(/\[(Speaker [^\]]+)\]/gi), (match) => match[1])),
@@ -253,7 +254,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                 ))}
               </div>
             )}
-            {isReviewable && isOrganizer && (
+            {isReviewable && canApprove && (
               <button
                 type="button"
                 onClick={() => setShowModal(true)}
@@ -404,7 +405,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                 {speakerLabels.map((label) => (
                   <div key={label} className="grid items-center gap-2 sm:grid-cols-[180px_auto_1fr]">
                     <span className="text-[13px] font-semibold text-[#003366]">{label}</span>
-                    {isOrganizer && (meeting.speaker_sample_labels ?? []).includes(label) && (
+                    {canApprove && (meeting.speaker_sample_labels ?? []).includes(label) && (
                       <SpeakerSampleButton
                         meetingId={meeting.id}
                         speakerLabel={label}

@@ -147,6 +147,7 @@ class MeetingOut(BaseModel):
     approved_recipients: list[str] = Field(default_factory=list)
     is_organizer: bool = False
     can_edit: bool = False
+    can_approve: bool = False
     can_request_edit_access: bool = False
     edit_access_status: str = "none"
     access_request_type: Literal["view", "edit"] | None = None

@@ -275,6 +275,75 @@ async def recent_state(
         return {"action": "no_recording" if no_match else "unavailable", "reason": exc.detail}
 
 
+async def recent_states(db, requester, events):
+    """Resolve DB-backed recent-card states with a constant number of queries."""
+    if not events:
+        return {}
+    keys = {occurrence_key(event) for event in events}
+    meetings = list(await db.scalars(
+        select(Meeting).join(MeetingParticipant).where(
+            MeetingParticipant.user_upn == requester.upn,
+            Meeting.state.in_(DONE),
+        )
+    ))
+    visible_by_key = {}
+    for event in events:
+        matches = []
+        for meeting in meetings:
+            meta = meeting.extracted_json or {}
+            bound = meta.get("calendar_occurrence_key") == occurrence_key(event)
+            legacy = (
+                normal_title(meeting.title or "") == normal_title(event.get("subject") or "")
+                and utc_iso(meeting.recorded_at.isoformat() if meeting.recorded_at else None)
+                == utc_iso(event.get("start"))
+                and (meeting.organizer_upn or "").lower() == organizer(event)
+            )
+            if bound or legacy:
+                matches.append(meeting)
+        if len(matches) == 1:
+            visible_by_key[occurrence_key(event)] = matches[0]
+
+    requests = list(await db.scalars(
+        select(RecordingProcessingRequest).where(
+            RecordingProcessingRequest.requester_user_id == requester.id,
+            RecordingProcessingRequest.occurrence_key.in_(keys),
+            RecordingProcessingRequest.status.in_(["pending", "approved"]),
+        ).order_by(RecordingProcessingRequest.created_at.desc())
+    ))
+    request_by_key = {}
+    for request in requests:
+        request_by_key.setdefault(request.occurrence_key, request)
+    item_ids = {request.drive_item_id for request in request_by_key.values() if request.status == "approved"}
+    jobs_by_item = {}
+    if item_ids:
+        jobs = list(await db.scalars(
+            select(RecordingJob).where(RecordingJob.drive_item_id.in_(item_ids))
+            .order_by(RecordingJob.created_at.desc())
+        ))
+        for job in jobs:
+            jobs_by_item.setdefault(job.drive_item_id, job)
+
+    result = {}
+    for key in keys:
+        meeting = visible_by_key.get(key)
+        if meeting:
+            result[key] = {"action": "view", "meeting_id": str(meeting.id)}
+            continue
+        request = request_by_key.get(key)
+        if not request:
+            result[key] = {"action": "no_recording"}
+        elif request.status == "pending":
+            result[key] = {"action": "request_pending", "request_id": str(request.id)}
+        else:
+            job = jobs_by_item.get(request.drive_item_id)
+            result[key] = {
+                "action": "processing",
+                "processing_status": job.status if job else "unavailable",
+                "request_id": str(request.id),
+            }
+    return result
+
+
 async def create_request(db, upn, event_id):
     requester = await user_by_upn(db, upn, lock=True)
     if not requester.is_subscribed:
@@ -359,17 +428,24 @@ async def queue_verified(db, owner, drive, item, event):
 
 
 async def decide_request(db, upn, request_id, approved):
-    owner = await user_by_upn(db, upn, lock=True)
+    actor = await user_by_upn(db, upn, lock=True)
     request = await db.scalar(select(RecordingProcessingRequest).where(
         RecordingProcessingRequest.id == request_id).with_for_update())
-    if not request or request.recording_owner_user_id != owner.id:
+    is_owner = bool(request and request.recording_owner_user_id == actor.id)
+    is_admin_decision = bool(request and actor.is_admin and not is_owner)
+    if not request or not (is_owner or is_admin_decision):
         raise HTTPException(403, "Only the recording owner can decide this request")
     target = "approved" if approved else "denied"
     if request.status != "pending":
         if request.status == target:
+            if is_admin_decision:
+                raise HTTPException(409, "Request already decided")
             return request
         raise HTTPException(409, "Request already decided")
     if approved:
+        owner = actor if is_owner else await db.get(RegisteredUser, request.recording_owner_user_id)
+        if not owner:
+            raise HTTPException(409, "Recording owner is no longer registered")
         if not owner.is_subscribed:
             raise HTTPException(403, "Recording owner is no longer subscribed")
         requester = await db.get(RegisteredUser, request.requester_user_id)
@@ -387,6 +463,11 @@ async def decide_request(db, upn, request_id, approved):
         if len(found) != 1 or found[0][1] != request.drive_id or found[0][2]["id"] != request.drive_item_id:
             raise HTTPException(409, "Recording ownership or reliable match changed")
         item = await verify_item(request.drive_id, found[0][2], event)
+        if is_admin_decision:
+            _, existing_meeting, existing_job = await recording_state(db, request.drive_id, item["id"])
+            if ((existing_meeting and (existing_meeting.transcript or existing_meeting.state in DONE))
+                    or (existing_job and existing_job.status == "completed")):
+                raise HTTPException(409, "Meeting already has a transcription or processed result")
         meeting, job = await queue_verified(db, owner, request.drive_id, item, event)
         # Existing completed results get only verified requester view access, no role escalation.
         if meeting.state in DONE:
@@ -398,7 +479,7 @@ async def decide_request(db, upn, request_id, approved):
         request.meeting_id, request.job_id = meeting.id, job.id if job else None
         request.event_snapshot = snapshot(event)
     request.status = target
-    request.decided_by, request.decided_at = owner.id, datetime.now(timezone.utc)
+    request.decided_by, request.decided_at = actor.id, datetime.now(timezone.utc)
     await db.commit()
     return request
 

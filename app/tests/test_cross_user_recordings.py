@@ -64,9 +64,11 @@ def ctx(monkeypatch):
     session = Session(engine, expire_on_commit=False)
     users = [RegisteredUser(upn=f"{name}@taxconsulting.co.za", is_subscribed=True)
              for name in ("requester", "owner", "organizer", "outsider")]
+    admin = RegisteredUser(upn="admin@taxconsulting.co.za", is_admin=True, is_subscribed=False)
+    users.append(admin)
     session.add_all(users)
     session.commit()
-    requester, owner, organizer, outsider = users
+    requester, owner, organizer, outsider, admin = users
     now = datetime.now(timezone.utc)
     event = {
         "id": "requester-event", "iCalUId": "same-occurrence", "subject": "Project Review",
@@ -84,7 +86,7 @@ def ctx(monkeypatch):
     scan = AsyncMock(side_effect=lambda drive, **kw: [deepcopy(item)] if drive == f"drive:{owner.upn}" else [])
     monkeypatch.setattr(service.graph, "list_recordings_folder", scan)
     yield SimpleNamespace(db=OfflineDB(session), session=session, requester=requester, owner=owner,
-                          organizer=organizer, outsider=outsider, event=event, item=item, scan=scan)
+                          organizer=organizer, outsider=outsider, admin=admin, event=event, item=item, scan=scan)
     session.close()
     engine.dispose()
 
@@ -293,6 +295,81 @@ async def test_approve_atomic_job_and_calendar_access_duplicate_idempotent(ctx):
     assert len(list(await ctx.db.scalars(select(RecordingJob)))) == 1
     state = await service.recent_state(ctx.db, ctx.requester, ctx.event)
     assert state["action"] == "processing" and state["processing_status"] == "pending"
+
+
+async def test_admin_approves_pending_request_once_through_owner_workflow(ctx):
+    result = await request(ctx)
+
+    approved = await service.decide_request(ctx.db, ctx.admin.upn, result.id, True)
+
+    assert approved.status == "approved"
+    assert approved.decided_by == ctx.admin.id
+    job = await ctx.db.get(RecordingJob, approved.job_id)
+    assert (job.owner_upn, job.drive_id, job.drive_item_id) == (
+        ctx.owner.upn, f"drive:{ctx.owner.upn}", "item",
+    )
+    with pytest.raises(HTTPException) as error:
+        await service.decide_request(ctx.db, ctx.admin.upn, result.id, True)
+    assert error.value.status_code == 409
+    assert len(list(await ctx.db.scalars(select(RecordingJob)))) == 1
+
+
+async def test_admin_rejects_pending_request_once_without_job_or_access(ctx):
+    result = await request(ctx)
+
+    rejected = await service.decide_request(ctx.db, ctx.admin.upn, result.id, False)
+
+    assert rejected.status == "denied"
+    assert rejected.decided_by == ctx.admin.id
+    assert rejected.decided_at is not None
+    assert rejected.job_id is None and rejected.meeting_id is None
+    assert not list(await ctx.db.scalars(select(RecordingJob)))
+    assert not list(await ctx.db.scalars(select(MeetingParticipant)))
+    with pytest.raises(HTTPException) as error:
+        await service.decide_request(ctx.db, ctx.admin.upn, result.id, False)
+    assert error.value.status_code == 409
+    with pytest.raises(HTTPException) as error:
+        await service.decide_request(ctx.db, ctx.admin.upn, result.id, True)
+    assert error.value.status_code == 409
+
+
+async def test_admin_cannot_approve_when_previous_transcription_exists(ctx):
+    result = await request(ctx)
+    meeting = Meeting(drive_item_id="item", organizer_upn=ctx.organizer.upn,
+                      title=ctx.event["subject"], state=ProcessingState.awaiting_review,
+                      transcript="Existing transcription")
+    ctx.db.add(meeting)
+    await ctx.db.commit()
+
+    with pytest.raises(HTTPException) as error:
+        await service.decide_request(ctx.db, ctx.admin.upn, result.id, True)
+
+    assert error.value.status_code == 409
+    assert result.status == "pending"
+    assert not list(await ctx.db.scalars(select(RecordingJob)))
+
+
+async def test_admin_approval_revalidates_participant_eligibility(ctx):
+    result = await request(ctx)
+    ctx.event["attendees"] = ctx.event["attendees"][1:]
+
+    with pytest.raises(HTTPException) as error:
+        await service.decide_request(ctx.db, ctx.admin.upn, result.id, True)
+
+    assert error.value.status_code == 403
+    assert result.status == "pending"
+
+
+async def test_admin_approval_preserves_duplicate_active_job_safeguard(ctx):
+    result = await request(ctx)
+    ctx.db.add(ProcessedItem(drive_item_id="item", drive_id=result.drive_id, source="reconcile"))
+    ctx.db.add(RecordingJob(drive_item_id="item", drive_id=result.drive_id,
+                            owner_upn=ctx.owner.upn, source="reconcile"))
+    await ctx.db.commit()
+
+    await service.decide_request(ctx.db, ctx.admin.upn, result.id, True)
+
+    assert len(list(await ctx.db.scalars(select(RecordingJob)))) == 1
 
 
 async def test_owner_deny_does_not_enqueue(ctx):

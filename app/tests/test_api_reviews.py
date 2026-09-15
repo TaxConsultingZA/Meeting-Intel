@@ -312,6 +312,93 @@ class TestOrganizerReviewGate:
         assert exc.value.status_code == 403
 
 
+class TestAdminMeetingControl:
+    @staticmethod
+    def _meeting():
+        from app.models import ProcessingState
+
+        return MagicMock(
+            id="meeting-1", drive_item_id="item-1", title="Private meeting",
+            organizer_upn="owner@taxconsulting.co.za", attendees_raw=["owner@taxconsulting.co.za"],
+            participants=[], action_items=[SimpleNamespace(
+                id="action-1", task="Follow up", owner=None, deadline_text=None,
+                deadline_iso=None, confidence="high", source_quote=None, approved=False,
+            )],
+            state=ProcessingState.awaiting_review, transcript="Transcript", summary="AI notes",
+            extracted_json={"speaker_mappings": {}}, error=None, recorded_at=None,
+            approved_recipients=[], email_delivery_status=None, email_delivery_fingerprint=None,
+            email_delivery_error=None, email_delivery_attempts=0,
+        )
+
+    async def test_admin_views_content_without_participant_grant(self):
+        from app.api import reviews
+
+        admin = SimpleNamespace(is_admin=True)
+        meeting = self._meeting()
+        db = AsyncMock()
+        db.scalar = AsyncMock(side_effect=[admin, meeting])
+
+        result = await reviews.get_meeting("meeting-1", db=db, upn="admin@taxconsulting.co.za")
+
+        assert result.transcript == "Transcript" and result.summary == "AI notes"
+        assert result.action_items and result.can_edit and result.can_approve
+        assert result.is_organizer is False
+        db.add.assert_not_called()
+
+    @pytest.mark.parametrize("edit_path", ["transcript", "action_item", "speaker_mappings"])
+    async def test_admin_uses_existing_edit_paths(self, monkeypatch, edit_path):
+        from app.api import reviews
+        from app.schemas import ActionItemEdit, SpeakerMappingIn, TranscriptEdit
+
+        meeting = self._meeting()
+        meeting.attendees_raw = ["owner@taxconsulting.co.za"]
+        item = SimpleNamespace(id="action-1", meeting_id="meeting-1", task="Old", edited_by=None)
+        db = AsyncMock()
+        db.get = AsyncMock(return_value=item)
+        monkeypatch.setattr(reviews, "_is_admin", AsyncMock(return_value=True))
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        if edit_path == "transcript":
+            await reviews.edit_transcript("meeting-1", TranscriptEdit(transcript="Updated"), db=db,
+                                          upn="admin@taxconsulting.co.za")
+            assert meeting.transcript == "Updated"
+        elif edit_path == "action_item":
+            await reviews.edit_item("action-1", ActionItemEdit(task="Updated"), db=db,
+                                    upn="admin@taxconsulting.co.za")
+            assert item.task == "Updated" and item.edited_by == "admin@taxconsulting.co.za"
+        else:
+            result = await reviews.save_speaker_mappings(
+                "meeting-1", SpeakerMappingIn(mappings={"Speaker A": "owner@taxconsulting.co.za"}),
+                db=db, upn="admin@taxconsulting.co.za",
+            )
+            assert result["speaker_mappings"] == {"Speaker A": "owner@taxconsulting.co.za"}
+        db.commit.assert_awaited_once()
+
+    async def test_admin_final_approval_uses_existing_email_delivery(self, monkeypatch):
+        from app.api import reviews
+        from app.models import ProcessingState
+        from app.schemas import ApproveMeetingIn
+
+        meeting = self._meeting()
+        db = AsyncMock()
+        send_mail = AsyncMock()
+        monkeypatch.setattr(reviews, "_is_admin", AsyncMock(return_value=True))
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        monkeypatch.setattr(reviews.settings, "emails_enabled", True)
+        monkeypatch.setattr(reviews, "build_meeting_email", lambda _: ("Subject", "Body"))
+        monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
+
+        result = await reviews.approve(
+            "meeting-1", db=db, upn="admin@taxconsulting.co.za",
+            body=ApproveMeetingIn(recipients=["owner@taxconsulting.co.za"]),
+        )
+
+        assert result["state"] == ProcessingState.sent
+        assert meeting.approved_by == "admin@taxconsulting.co.za"
+        send_mail.assert_awaited_once()
+        assert send_mail.await_args.args[1:] == (["owner@taxconsulting.co.za"], "Subject", "Body")
+
+
 class TestEditAccessWorkflow:
     @staticmethod
     def _meeting(*, access_type="participant", status="none"):
@@ -686,10 +773,15 @@ class TestSpeakerSamples:
         }
         return meeting
 
-    def test_uses_longest_segment_and_caps_sample_at_twelve_seconds(self):
+    def test_uses_longest_segment_and_caps_sample_at_ten_seconds(self):
         from app.api.reviews import _speaker_sample_window
 
-        assert _speaker_sample_window(self._meeting(), "speaker a") == (9.75, 21.75)
+        assert _speaker_sample_window(self._meeting(), "speaker a") == (9.75, 19.75)
+
+    def test_short_sample_window_is_at_least_five_seconds(self):
+        from app.api.reviews import _speaker_sample_window
+
+        assert _speaker_sample_window(self._meeting(), "Speaker B") == (30.75, 35.75)
 
     def test_unknown_speaker_has_no_sample(self):
         from app.api.reviews import _speaker_sample_window

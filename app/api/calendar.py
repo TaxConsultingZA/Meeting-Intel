@@ -1,11 +1,9 @@
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
-from ..graph import client as graph
 from ..models import SyncedCalendarEvent
-from ..services.sync_state import record_sync_result
 from .deps import require_subscribed
 from .recording_processing_requests import EventReference
 from ..utils.timezones import parse_graph_datetime, utc_iso
@@ -27,10 +25,11 @@ async def recent_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends
     user = await service.user_by_upn(db, upn)
     recent = [e for e in events if service.recent_event(e, now) and upn.lower() in service.people(e)]
     result = []
+    states = await service.recent_states(db, user, recent)
     for event in sorted(recent, key=lambda e: parse_graph_datetime(e["end"]), reverse=True):
         row = _format_event(event)
         row["status"] = "ended"
-        row.update(await service.recent_state(db, user, event, discover_recording=False))
+        row.update(states[service.occurrence_key(event)])
         result.append(row)
     return result
 
@@ -107,22 +106,13 @@ async def upcoming_meetings(
         select(SyncedCalendarEvent.raw)
         .where(
             SyncedCalendarEvent.user_upn == upn,
-            SyncedCalendarEvent.starts_at >= now - timedelta(days=30),
+            SyncedCalendarEvent.starts_at > now,
             SyncedCalendarEvent.starts_at <= now + timedelta(days=days),
         )
         .order_by(SyncedCalendarEvent.starts_at)
     ))
-    if events:
-        # Background sync includes offline events for /calendar/recent. Preserve
-        # this endpoint's existing Graph-backed contract by returning online
-        # meetings only.
-        events = [e for e in events if e.get("isOnlineMeeting")]
-    else:
-        try:
-            events = await graph.get_upcoming_calendar_events(upn, days=days)
-        except Exception as e:
-            await record_sync_result(db, user_upn=upn, source="calendar", error=e)
-            raise HTTPException(status_code=502, detail=f"Could not reach calendar: {e}")
-        await record_sync_result(db, user_upn=upn, source="calendar")
+    # Background sync includes offline events for /calendar/recent; Upcoming
+    # remains online-only and never performs a page-load Graph fallback.
+    events = [e for e in events if e.get("isOnlineMeeting")]
     active = [e for e in events if not (e.get("subject") or "").lower().startswith("canceled:")]
     return [_format_event(e) for e in active]

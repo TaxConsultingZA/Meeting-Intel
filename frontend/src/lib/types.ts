@@ -173,7 +173,7 @@ export interface CalendarEvent {
 /** A single in-app notification item returned by GET /notifications. */
 export interface RecentMeeting extends Omit<CalendarEvent, "status"> {
   status: "ended";
-  action: "view" | "process" | "request_processing" | "request_pending" | "processing" | "no_recording" | "unavailable";
+  action: "view" | "request_view_access" | "access_pending" | "process" | "request_processing" | "request_pending" | "processing" | "no_recording" | "unavailable";
   meeting_id?: string;
   request_id?: string;
   processing_status?: string;

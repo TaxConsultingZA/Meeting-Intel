@@ -33,8 +33,8 @@ it("restores cached meetings immediately after remount and revalidates in the ba
 
 it("shows expired cached meetings while silently refreshing them", async () => {
   sessionStorage.setItem(
-    "meeting-intel:recent-meetings:v1:reviewer%40example.test",
-    JSON.stringify({ version: 1, cachedAt: Date.now() - 10 * 60 * 1000, events: [event("view")] }),
+    "meeting-intel:recent-meetings:v2:reviewer%40example.test",
+    JSON.stringify({ version: 2, cachedAt: Date.now() - 10 * 60 * 1000, events: [event("view")] }),
   );
   vi.mocked(api.getRecentMeetings).mockRejectedValue(new Error("calendar unavailable"));
 
@@ -78,6 +78,20 @@ it("renders all Recent actions and disables repeat actions for pending/queued", 
     expect(screen.getByText(text)).toBeInTheDocument();
   expect(screen.getAllByText("No Recording").length).toBeGreaterThan(0);
   expect(screen.getAllByRole("button", { name: "Request Processing" })).toHaveLength(1);
+});
+
+it("renders revoked view access as a fresh view request and pending view access without a duplicate action", async () => {
+  vi.mocked(api.getRecentMeetings).mockResolvedValue([
+    { ...event("request_view_access"), event_id: "revoked", subject: "Revoked" },
+    { ...event("access_pending"), event_id: "pending", subject: "Pending" },
+  ]);
+  const requestAccess = vi.fn().mockResolvedValue(undefined);
+  render(<RecentMeetings token="token" isSubscribed onRequestHistoricalAccess={requestAccess} />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Request View Access" }));
+  await waitFor(() => expect(requestAccess).toHaveBeenCalledWith("meeting", "view"));
+  expect(screen.getByText("Access Pending")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "View" })).not.toBeInTheDocument();
 });
 
 it("merges historical meetings, removes stable-id duplicates, and reveals history on demand", async () => {

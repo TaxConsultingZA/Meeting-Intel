@@ -7,7 +7,7 @@ import { getRecentMeetings, getProcessingRequests, requestRecordingProcessing, d
 import type { MeetingOut, RecentMeeting, RecordingProcessingRequest } from "@/lib/types";
 
 const RECENT_MEETINGS_CACHE_TTL_MS = 5 * 60 * 1000;
-const RECENT_MEETINGS_CACHE_VERSION = 1;
+const RECENT_MEETINGS_CACHE_VERSION = 2;
 
 interface RecentMeetingsCacheEntry {
   version: number;
@@ -202,6 +202,8 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
             <p className="mb-3 text-xs text-[#6b7280]">Organised by {event.organizer_name || event.organizer_email}</p>
             <p className="mb-3 text-xs font-semibold text-[#6b7280]">{event.action === "no_recording" ? "No Recording" : "Recording Available"}</p>
             {event.action === "view" && event.meeting_id && <Link className="font-semibold text-[#003366] underline" href={`/meetings/${event.meeting_id}`}>View</Link>}
+            {event.action === "request_view_access" && event.meeting_id && onRequestHistoricalAccess && <button type="button" disabled={busy || loading} className={buttonClass} onClick={() => void act(() => onRequestHistoricalAccess(event.meeting_id!, "view"))}>Request View Access</button>}
+            {event.action === "access_pending" && <span className="text-sm text-amber-800">Access Pending</span>}
             {event.action === "process" && <button type="button" disabled={busy || loading} className={buttonClass} onClick={() => void act(() => processRecentMeeting(event.event_id, token))}>Process</button>}
             {event.action === "request_processing" && <button type="button" disabled={busy || loading} className={buttonClass} onClick={() => void act(() => requestRecordingProcessing(event.event_id, token))}>Request Processing</button>}
             {event.action === "request_pending" && <span className="text-sm text-amber-800">Request Pending</span>}

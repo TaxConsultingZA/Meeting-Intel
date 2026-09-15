@@ -36,8 +36,9 @@ async def test_recent_states_batches_queries_for_multiple_events():
     from app.services.cross_user_recordings import recent_states
 
     db = AsyncMock()
-    db.scalars.side_effect = [ScalarRows([]), ScalarRows([])]
-    requester = SimpleNamespace(id="user-id", upn="user@example.com")
+    db.execute.return_value = SimpleNamespace(all=lambda: [])
+    db.scalars.return_value = ScalarRows([])
+    requester = SimpleNamespace(id="user-id", upn="user@example.com", is_admin=False)
     now = datetime.now(timezone.utc)
     events = [{
         "id": f"event-{index}",
@@ -52,7 +53,8 @@ async def test_recent_states_batches_queries_for_multiple_events():
 
     assert len(states) == 4
     assert all(state == {"action": "no_recording"} for state in states.values())
-    assert db.scalars.await_count == 2
+    assert db.execute.await_count == 1
+    assert db.scalars.await_count == 1
 
 
 @pytest.mark.asyncio

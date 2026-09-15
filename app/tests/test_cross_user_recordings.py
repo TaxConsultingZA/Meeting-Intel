@@ -164,6 +164,48 @@ async def test_recent_request_uses_durable_state_without_graph_scans(ctx, monkey
     ctx.scan.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    ("access_type", "edit_status", "is_organizer", "is_admin", "expected"),
+    [
+        ("revoked", "denied", False, False, "request_view_access"),
+        ("request_view", "denied", False, False, "request_view_access"),
+        ("request_view", "pending", False, False, "access_pending"),
+        ("historical", "none", False, False, "view"),
+        ("revoked", "approved", False, False, "view"),
+        ("revoked", "denied", True, False, "view"),
+        ("revoked", "denied", False, True, "view"),
+    ],
+)
+async def test_recent_card_uses_effective_meeting_access(
+    ctx, access_type, edit_status, is_organizer, is_admin, expected
+):
+    meeting = Meeting(
+        drive_item_id="effective-access-item",
+        organizer_upn=ctx.organizer.upn,
+        title=ctx.event["subject"],
+        recorded_at=service.parse_graph_datetime(ctx.event["start"]),
+        state=ProcessingState.awaiting_review,
+        extracted_json={"calendar_occurrence_key": service.occurrence_key(ctx.event)},
+    )
+    participant = MeetingParticipant(
+        meeting=meeting,
+        user_upn=ctx.requester.upn,
+        is_organizer=is_organizer,
+        access_type=access_type,
+        edit_access_status=edit_status,
+    )
+    ctx.requester.is_admin = is_admin
+    ctx.session.add_all([meeting, participant])
+    ctx.session.commit()
+
+    state = (await service.recent_states(ctx.db, ctx.requester, [ctx.event]))[
+        service.occurrence_key(ctx.event)
+    ]
+
+    assert state["action"] == expected
+    assert state["meeting_id"] == str(meeting.id)
+
+
 async def test_available_recordings_uses_reconciled_rows_without_graph(ctx):
     ctx.requester.graph_drive_id = "drive:requester"
     meeting = Meeting(

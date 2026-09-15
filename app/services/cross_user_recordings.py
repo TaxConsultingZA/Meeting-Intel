@@ -280,16 +280,16 @@ async def recent_states(db, requester, events):
     if not events:
         return {}
     keys = {occurrence_key(event) for event in events}
-    meetings = list(await db.scalars(
-        select(Meeting).join(MeetingParticipant).where(
+    meeting_rows = (await db.execute(
+        select(Meeting, MeetingParticipant).join(MeetingParticipant).where(
             MeetingParticipant.user_upn == requester.upn,
             Meeting.state.in_(DONE),
         )
-    ))
+    )).all()
     visible_by_key = {}
     for event in events:
         matches = []
-        for meeting in meetings:
+        for meeting, participant in meeting_rows:
             meta = meeting.extracted_json or {}
             bound = meta.get("calendar_occurrence_key") == occurrence_key(event)
             legacy = (
@@ -299,7 +299,7 @@ async def recent_states(db, requester, events):
                 and (meeting.organizer_upn or "").lower() == organizer(event)
             )
             if bound or legacy:
-                matches.append(meeting)
+                matches.append((meeting, participant))
         if len(matches) == 1:
             visible_by_key[occurrence_key(event)] = matches[0]
 
@@ -325,8 +325,24 @@ async def recent_states(db, requester, events):
 
     result = {}
     for key in keys:
-        meeting = visible_by_key.get(key)
-        if meeting:
+        match = visible_by_key.get(key)
+        if match:
+            meeting, participant = match
+            has_authority = bool(
+                requester.is_admin
+                or participant.is_organizer
+                or (meeting.organizer_upn or "").lower() == requester.upn
+                or participant.edit_access_status == "approved"
+                or participant.access_type not in {"request_view", "request_edit", "revoked"}
+            )
+            if not has_authority:
+                result[key] = {
+                    "action": "access_pending"
+                    if participant.access_type == "request_view" and participant.edit_access_status == "pending"
+                    else "request_view_access",
+                    "meeting_id": str(meeting.id),
+                }
+                continue
             result[key] = {"action": "view", "meeting_id": str(meeting.id)}
             continue
         request = request_by_key.get(key)

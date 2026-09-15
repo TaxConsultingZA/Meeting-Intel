@@ -832,10 +832,6 @@ async def request_historical_access(meeting_id: str, body: MeetingAccessRequestI
     if not m:
         raise HTTPException(404, "Meeting not found")
 
-    attendees = normalize_upns(m.attendees_raw)
-    if upn not in attendees:
-        raise HTTPException(403, "You were not listed as an attendee of this meeting")
-
     already = await db.scalar(
         select(MeetingParticipant).where(
             MeetingParticipant.meeting_id == m.id,
@@ -844,6 +840,29 @@ async def request_historical_access(meeting_id: str, body: MeetingAccessRequestI
     )
     if already and _has_view_access(already):
         raise HTTPException(409, "Already have access")
+    if (
+        body.access_type == "view"
+        and already
+        and already.access_type == "request_view"
+        and already.edit_access_status == "pending"
+    ):
+        raise HTTPException(409, "A view access request is already pending")
+
+    attendees = normalize_upns(m.attendees_raw)
+    may_repeat_view_request = bool(
+        body.access_type == "view"
+        and already
+        and (
+            already.access_type == "revoked"
+            or (
+                already.access_type == "request_view"
+                and already.edit_access_status == "denied"
+            )
+        )
+    )
+    if upn not in attendees and not may_repeat_view_request:
+        raise HTTPException(403, "You were not listed as an attendee of this meeting")
+
     participant = already or MeetingParticipant(
         meeting_id=m.id, user_upn=upn, is_organizer=False
     )

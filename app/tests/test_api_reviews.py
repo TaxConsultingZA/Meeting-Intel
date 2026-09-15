@@ -446,6 +446,63 @@ class TestEditAccessWorkflow:
         }
         db.commit.assert_awaited_once()
 
+    @pytest.mark.parametrize(
+        ("access_type", "edit_status"),
+        [("revoked", "denied"), ("request_view", "denied")],
+    )
+    async def test_revoked_or_rejected_view_can_be_requested_again(
+        self, access_type, edit_status
+    ):
+        from app.api import reviews
+        from app.schemas import MeetingAccessRequestIn
+
+        meeting, participant = self._meeting(
+            access_type=access_type, status=edit_status
+        )
+        meeting.attendees_raw = []
+        db = MagicMock()
+        db.scalar = AsyncMock(side_effect=[meeting, participant])
+        db.commit = AsyncMock()
+
+        result = await reviews.request_historical_access(
+            "meeting-1", MeetingAccessRequestIn(access_type="view"),
+            db=db, upn="guest@taxconsulting.co.za",
+        )
+
+        assert result == {"ok": True, "status": "pending", "access_type": "view"}
+        assert participant.access_type == "request_view"
+        assert participant.edit_access_status == "pending"
+        assert participant.edit_decided_at is None
+        assert participant.edit_decided_by is None
+        db.commit.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        ("access_type", "edit_status"),
+        [("request_view", "pending"), ("historical", "none")],
+    )
+    async def test_pending_or_approved_view_cannot_be_requested_again(
+        self, access_type, edit_status
+    ):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import MeetingAccessRequestIn
+
+        meeting, participant = self._meeting(
+            access_type=access_type, status=edit_status
+        )
+        db = MagicMock()
+        db.scalar = AsyncMock(side_effect=[meeting, participant])
+        db.commit = AsyncMock()
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.request_historical_access(
+                "meeting-1", MeetingAccessRequestIn(access_type="view"),
+                db=db, upn="guest@taxconsulting.co.za",
+            )
+
+        assert exc.value.status_code == 409
+        db.commit.assert_not_awaited()
+
     async def test_real_attendee_can_request_access(self, monkeypatch):
         from app.api import reviews
 

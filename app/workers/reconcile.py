@@ -14,7 +14,7 @@ from sqlalchemy import select
 from app.db import SessionLocal
 from app.graph import client as graph
 from app.models import RegisteredUser
-from app.services.jobs import enqueue_recording_job
+from app.services.ledger import claim_item
 from app.services.sync_state import record_sync_result
 
 
@@ -28,15 +28,16 @@ async def _get_subscribed_upns() -> set[str]:
 
 
 async def reconcile() -> int:
-    """Walk every *registered* user's OneDrive Recordings folder and process new MP4s.
+    """Discover every subscribed user's new OneDrive MP4 recordings.
 
     Only users who appear in the ``registered_users`` table are scanned.  This
     prevents the reconciler from touching recordings that belong to people who
     have not been onboarded onto the platform.
 
     For each file found, ``claim_item`` is used as an idempotency gate — only
-    files not yet in the ``processed_items`` ledger are processed.  The function
-    returns the count of newly processed recordings so callers can log progress.
+    files not yet in the ``processed_items`` ledger are persisted. Processing is
+    queued only when a user explicitly selects a recording. The function returns
+    the count of newly discovered recordings so callers can log progress.
     """
     found = 0
     subscribed_upns = await _get_subscribed_upns()
@@ -77,17 +78,14 @@ async def reconcile() -> int:
             etag = item.get("eTag")
 
             async with SessionLocal() as db:
-                queued = await enqueue_recording_job(
+                discovered = await claim_item(
                     db,
-                    drive_item_id=drive_item_id,
-                    drive_id=drive_id,
-                    owner_upn=upn,
-                    source="reconcile",
-                    etag=etag,
+                    drive_item_id, drive_id, etag, "reconcile",
+                    filename=item.get("name"),
                 )
 
-            if queued:
-                print(f"  Queued: {item['name']} (owner: {upn})")
+            if discovered:
+                print(f"  Discovered: {item['name']} (owner: {upn})")
                 found += 1
 
     return found
@@ -95,4 +93,4 @@ async def reconcile() -> int:
 
 if __name__ == "__main__":
     n = asyncio.run(reconcile())
-    print(f"\nReconciliation complete — processed {n} new recording(s).")
+    print(f"\nReconciliation complete — discovered {n} new recording(s).")

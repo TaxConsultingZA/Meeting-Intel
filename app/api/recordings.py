@@ -72,6 +72,9 @@ async def available_recordings(
     rows = await db.scalars(select(Meeting).where(Meeting.drive_item_id.in_(item_ids)))
     for m in rows.all():
         meetings_by_item[m.drive_item_id] = m
+    job_item_ids = set(await db.scalars(
+        select(RecordingJob.drive_item_id).where(RecordingJob.drive_item_id.in_(item_ids))
+    ))
 
     result = []
     for ledger in ledgers:
@@ -80,10 +83,10 @@ async def available_recordings(
         result.append({
             "drive_item_id": iid,
             "drive_id": ledger.drive_id,
-            "name": m.title if m and m.title else "Unknown",
+            "name": m.title if m and m.title else ledger.filename or "Unknown",
             "size": None,
             "created_at": m.recorded_at.isoformat() if m and m.recorded_at else None,
-            "already_imported": True,
+            "already_imported": iid in job_item_ids or m is not None,
             "meeting_id": str(m.id) if m else None,
             "meeting_state": m.state if m else None,
             "meeting_error": public_job_error(m.error) if m else None,
@@ -99,14 +102,27 @@ async def import_recording(
 ):
     """Trigger background processing of a new recording."""
     item = await _verify_owned_drive_item(upn, req.drive_id, req.drive_item_id)
-    queued = await enqueue_recording_job(
-        db,
-        drive_item_id=req.drive_item_id,
-        drive_id=req.drive_id,
-        owner_upn=upn,
-        source="manual",
-        etag=item.get("eTag"),
+    ledger = await db.scalar(
+        select(ProcessedItem).where(ProcessedItem.drive_item_id == req.drive_item_id)
     )
+    if ledger:
+        prior_job = await db.scalar(
+            select(RecordingJob.id).where(RecordingJob.drive_item_id == req.drive_item_id).limit(1)
+        )
+        queued = False if prior_job else await enqueue_retry_job(
+            db, drive_item_id=req.drive_item_id, drive_id=req.drive_id,
+            owner_upn=upn, source="manual",
+        )
+    else:
+        queued = await enqueue_recording_job(
+            db,
+            drive_item_id=req.drive_item_id,
+            drive_id=req.drive_id,
+            owner_upn=upn,
+            source="manual",
+            etag=item.get("eTag"),
+            filename=item.get("name"),
+        )
     if not queued:
         raise HTTPException(status_code=409, detail="Already imported or currently processing")
     return {"ok": True, "queued": True}

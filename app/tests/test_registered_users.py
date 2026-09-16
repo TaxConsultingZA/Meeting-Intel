@@ -61,6 +61,34 @@ class TestReconcileSubscribedFilter:
             result = await reconcile()
             assert result == 0
 
+    async def test_reconcile_persists_discovery_without_creating_job(self):
+        with (
+            patch("app.workers.reconcile._get_subscribed_upns", new_callable=AsyncMock,
+                  return_value={"owner@example.com"}),
+            patch("app.workers.reconcile.graph.get_user_drive_id", new_callable=AsyncMock,
+                  return_value="drive-1"),
+            patch("app.workers.reconcile.graph.list_recordings_folder", new_callable=AsyncMock,
+                  return_value=[{"id": "item-1", "name": "test03.mp4", "eTag": "etag-1"}]),
+            patch("app.workers.reconcile.claim_item", new_callable=AsyncMock,
+                  return_value=True) as claim,
+            patch("app.workers.reconcile.SessionLocal") as session_cls,
+        ):
+            session = AsyncMock()
+            session.__aenter__ = AsyncMock(return_value=session)
+            session.__aexit__ = AsyncMock(return_value=False)
+            subscriber = MagicMock()
+            session.scalar = AsyncMock(return_value=subscriber)
+            session_cls.return_value = session
+
+            from app.workers.reconcile import reconcile
+            assert await reconcile() == 1
+
+            claim.assert_awaited_once_with(
+                session, "item-1", "drive-1", "etag-1", "reconcile",
+                filename="test03.mp4",
+            )
+            assert subscriber.graph_drive_id == "drive-1"
+
 
 class TestPipelineAttendeeFiltering:
     async def test_attendees_raw_stored_with_full_list(self):

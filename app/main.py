@@ -82,7 +82,7 @@ async def _reconcile_loop() -> None:
             if calendar_count:
                 log.info("Microsoft sync: refreshed %d calendar event(s)", calendar_count)
             if found:
-                log.info("Auto-reconcile: processed %d new recording(s)", found)
+                log.info("Auto-reconcile: discovered %d new recording(s)", found)
         except Exception as exc:
             log.warning("Auto-reconcile error (will retry): %s", exc)
         await asyncio.sleep(_RECONCILE_INTERVAL)

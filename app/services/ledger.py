@@ -11,6 +11,7 @@ async def claim_item(
     etag: str | None,
     source: str,
     *,
+    filename: str | None = None,
     commit: bool = True,
 ) -> bool:
     """Returns True if this is the first time we've seen the item (claim succeeds),
@@ -20,7 +21,10 @@ async def claim_item(
     )
     if existing:
         return False
-    db.add(ProcessedItem(drive_item_id=drive_item_id, drive_id=drive_id, etag=etag, source=source))
+    db.add(ProcessedItem(
+        drive_item_id=drive_item_id, drive_id=drive_id, etag=etag,
+        filename=filename, source=source,
+    ))
     try:
         if commit:
             await db.commit()

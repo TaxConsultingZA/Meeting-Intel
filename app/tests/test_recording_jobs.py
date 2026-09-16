@@ -104,3 +104,27 @@ class TestRecordingQueue:
         assert queued is False
         db.add.assert_not_called()
         db.commit.assert_not_awaited()
+
+
+async def test_manual_import_queues_a_discovered_recording(monkeypatch):
+    from app.api import recordings
+
+    db = AsyncMock()
+    db.scalar = AsyncMock(side_effect=[MagicMock(), None])
+    monkeypatch.setattr(
+        recordings, "_verify_owned_drive_item",
+        AsyncMock(return_value={"id": "item-1", "name": "test03.mp4"}),
+    )
+    enqueue = AsyncMock(return_value=True)
+    monkeypatch.setattr(recordings, "enqueue_retry_job", enqueue)
+
+    result = await recordings.import_recording(
+        recordings.ImportRequest(drive_item_id="item-1", drive_id="drive-1"),
+        db=db, upn="owner@example.com",
+    )
+
+    assert result == {"ok": True, "queued": True}
+    enqueue.assert_awaited_once_with(
+        db, drive_item_id="item-1", drive_id="drive-1",
+        owner_upn="owner@example.com", source="manual",
+    )

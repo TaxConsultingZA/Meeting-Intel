@@ -19,11 +19,12 @@ async def enqueue_recording_job(
     owner_upn: str,
     source: str,
     etag: str | None = None,
+    filename: str | None = None,
     commit: bool = True,
 ) -> bool:
     """Atomically claim a new Graph item and persist its processing job."""
     claimed = await claim_item(
-        db, drive_item_id, drive_id, etag, source, commit=False
+        db, drive_item_id, drive_id, etag, source, filename=filename, commit=False
     )
     if not claimed:
         return False

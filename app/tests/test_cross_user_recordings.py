@@ -251,6 +251,22 @@ async def test_available_recordings_uses_reconciled_rows_without_graph(ctx):
     ctx.scan.assert_not_awaited()
 
 
+async def test_available_recordings_falls_back_to_persisted_filename(ctx):
+    ctx.requester.graph_drive_id = "drive:requester"
+    ctx.session.add(ProcessedItem(
+        drive_item_id="01LIX265PTELCPYQNCLVGIOIWYN7ZXLGRR",
+        drive_id="drive:requester", filename="test03.mp4", source="reconcile",
+    ))
+    ctx.session.commit()
+
+    result = await recordings.available_recordings(ctx.db, ctx.requester.upn)
+
+    assert len(result) == 1
+    assert result[0]["name"] == "test03.mp4"
+    assert result[0]["meeting_id"] is None
+    assert result[0]["already_imported"] is False
+
+
 async def test_discover_scans_independent_non_requester_owners_concurrently(ctx, monkeypatch):
     active = 0
     maximum = 0

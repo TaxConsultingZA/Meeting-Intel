@@ -284,6 +284,11 @@ export async function getRegisteredUsers(upn: string): Promise<RegisteredUser[]>
   return apiFetch<RegisteredUser[]>("/admin/users", upn);
 }
 
+/** Fetch safe sync diagnostics for one registered user (admin only). */
+export async function getAdminUserSyncStatus(targetUpn: string, token: string): Promise<SyncState[]> {
+  return apiFetch<SyncState[]>(`/admin/users/${encodeURIComponent(targetUpn)}/sync-status`, token);
+}
+
 /** Register a new user (admin only). */
 export async function registerUser(
   upn: string,

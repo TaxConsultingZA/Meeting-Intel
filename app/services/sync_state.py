@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import UserSyncState
+from app.schemas import SyncStateOut
 
 
 def _clean_error(error: object) -> str:
@@ -12,6 +13,22 @@ def _clean_error(error: object) -> str:
     # bounded diagnostic message and never persist access tokens or headers.
     text = str(error).replace("\r", " ").replace("\n", " ").strip()
     return text[:1000] or "Unknown Microsoft Graph error"
+
+
+async def list_sync_status(db: AsyncSession, user_upn: str) -> list[SyncStateOut]:
+    """Return the existing safe sync-status projection for one user."""
+    rows = (await db.scalars(
+        select(UserSyncState)
+        .where(UserSyncState.user_upn == user_upn.strip().lower())
+        .order_by(UserSyncState.source)
+    )).all()
+    return [SyncStateOut(
+        source=row.source,
+        status=row.status,
+        last_attempted_at=row.last_attempted_at.isoformat() if row.last_attempted_at else None,
+        last_succeeded_at=row.last_succeeded_at.isoformat() if row.last_succeeded_at else None,
+        last_error=row.last_error,
+    ) for row in rows]
 
 
 async def record_sync_result(

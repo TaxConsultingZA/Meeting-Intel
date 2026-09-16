@@ -1,6 +1,6 @@
 import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
-import { getMe, getRegisteredUsers, getBusinessUnits, getAdminAccessRequests, getRecordingJobs, getAdminMeetings } from "@/lib/api";
+import { getMe, getAdminAccessRequests } from "@/lib/api";
 import Nav from "@/components/nav";
 import AdminClient from "./admin-client";
 
@@ -15,18 +15,14 @@ export default async function AdminPage() {
   if (!me) redirect("/");          // not registered at all
   if (!me.is_admin) redirect("/"); // registered but not admin
 
-  const [users, businessUnits, processingRequests, jobs, meetings] = await Promise.all([
-    getRegisteredUsers(accessToken).catch(() => []),
-    getBusinessUnits(accessToken).catch(() => []),
-    getAdminAccessRequests(accessToken).catch(() => []),
-    getRecordingJobs(accessToken).catch(() => []),
-    getAdminMeetings(accessToken).catch(() => []),
-  ]);
+  // Access requests are the operational queue and are visible initially. The
+  // three long, collapsed sections fetch their existing data only when opened.
+  const processingRequests = await getAdminAccessRequests(accessToken).catch(() => []);
 
   return (
     <>
       <Nav userEmail={upn} accessToken={accessToken} isAdmin={true} />
-      <AdminClient initialUsers={users} businessUnits={businessUnits} initialRequests={processingRequests} initialJobs={jobs} initialMeetings={meetings} callerUpn={upn} accessToken={accessToken} />
+      <AdminClient initialRequests={processingRequests} callerUpn={upn} accessToken={accessToken} />
     </>
   );
 }

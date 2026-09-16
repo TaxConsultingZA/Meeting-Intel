@@ -5,7 +5,8 @@ import type { AdminAccessRequest } from "@/lib/types";
 import AdminClient from "../admin-client";
 
 vi.mock("@/lib/api", () => ({
-  decideMeetingEditAccess: vi.fn(), decideRecordingProcessing: vi.fn(), getRecordingJobs: vi.fn(),
+  decideMeetingEditAccess: vi.fn(), decideRecordingProcessing: vi.fn(), getAdminMeetings: vi.fn(),
+  getAdminUserSyncStatus: vi.fn(), getBusinessUnits: vi.fn(), getRecordingJobs: vi.fn(), getRegisteredUsers: vi.fn(),
   registerUser: vi.fn(), removeUser: vi.fn(), reprocessRecordingJob: vi.fn(),
   revokeAdminMeetingAccess: vi.fn(), updateUser: vi.fn(),
 }));
@@ -29,8 +30,7 @@ function processing(overrides: Partial<AdminAccessRequest> = {}): AdminAccessReq
 it("confirms and decides only pending processing requests", async () => {
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   vi.mocked(decideRecordingProcessing).mockResolvedValue({} as never);
-  render(<AdminClient initialUsers={[]} businessUnits={[]} initialJobs={[]} initialMeetings={[]}
-    initialRequests={[
+  render(<AdminClient initialRequests={[
       processing(),
       processing({ id: "processed", meeting: "Existing result", can_approve: false }),
       processing({ id: "approved", meeting: "Approved request", status: "approved", can_approve: false }),

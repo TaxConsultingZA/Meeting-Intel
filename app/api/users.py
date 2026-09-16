@@ -10,8 +10,9 @@ from ..config import get_settings
 from ..db import get_db
 from ..email_templates import build_welcome_email
 from ..graph import client as graph
-from ..models import RegisteredUser, RecordingJob, UserSyncState
+from ..models import RegisteredUser, RecordingJob
 from ..services.job_control import public_job_error
+from ..services.sync_state import list_sync_status
 from ..schemas import RegisteredUserOut, SubscriptionOut, SyncStateOut
 from .deps import current_user
 
@@ -84,18 +85,7 @@ async def get_me(db: AsyncSession = Depends(get_db), upn: str = Depends(current_
 async def get_sync_status(
     db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)
 ):
-    rows = (await db.scalars(
-        select(UserSyncState)
-        .where(UserSyncState.user_upn == upn)
-        .order_by(UserSyncState.source)
-    )).all()
-    return [SyncStateOut(
-        source=row.source,
-        status=row.status,
-        last_attempted_at=row.last_attempted_at.isoformat() if row.last_attempted_at else None,
-        last_succeeded_at=row.last_succeeded_at.isoformat() if row.last_succeeded_at else None,
-        last_error=row.last_error,
-    ) for row in rows]
+    return await list_sync_status(db, upn)
 
 
 @router.get("/users/me/photo")

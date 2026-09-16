@@ -1,30 +1,76 @@
 "use client";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import Link from "next/link";
-import { UserPlus, Trash2, Shield, Pencil } from "lucide-react";
-import { decideMeetingEditAccess, decideRecordingProcessing, getRecordingJobs, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
-import type { RegisteredUser, BusinessUnit, RecordingJobOut, AdminAccessRequest, AdminMeetingOut } from "@/lib/types";
+import { UserPlus, Trash2, Shield, Pencil, ChevronDown } from "lucide-react";
+import { decideMeetingEditAccess, decideRecordingProcessing, getAdminMeetings, getAdminUserSyncStatus, getBusinessUnits, getRecordingJobs, getRegisteredUsers, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
+import type { RegisteredUser, BusinessUnit, RecordingJobOut, AdminAccessRequest, AdminMeetingOut, SyncState } from "@/lib/types";
 import { JobControls } from "@/components/recording-jobs";
 import StateBadge from "@/components/state-badge";
 
 interface Props {
-  initialUsers: RegisteredUser[];
-  businessUnits: BusinessUnit[];
   initialRequests: AdminAccessRequest[];
-  initialJobs: RecordingJobOut[];
-  initialMeetings: AdminMeetingOut[];
   callerUpn: string;
   accessToken: string;
 }
 
-export default function AdminClient({ initialUsers, businessUnits, initialRequests, initialJobs, initialMeetings, callerUpn, accessToken }: Props) {
-  const [users, setUsers] = useState<RegisteredUser[]>(initialUsers);
+export default function AdminClient({ initialRequests, callerUpn, accessToken }: Props) {
+  const [users, setUsers] = useState<RegisteredUser[]>([]);
+  const [businessUnits, setBusinessUnits] = useState<BusinessUnit[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editUser, setEditUser] = useState<RegisteredUser | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [jobs, setJobs] = useState(initialJobs);
-  const [meetings, setMeetings] = useState(initialMeetings);
+  const [jobs, setJobs] = useState<RecordingJobOut[]>([]);
+  const [meetings, setMeetings] = useState<AdminMeetingOut[]>([]);
   const [requests, setRequests] = useState(initialRequests);
+  const [loaded, setLoaded] = useState({ meetings: false, jobs: false, users: false });
+  const [loading, setLoading] = useState<string | null>(null);
+  const [syncOpen, setSyncOpen] = useState<string | null>(null);
+  const [syncByUser, setSyncByUser] = useState<Record<string, SyncState[]>>({});
+  const [syncLoading, setSyncLoading] = useState<string | null>(null);
+  const [syncErrors, setSyncErrors] = useState<Record<string, string>>({});
+
+  async function loadSection(section: "meetings" | "jobs" | "users") {
+    if (loaded[section]) return;
+    setLoading(section);
+    setError(null);
+    try {
+      if (section === "meetings") setMeetings(await getAdminMeetings(accessToken));
+      if (section === "jobs") setJobs(await getRecordingJobs(accessToken));
+      if (section === "users") {
+        const [nextUsers, nextUnits] = await Promise.all([
+          getRegisteredUsers(accessToken), getBusinessUnits(accessToken),
+        ]);
+        setUsers(nextUsers);
+        setBusinessUnits(nextUnits);
+      }
+      setLoaded((current) => ({ ...current, [section]: true }));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : `Failed to load ${section}`);
+    } finally {
+      setLoading((current) => current === section ? null : current);
+    }
+  }
+
+  async function toggleSyncDiagnostics(upn: string) {
+    if (syncOpen === upn) {
+      setSyncOpen(null);
+      return;
+    }
+    setSyncOpen(upn);
+    if (syncByUser[upn]) return;
+    setSyncLoading(upn);
+    setSyncErrors((current) => ({ ...current, [upn]: "" }));
+    try {
+      const states = await getAdminUserSyncStatus(upn, accessToken);
+      setSyncByUser((current) => ({ ...current, [upn]: states }));
+    } catch (e: unknown) {
+      setSyncErrors((current) => ({
+        ...current, [upn]: e instanceof Error ? e.message : "Sync diagnostics unavailable",
+      }));
+    } finally {
+      setSyncLoading((current) => current === upn ? null : current);
+    }
+  }
 
   async function handleAccessDecision(request: AdminAccessRequest, approved: boolean) {
     if (!request.meeting_id || !request.requester_upn) return;
@@ -127,33 +173,33 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
 
   return (
     <main className="max-w-5xl mx-auto px-6 py-7">
-      <div className="mb-6 flex items-start justify-between gap-4">
+      <div className="mb-6">
         <div>
-          <h1 className="text-[22px] font-bold text-[#003366]">User Management</h1>
+          <h1 className="text-[22px] font-bold text-[#003366]">Administration</h1>
           <p className="text-[#6b7280] text-[13.5px] mt-0.5">
-            Register colleagues and assign them to their business unit. Only registered users have their meetings processed.
+            Manage meetings, processing, access, and registered users.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowAdd(true)}
-          className="shrink-0 inline-flex items-center gap-2 bg-[#003366] hover:bg-[#0a4a8c] text-white text-[13px] font-semibold px-4 py-2 rounded-md transition-colors"
-        >
-          <UserPlus size={15} /> Register User
-        </button>
       </div>
 
-      <section aria-labelledby="admin-meetings" className="mb-6 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
-        <div className="p-4"><h2 id="admin-meetings" className="font-semibold text-[#003366]">Meetings</h2><p className="text-xs text-[#6b7280]">Operational metadata across users. Meeting content remains restricted.</p></div>
+      <details onToggle={(event) => event.currentTarget.open && void loadSection("meetings")} className="group mb-3 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
+        <SectionHeader id="admin-meetings" label="Meetings" count={loaded.meetings ? meetings.length : undefined} />
+        <div className="px-4 pb-3"><p className="text-xs text-[#6b7280]">Operational metadata and Admin meeting-content access across users.</p></div>
+        {loading === "meetings" && <Loading />}
+        {loaded.meetings && <>
         <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr>{["Meeting", "Organizer / owner", "Recording", "Meeting", "Job", "Request"].map((label) => <th key={label} className="bg-[#003366] text-white px-3 py-2 text-left">{label}</th>)}</tr></thead>
           <tbody>{meetings.map((meeting) => <tr key={meeting.id} className="border-t align-top"><td className="px-3 py-2 font-medium"><Link href={`/meetings/${meeting.id}`} className="text-[#003366] underline-offset-2 hover:underline">{meeting.title ?? "Untitled meeting"}</Link></td><td className="px-3 py-2">{meeting.organizer_upn ?? "Unknown"}{meeting.owner_upn && meeting.owner_upn !== meeting.organizer_upn ? ` / ${meeting.owner_upn}` : ""}<AccessList meeting={meeting} onRevoke={handleRevoke} /></td><td className="px-3 py-2">{meeting.recording_status}</td><td className="px-3 py-2"><StatusText value={meeting.meeting_status} /></td><td className="px-3 py-2">{meeting.job_status ? <StatusText value={meeting.job_status} /> : "—"}</td><td className="px-3 py-2">{meeting.request_status ? <StatusText value={meeting.request_status} /> : "—"}</td></tr>)}</tbody>
         </table></div>
         {meetings.length === 0 && <p className="p-4 text-sm text-[#9ca3af]">No meetings.</p>}
-      </section>
+        </>}
+      </details>
 
-      <section aria-labelledby="admin-jobs" className="mb-6 bg-white rounded-lg border border-[#dde1e8] shadow-sm p-4">
-        <h2 id="admin-jobs" className="font-semibold text-[#003366]">Processing jobs</h2>
+      <details onToggle={(event) => event.currentTarget.open && void loadSection("jobs")} className="group mb-3 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
+        <SectionHeader id="admin-jobs" label="Processing Jobs" count={loaded.jobs ? jobs.length : undefined} />
+        <div className="px-4 pb-4">
         <p className="text-xs text-[#6b7280] mb-3">Jobs across all registered users.</p>
+        {loading === "jobs" && <Loading />}
+        {loaded.jobs && <>
         {jobs.length === 0 && <p className="text-sm text-[#9ca3af]">No processing jobs.</p>}
         {jobs.map((job) => (
           <div key={job.job_id} className="border-t py-3 text-sm space-y-1">
@@ -170,11 +216,14 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
             </div>
           </div>
         ))}
-      </section>
+        </>}
+        </div>
+      </details>
 
-      <section aria-labelledby="admin-requests" className="mb-6 bg-white rounded-lg border border-[#dde1e8] shadow-sm p-4">
-        <h2 id="admin-requests" className="font-semibold text-[#003366]">Access requests</h2>
-        <p className="text-xs text-[#6b7280] mb-3">Processing, view, and edit requests across all users. Admins may approve eligible processing requests; other decisions remain with recording owners and organizers.</p>
+      <details open className="group mb-3 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
+        <SectionHeader id="admin-requests" label="Access Requests" count={requests.length} />
+        <div className="px-4 pb-4">
+        <p className="text-xs text-[#6b7280] mb-3">Processing, view, and edit requests across all users. Admins have full-control authority through the available approval workflows.</p>
         {requests.length === 0 && <p className="text-sm text-[#9ca3af]">No access requests.</p>}
         {requests.map((request) => (
           <div key={request.id} className="border-t py-3 text-sm">
@@ -194,7 +243,8 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
             )}
           </div>
         ))}
-      </section>
+        </div>
+      </details>
 
       {error && (
         <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-[13px] px-4 py-3 rounded-lg">
@@ -202,8 +252,16 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
         </div>
       )}
 
-      {/* Users table */}
-      <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
+      <details onToggle={(event) => event.currentTarget.open && void loadSection("users")} className="group bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
+        <SectionHeader id="admin-users" label="Users" count={loaded.users ? users.length : undefined} />
+        <div className="px-4 pb-3 flex justify-end">
+          <button type="button" onClick={() => setShowAdd(true)} disabled={!loaded.users}
+            className="inline-flex items-center gap-2 bg-[#003366] hover:bg-[#0a4a8c] disabled:opacity-50 text-white text-[13px] font-semibold px-4 py-2 rounded-md transition-colors">
+            <UserPlus size={15} /> Register User
+          </button>
+        </div>
+        {loading === "users" && <Loading />}
+        {loaded.users && <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr>
@@ -223,7 +281,8 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
               </tr>
             )}
             {users.map((u, i) => (
-              <tr key={u.upn} className={`${i % 2 === 1 ? "bg-[#f8fafc]" : ""} hover:bg-blue-50/30 transition-colors`}>
+              <Fragment key={u.upn}>
+              <tr className={`${i % 2 === 1 ? "bg-[#f8fafc]" : ""} hover:bg-blue-50/30 transition-colors`}>
                 <td className="px-4 py-2.5 border border-[#dde1e8]">
                   <div className="font-medium text-[#1a1a2e] text-[13px]">
                     {u.display_name ?? formatUpn(u.upn)}
@@ -252,6 +311,11 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
                 </td>
                 <td className="px-4 py-2.5 border border-[#dde1e8]">
                   <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => void toggleSyncDiagnostics(u.upn)}
+                      aria-expanded={syncOpen === u.upn}
+                      className="text-[11px] font-semibold text-[#003366] hover:underline">
+                      Sync
+                    </button>
                     <button
                       type="button"
                       onClick={() => setEditUser(u)}
@@ -273,10 +337,23 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
                   </div>
                 </td>
               </tr>
+              {syncOpen === u.upn && (
+                <tr>
+                  <td colSpan={6} className="border border-[#dde1e8] bg-slate-50 px-4 py-3">
+                    {syncLoading === u.upn
+                      ? <p role="status" className="text-xs text-[#6b7280]">Loading sync diagnostics…</p>
+                      : syncErrors[u.upn]
+                        ? <p className="text-xs text-red-700">{syncErrors[u.upn]}</p>
+                        : <SyncDiagnostics states={syncByUser[u.upn] ?? []} />}
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             ))}
           </tbody>
         </table>
-      </div>
+        </div>}
+      </details>
 
       {/* Add User dialog */}
       {showAdd && (
@@ -298,6 +375,47 @@ export default function AdminClient({ initialUsers, businessUnits, initialReques
       )}
     </main>
   );
+}
+
+function SectionHeader({ id, label, count }: { id: string; label: string; count?: number }) {
+  return (
+    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+      <h2 id={id} className="text-sm font-semibold text-[#003366]">
+        {label}{count !== undefined && <span className="ml-2 font-normal text-[#6b7280]">({count})</span>}
+      </h2>
+      <ChevronDown size={16} aria-hidden="true" className="text-[#6b7280] transition-transform group-open:rotate-180" />
+    </summary>
+  );
+}
+
+function Loading() {
+  return <p role="status" className="px-4 pb-4 text-sm text-[#6b7280]">Loading…</p>;
+}
+
+function SyncDiagnostics({ states }: { states: SyncState[] }) {
+  const bySource = new Map(states.map((state) => [state.source, state]));
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      {["calendar", "onedrive"].map((source) => {
+        const state = bySource.get(source);
+        return (
+          <div key={source} className="rounded border border-[#dde1e8] bg-white p-3 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-[#003366]">{source === "calendar" ? "Calendar" : "OneDrive"}</span>
+              <StatusText value={state?.status ?? "unavailable"} />
+            </div>
+            <p className="mt-2 text-[#6b7280]">Last success: {formatSyncTime(state?.last_succeeded_at)}</p>
+            <p className="text-[#6b7280]">Last attempt: {formatSyncTime(state?.last_attempted_at)}</p>
+            {state?.last_error && <p className="mt-1 break-words text-red-700">Last error: {state.last_error}</p>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function formatSyncTime(value: string | null | undefined) {
+  return value ? new Date(value).toLocaleString("en-ZA") : "Unavailable";
 }
 
 function StatusText({ value }: { value: string }) {

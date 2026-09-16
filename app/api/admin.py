@@ -4,7 +4,6 @@ All endpoints require the caller to be a registered admin (``is_admin=True``).
 The first admin is bootstrapped via the ``ADMIN_UPNS`` env var at application startup.
 """
 from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +14,8 @@ from ..db import get_db
 from ..email_templates import build_welcome_email
 from ..graph import client as graph
 from ..models import BusinessUnit, Meeting, MeetingParticipant, ProcessedItem, ProcessingState, RecordingJob, RecordingProcessingRequest, RegisteredUser
-from ..schemas import AdminRevokeAccessIn, BusinessUnitOut, RegisteredUserOut, RegisterUserIn, UpdateUserIn
+from ..schemas import AdminRevokeAccessIn, BusinessUnitOut, RegisteredUserOut, RegisterUserIn, SyncStateOut, UpdateUserIn
+from ..services.sync_state import list_sync_status
 from ..utils.identity import normalize_upn
 from .deps import current_user
 
@@ -68,6 +68,18 @@ async def list_users(db: AsyncSession = Depends(get_db), _upn: str = Depends(_re
         .order_by(RegisteredUser.registered_at)
     )).all()
     return [_user_to_out(u) for u in rows]
+
+
+@router.get("/users/{upn}/sync-status", response_model=list[SyncStateOut])
+async def get_user_sync_status(
+    upn: str, db: AsyncSession = Depends(get_db), _admin_upn: str = Depends(_require_admin),
+):
+    """Return another registered user's safe Calendar/OneDrive diagnostics."""
+    target_upn = normalize_upn(upn)
+    exists = await db.scalar(select(RegisteredUser.id).where(RegisteredUser.upn == target_upn))
+    if exists is None:
+        raise HTTPException(404, "User not found")
+    return await list_sync_status(db, target_upn)
 
 
 @router.get("/meetings")

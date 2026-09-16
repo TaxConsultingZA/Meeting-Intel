@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 from ..config import get_settings
 from ..db import get_db
 from ..models import RecordingJob, Meeting, MeetingParticipant, ProcessingState, RegisteredUser
-from ..services.job_control import public_job_error
+from ..services.job_control import RETRYABLE_JOB_STATES, public_job_error
 from ..services.jobs import enqueue_retry_job
 from ..services.reprocessing import (
     MANUAL_REPROCESS_SOURCE,
@@ -106,7 +106,7 @@ async def controlled_job(db, job_id, user):
 @router.post("/recordings/jobs/{job_id}/retry")
 async def retry_job(job_id: UUID, db=Depends(get_db), user: RegisteredUser = Depends(registered_user)):
     job = await controlled_job(db, job_id, user)
-    if job.status not in ("failed", "cancelled"):
+    if job.status not in RETRYABLE_JOB_STATES:
         raise HTTPException(409, "Only failed or cancelled recording jobs can be retried")
     meeting = await db.scalar(select(Meeting).where(Meeting.drive_item_id == job.drive_item_id)
                               .options(selectinload(Meeting.action_items)))

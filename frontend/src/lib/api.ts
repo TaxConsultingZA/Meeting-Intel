@@ -289,6 +289,11 @@ export async function getAdminUserSyncStatus(targetUpn: string, token: string): 
   return apiFetch<SyncState[]>(`/admin/users/${encodeURIComponent(targetUpn)}/sync-status`, token);
 }
 
+/** Remove one eligible terminal operational job record (admin only). */
+export async function cleanupAdminJob(jobId: string, token: string): Promise<void> {
+  await apiFetch<void>(`/admin/jobs/${encodeURIComponent(jobId)}`, token, { method: "DELETE" });
+}
+
 /** Register a new user (admin only). */
 export async function registerUser(
   upn: string,

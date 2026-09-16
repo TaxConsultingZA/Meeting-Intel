@@ -2,6 +2,8 @@
 from sqlalchemy import select
 from ..models import RecordingJob
 
+RETRYABLE_JOB_STATES = frozenset({"failed", "cancelled"})
+
 
 class JobCancelled(Exception):
     pass

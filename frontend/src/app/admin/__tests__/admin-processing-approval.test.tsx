@@ -5,6 +5,7 @@ import type { AdminAccessRequest } from "@/lib/types";
 import AdminClient from "../admin-client";
 
 vi.mock("@/lib/api", () => ({
+  cleanupAdminJob: vi.fn(),
   decideMeetingEditAccess: vi.fn(), decideRecordingProcessing: vi.fn(), getAdminMeetings: vi.fn(),
   getAdminUserSyncStatus: vi.fn(), getBusinessUnits: vi.fn(), getRecordingJobs: vi.fn(), getRegisteredUsers: vi.fn(),
   registerUser: vi.fn(), removeUser: vi.fn(), reprocessRecordingJob: vi.fn(),

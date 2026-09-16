@@ -2,7 +2,7 @@
 import { Fragment, useState } from "react";
 import Link from "next/link";
 import { UserPlus, Trash2, Shield, Pencil, ChevronDown } from "lucide-react";
-import { decideMeetingEditAccess, decideRecordingProcessing, getAdminMeetings, getAdminUserSyncStatus, getBusinessUnits, getRecordingJobs, getRegisteredUsers, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
+import { cleanupAdminJob, decideMeetingEditAccess, decideRecordingProcessing, getAdminMeetings, getAdminUserSyncStatus, getBusinessUnits, getRecordingJobs, getRegisteredUsers, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
 import type { RegisteredUser, BusinessUnit, RecordingJobOut, AdminAccessRequest, AdminMeetingOut, SyncState } from "@/lib/types";
 import { JobControls } from "@/components/recording-jobs";
 import StateBadge from "@/components/state-badge";
@@ -129,6 +129,17 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
     }
   }
 
+  async function handleCleanup(job: RecordingJobOut) {
+    if (!confirm(`Remove this ${job.status} operational job record? Saved meeting content will be kept.`)) return;
+    setError(null);
+    try {
+      await cleanupAdminJob(job.job_id, accessToken);
+      await refreshJobs();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to clean up job record");
+    }
+  }
+
   async function handleAdd(form: AddUserForm) {
     setError(null);
     try {
@@ -213,6 +224,9 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
             <div className="flex gap-3">
               <JobControls job={job} token={accessToken} onChanged={refreshJobs} />
               {job.can_reprocess && <button type="button" onClick={() => handleReprocess(job)} className="text-xs font-semibold text-blue-800">Reprocess</button>}
+              {(job.status === "failed" || job.status === "cancelled") && (
+                <button type="button" onClick={() => void handleCleanup(job)} className="text-xs font-semibold text-red-700">Clean up</button>
+              )}
             </div>
           </div>
         ))}

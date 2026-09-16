@@ -4,7 +4,8 @@ All endpoints require the caller to be a registered admin (``is_admin=True``).
 The first admin is bootstrapped via the ``ADMIN_UPNS`` env var at application startup.
 """
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from uuid import UUID
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,6 +17,7 @@ from ..graph import client as graph
 from ..models import BusinessUnit, Meeting, MeetingParticipant, ProcessedItem, ProcessingState, RecordingJob, RecordingProcessingRequest, RegisteredUser
 from ..schemas import AdminRevokeAccessIn, BusinessUnitOut, RegisteredUserOut, RegisterUserIn, SyncStateOut, UpdateUserIn
 from ..services.sync_state import list_sync_status
+from ..services.job_control import RETRYABLE_JOB_STATES
 from ..utils.identity import normalize_upn
 from .deps import current_user
 
@@ -80,6 +82,28 @@ async def get_user_sync_status(
     if exists is None:
         raise HTTPException(404, "User not found")
     return await list_sync_status(db, target_upn)
+
+
+@router.delete("/jobs/{job_id}", status_code=204)
+async def cleanup_job(
+    job_id: UUID, db: AsyncSession = Depends(get_db), _admin_upn: str = Depends(_require_admin),
+):
+    """Delete only an eligible terminal operational job row, preserving all results."""
+    job = await db.scalar(select(RecordingJob).where(RecordingJob.id == job_id).with_for_update())
+    if job is None:
+        raise HTTPException(404, "Recording job not found")
+    if job.status not in RETRYABLE_JOB_STATES:
+        raise HTTPException(409, "Only failed or cancelled jobs can be cleaned up")
+    linked_request_id = await db.scalar(
+        select(RecordingProcessingRequest.id)
+        .where(RecordingProcessingRequest.job_id == job.id)
+        .limit(1)
+    )
+    if linked_request_id is not None:
+        raise HTTPException(409, "Job history linked to a processing request cannot be cleaned up")
+    await db.delete(job)
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/meetings")

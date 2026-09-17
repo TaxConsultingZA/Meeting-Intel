@@ -7,7 +7,13 @@ import uuid
 
 import pytest
 
-from app.models import ActionItem, Meeting, ProcessingState
+from app.models import (
+    ActionItem,
+    Meeting,
+    MeetingParticipant,
+    ProcessingState,
+    RecordingProcessingRequest,
+)
 from app.pipeline import extract, steps
 from app.pipeline.transcribe import MockTranscriber
 from app.queue import worker
@@ -20,8 +26,23 @@ def pipeline(monkeypatch):
                       attendees_raw=["owner@example.test"], extracted_json={})
     snapshots = []
     db = MagicMock()
-    db.scalar = AsyncMock(side_effect=lambda stmt: meeting if stmt.column_descriptions[0]["entity"] is Meeting else True)
-    db.scalars = AsyncMock(return_value=["owner@example.test"])
+    def scalar_result(stmt):
+        entity = stmt.column_descriptions[0]["entity"]
+        if entity is Meeting:
+            return meeting
+        if entity is RecordingProcessingRequest:
+            return None
+        return True
+
+    db.scalar = AsyncMock(side_effect=scalar_result)
+
+    def scalars_result(stmt):
+        description = stmt.column_descriptions[0]
+        if description["entity"] is MeetingParticipant and description["expr"] is MeetingParticipant:
+            return []
+        return ["owner@example.test"]
+
+    db.scalars = AsyncMock(side_effect=scalars_result)
     db.execute = AsyncMock()
     db.refresh = AsyncMock()
     db.rollback = AsyncMock()

@@ -25,7 +25,8 @@ def clean_meeting(state=ProcessingState.awaiting_review):
         action_items=[], participants=[SimpleNamespace(
             user_upn="owner@example.test", is_organizer=True,
         )],
-        recorded_at=None, error=None, approved_recipients=None, approved_by=None,
+        attendees_raw=["owner@example.test"], recorded_at=None, error=None,
+        approved_recipients=None, approved_by=None,
         approved_at=None, email_delivery_status=None, email_delivery_fingerprint=None,
     )
 

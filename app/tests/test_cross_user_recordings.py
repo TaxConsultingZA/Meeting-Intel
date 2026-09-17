@@ -95,7 +95,7 @@ async def request(ctx):
     return await service.create_request(ctx.db, ctx.requester.upn, ctx.event["id"])
 
 
-async def test_recent_ended_window_and_upcoming_unchanged(ctx, monkeypatch):
+async def test_recent_ended_window_and_upcoming_uses_future_persisted_events(ctx, monkeypatch):
     now = datetime.now(timezone.utc)
     events = []
     for name, offset in [("recent", -1), ("recent_21_days", -24*21), ("old", -24*31), ("ongoing", 1), ("future", 24)]:
@@ -118,24 +118,23 @@ async def test_recent_ended_window_and_upcoming_unchanged(ctx, monkeypatch):
     assert [r["event_id"] for r in recent] == ["recent", "recent_21_days"]
     assert recent[0]["status"] == "ended"
     upcoming = await calendar.upcoming_meetings(7, ctx.db, ctx.requester.upn)
-    assert len(upcoming) == 4  # Existing 30-day-through-future API window is preserved.
+    assert [row["event_id"] for row in upcoming] == ["future"]
     service.graph.get_upcoming_calendar_events.assert_not_awaited()
     assert calendar._event_status(events[3]["start"]["dateTime"], events[3]["end"]["dateTime"]) == "in_progress"
 
 
-async def test_upcoming_falls_back_to_graph_when_sync_cache_is_empty(ctx, monkeypatch):
+async def test_upcoming_does_not_fall_back_to_graph_when_sync_cache_is_empty(ctx, monkeypatch):
     event = deepcopy(ctx.event)
     event["isOnlineMeeting"] = True
     event["start"]["dateTime"] = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
     event["end"]["dateTime"] = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
     get_events = AsyncMock(return_value=[event])
-    monkeypatch.setattr(calendar.graph, "get_upcoming_calendar_events", get_events)
-    monkeypatch.setattr(calendar, "record_sync_result", AsyncMock())
+    monkeypatch.setattr(service.graph, "get_upcoming_calendar_events", get_events)
 
     upcoming = await calendar.upcoming_meetings(7, ctx.db, ctx.requester.upn)
 
-    assert [row["event_id"] for row in upcoming] == [event["id"]]
-    get_events.assert_awaited_once_with(ctx.requester.upn, days=7)
+    assert upcoming == []
+    get_events.assert_not_awaited()
 
 
 async def test_recent_request_uses_durable_state_without_graph_scans(ctx, monkeypatch):

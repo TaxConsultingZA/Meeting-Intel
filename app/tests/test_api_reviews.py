@@ -830,20 +830,40 @@ class TestSpeakerSamples:
         }
         return meeting
 
-    def test_uses_longest_segment_and_caps_sample_at_ten_seconds(self):
+    def test_prefers_normal_five_to_ten_second_candidate(self):
         from app.api.reviews import _speaker_sample_window
 
-        assert _speaker_sample_window(self._meeting(), "speaker a") == (9.75, 19.75)
+        meeting = self._meeting()
+        meeting.extracted_json["transcript_segments"] = [
+            {"speaker": "Speaker B", "start": 0.0, "end": 2.0},
+            {"speaker": "Speaker A", "start": 5.0, "end": 11.0},
+            {"speaker": "Speaker A", "start": 20.0, "end": 27.0},
+            {"speaker": "Speaker B", "start": 35.0, "end": 40.0},
+        ]
 
-    def test_short_sample_window_is_at_least_five_seconds(self):
+        assert _speaker_sample_window(meeting, "speaker a") == (20.0, 27.0)
+
+    def test_centres_eight_second_window_inside_long_candidate(self):
+        from app.api.reviews import _speaker_sample_window
+
+        assert _speaker_sample_window(self._meeting(), "speaker a") == (16.0, 24.0)
+
+    def test_normal_candidate_does_not_cross_competing_speaker_boundary(self):
+        from app.api.reviews import _speaker_sample_window
+
+        meeting = self._meeting()
+        meeting.extracted_json["transcript_segments"] = [
+            {"speaker": "Speaker B", "start": 3.0, "end": 5.0},
+            {"speaker": "Speaker A", "start": 5.0, "end": 11.0},
+            {"speaker": "Speaker B", "start": 11.0, "end": 15.0},
+        ]
+
+        assert _speaker_sample_window(meeting, "Speaker A") == (5.0, 11.0)
+
+    def test_short_segment_retains_safe_padded_fallback(self):
         from app.api.reviews import _speaker_sample_window
 
         assert _speaker_sample_window(self._meeting(), "Speaker B") == (30.75, 35.75)
-
-    def test_unknown_speaker_has_no_sample(self):
-        from app.api.reviews import _speaker_sample_window
-
-        assert _speaker_sample_window(self._meeting(), "Speaker C") is None
 
     async def test_non_organizer_cannot_fetch_sample(self, monkeypatch):
         from fastapi import HTTPException

@@ -339,12 +339,11 @@ def _require_awaiting_review(m: Meeting) -> None:
 
 
 def _speaker_sample_window(m: Meeting, speaker_label: str) -> tuple[float, float] | None:
-    """Pick the longest diarized utterance for a short, representative sample."""
-    matches: list[tuple[float, float]] = []
+    """Pick a clean, representative window from the speaker's diarized segments."""
+    segments: list[tuple[float, float, str]] = []
+    normalized_label = speaker_label.strip().casefold()
     for segment in (m.extracted_json or {}).get("transcript_segments") or []:
         if not isinstance(segment, dict):
-            continue
-        if str(segment.get("speaker") or "").strip().casefold() != speaker_label.strip().casefold():
             continue
         try:
             start = max(0.0, float(segment["start"]))
@@ -352,14 +351,44 @@ def _speaker_sample_window(m: Meeting, speaker_label: str) -> tuple[float, float
         except (KeyError, TypeError, ValueError):
             continue
         if end > start:
-            matches.append((start, end))
+            label = str(segment.get("speaker") or "").strip().casefold()
+            segments.append((start, end, label))
+
+    matches = [(start, end) for start, end, label in segments if label == normalized_label]
     if not matches:
         return None
-    start, end = max(matches, key=lambda pair: pair[1] - pair[0])
-    sample_start = max(0.0, start - 0.25)
-    # Keep previews long enough to identify a voice, but never exceed the
-    # requested ten-second review window.
-    return sample_start, min(max(end + 0.25, sample_start + 5.0), sample_start + 10.0)
+
+    def separation(pair: tuple[float, float]) -> float:
+        start, end = pair
+        before = [other_end for _, other_end, label in segments
+                  if label != normalized_label and other_end <= start]
+        after = [other_start for other_start, _, label in segments
+                 if label != normalized_label and other_start >= end]
+        return min(
+            start - max(before) if before else float("inf"),
+            min(after) - end if after else float("inf"),
+        )
+
+    clean_matches = [pair for pair in matches if 5.0 <= pair[1] - pair[0] <= 10.0]
+    if clean_matches:
+        return max(clean_matches, key=lambda pair: (pair[1] - pair[0], separation(pair)))
+
+    start, end = max(matches, key=lambda pair: (pair[1] - pair[0], separation(pair)))
+    if end - start > 10.0:
+        # Centre the excerpt inside the utterance so neither edge is clipped.
+        sample_start = start + ((end - start) - 8.0) / 2.0
+        return sample_start, sample_start + 8.0
+
+    # Preserve the existing short-utterance padding, bounded by any known
+    # neighbouring speaker so the fallback never deliberately includes them.
+    previous_other = [other_end for _, other_end, label in segments
+                      if label != normalized_label and other_end <= start]
+    next_other = [other_start for other_start, _, label in segments
+                  if label != normalized_label and other_start >= end]
+    lower_bound = max(previous_other) if previous_other else 0.0
+    upper_bound = min(next_other) if next_other else float("inf")
+    sample_start = max(lower_bound, start - 0.25)
+    return sample_start, min(max(end + 0.25, sample_start + 5.0), sample_start + 10.0, upper_bound)
 
 
 async def _build_speaker_sample(

@@ -9,7 +9,7 @@ from ..config import get_settings
 from ..models import Meeting, ActionItem, MeetingParticipant, ProcessingState, RecordingJob, RegisteredUser
 from ..graph import client as graph
 from ..utils.identity import normalize_upn, normalize_upns
-from .transcribe import get_transcriber, TranscriptSegment
+from .transcribe import get_transcriber, normalize_single_person_diarization, TranscriptSegment
 from .extract import get_extractor, require_transcript, validate_extraction
 from ..services.job_control import guarded_commit, JobCancelled, public_job_error
 from ..services.reprocessing import (
@@ -116,12 +116,16 @@ async def _reprocess_completed_recording(
     participant_count = len(meeting.participants or [])
     meeting_id = meeting.id
     recorded_at = meeting.recorded_at
+    known_people = (normalize_upns([*meeting.attendees_raw, meeting.organizer_upn])
+                    if meeting.attendees_raw is not None else None)
     await db.commit()  # Release the read transaction before external processing.
 
     with tempfile.TemporaryDirectory() as tmp:
         video_path = os.path.join(tmp, "rec.mp4")
         await graph.download_drive_item(drive_id, drive_item_id, video_path)
         segments = await get_transcriber().transcribe(video_path)
+        if known_people is not None:
+            segments = normalize_single_person_diarization(segments, known_people)
         require_transcript(segments)
         transcript = "\n".join(f"[{segment.speaker}] {segment.text}" for segment in segments)
         result = validate_extraction(
@@ -420,6 +424,7 @@ async def process_recording(
                 if not (meeting.extracted_json or {}).get("t5_calendar_event"):
                     await _send_processing_started(meeting, all_upns)
                 segments = await get_transcriber().transcribe(video_path)
+                segments = normalize_single_person_diarization(segments, all_attendee_upns)
                 meeting.transcript = "\n".join(f"[{s.speaker}] {s.text}" for s in segments)
                 transcript_segments = [
                     {"speaker": s.speaker, "text": s.text, "start": s.start, "end": s.end}

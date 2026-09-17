@@ -4,7 +4,13 @@ import threading
 from unittest.mock import Mock
 
 import pytest
-from app.pipeline.transcribe import TranscriptSegment, MockTranscriber, get_transcriber, AssemblyAITranscriber
+from app.pipeline.transcribe import (
+    AssemblyAITranscriber,
+    MockTranscriber,
+    TranscriptSegment,
+    get_transcriber,
+    normalize_single_person_diarization,
+)
 from app.services.job_control import JobCancelled
 
 
@@ -15,6 +21,49 @@ class TestTranscriptSegment:
         assert seg.text == "Hello."
         assert seg.start == 0.0
         assert seg.end == 2.5
+
+
+class TestSinglePersonDiarization:
+    def test_single_person_collapses_multiple_provider_labels(self):
+        segments = [
+            TranscriptSegment("Speaker A", "First", 0.0, 1.5),
+            TranscriptSegment("Speaker B", "Second", 1.5, 3.0),
+        ]
+
+        normalized = normalize_single_person_diarization(
+            segments, ["wei.jiuyang@taxconsulting.co.za"]
+        )
+
+        assert [segment.speaker for segment in normalized] == ["Speaker A", "Speaker A"]
+
+    def test_multiple_people_keep_provider_labels(self):
+        segments = [
+            TranscriptSegment("Speaker A", "First", 0.0, 1.5),
+            TranscriptSegment("Speaker B", "Second", 1.5, 3.0),
+        ]
+
+        normalized = normalize_single_person_diarization(
+            segments,
+            ["wei.jiuyang@taxconsulting.co.za", "guest@taxconsulting.co.za"],
+        )
+
+        assert normalized == segments
+        assert [segment.speaker for segment in normalized] == ["Speaker A", "Speaker B"]
+
+    def test_normalization_preserves_segment_timestamps(self):
+        segments = [
+            TranscriptSegment("Speaker A", "First", 2.25, 4.75),
+            TranscriptSegment("Speaker B", "Second", 8.5, 11.125),
+        ]
+
+        normalized = normalize_single_person_diarization(
+            segments, ["wei.jiuyang@taxconsulting.co.za"]
+        )
+
+        assert [(segment.start, segment.end) for segment in normalized] == [
+            (2.25, 4.75),
+            (8.5, 11.125),
+        ]
 
 
 class TestMockTranscriber:

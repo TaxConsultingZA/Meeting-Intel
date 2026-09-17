@@ -2,7 +2,7 @@ import asyncio
 import time
 import threading
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import httpx
 
@@ -35,6 +35,19 @@ class Transcriber(ABC):
     async def transcribe(self, audio_path: str) -> list[TranscriptSegment]:
         """Transcribe the audio file at *audio_path* and return diarized segments."""
         ...
+
+
+def normalize_single_person_diarization(
+    segments: list[TranscriptSegment], known_people: list[str]
+) -> list[TranscriptSegment]:
+    """Collapse provider over-segmentation only for a confirmed single person."""
+    people = {person.strip().casefold() for person in known_people if person and person.strip()}
+    speakers = {segment.speaker for segment in segments}
+    if len(people) != 1 or len(speakers) <= 1:
+        return segments
+
+    speaker = segments[0].speaker
+    return [replace(segment, speaker=speaker) for segment in segments]
 
 
 class MockTranscriber(Transcriber):

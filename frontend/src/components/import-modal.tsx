@@ -44,6 +44,8 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const jobsInFlight = useRef<Promise<RecordingJobOut[]> | null>(null);
+  const actionInFlight = useRef(new Set<string>());
+  const refreshInFlight = useRef(false);
 
   const loadJobs = useCallback(() => {
     if (jobsInFlight.current) return jobsInFlight.current;
@@ -55,6 +57,8 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
   }, [upn]);
 
   const load = useCallback(async () => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
     setRefreshing(true);
     setError(null);
     try {
@@ -64,6 +68,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load recordings");
     } finally {
+      refreshInFlight.current = false;
       setRefreshing(false);
     }
   }, [loadJobs, upn]);
@@ -95,6 +100,8 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
   }, [hasActiveJobs, refreshJobs]);
 
   async function handleImport(rec: AvailableRecording) {
+    if (actionInFlight.current.has(rec.drive_item_id)) return;
+    actionInFlight.current.add(rec.drive_item_id);
     setBusy((prev) => new Set(prev).add(rec.drive_item_id));
     try {
       await importRecording(rec.drive_item_id, rec.drive_id, upn);
@@ -103,12 +110,15 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Import failed");
     } finally {
+      actionInFlight.current.delete(rec.drive_item_id);
       setBusy((prev) => { const s = new Set(prev); s.delete(rec.drive_item_id); return s; });
     }
   }
 
   async function handleReprocess(rec: AvailableRecording) {
+    if (actionInFlight.current.has(rec.drive_item_id)) return;
     if (!window.confirm("Reprocess this recording? The current review draft will remain available unless the new transcription and extraction finish successfully.")) return;
+    actionInFlight.current.add(rec.drive_item_id);
     setBusy((prev) => new Set(prev).add(rec.drive_item_id));
     try {
       await reprocessRecording(rec.drive_item_id, rec.drive_id, upn);
@@ -117,6 +127,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Reprocess failed");
     } finally {
+      actionInFlight.current.delete(rec.drive_item_id);
       setBusy((prev) => { const s = new Set(prev); s.delete(rec.drive_item_id); return s; });
     }
   }
@@ -127,21 +138,21 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
 
     if (isBusy) {
       return (
-        <span className="inline-flex items-center gap-1.5 text-[#6b7280] text-[12.5px]">
-          <Loader2 size={13} className="animate-spin" /> Working…
+        <span role="status" className="inline-flex items-center gap-1.5 text-[#6b7280] text-[12.5px]">
+          <Loader2 size={13} className="animate-spin" /> Processing…
         </span>
       );
     }
 
     if (rec.job) {
-      return <div className="flex items-center justify-end gap-3">
+      return <div className="flex items-center justify-end gap-2.5">
         <JobControls job={rec.job} token={upn} onChanged={refreshJobs} />
         {rec.job.can_reprocess && <button
           type="button"
           onClick={() => handleReprocess(rec)}
-          className="text-xs font-semibold text-blue-800"
+          className="inline-flex h-8 items-center rounded-md px-2 text-xs font-semibold text-blue-800 hover:bg-blue-50"
         >Reprocess</button>}
-        {rec.job.meeting_id && <Link href={`/meetings/${rec.job.meeting_id}`} onClick={onClose} className="text-xs text-blue-800 underline">View</Link>}
+        {rec.job.meeting_id && <Link href={`/meetings/${rec.job.meeting_id}`} onClick={onClose} className="inline-flex h-8 items-center rounded-md px-2 text-xs font-semibold text-blue-800 hover:bg-blue-50">View</Link>}
       </div>;
     }
 
@@ -150,7 +161,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
         <button
           type="button"
           onClick={() => handleImport(rec)}
-          className="inline-flex items-center gap-1.5 bg-[#003366] hover:bg-[#0a4a8c] text-white text-[12.5px] font-semibold px-3 py-1.5 rounded transition-colors"
+          className="inline-flex h-8 items-center gap-1.5 rounded bg-[#003366] px-3 text-[12.5px] font-semibold text-white transition-colors hover:bg-[#0a4a8c]"
         >
           <Download size={13} /> Transcribe
         </button>
@@ -190,7 +201,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
         role="dialog"
         aria-modal="true"
         aria-labelledby="import-recording-title"
-        className="bg-white rounded-lg shadow-xl w-full max-w-5xl overflow-hidden"
+        className="w-full max-w-5xl overflow-hidden rounded-lg bg-white shadow-xl"
       >
         <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-6 py-5 flex items-center justify-between">
           <div>
@@ -252,7 +263,11 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
           )}
 
           {hasLoaded && recordings.length > 0 && (
-            <table className="w-full min-w-[850px] text-sm">
+            <table className="w-full min-w-[920px] table-fixed text-sm">
+              <colgroup>
+                <col className="w-[28%]" /><col className="w-[15%]" /><col className="w-[8%]" />
+                <col className="w-[13%]" /><col className="w-[13%]" /><col className="w-[23%]" />
+              </colgroup>
               <thead>
                 <tr>
                   {TABLE_HEADERS.map((h) => (
@@ -308,10 +323,10 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
             The transcript and AI notes will appear for organiser review once processing finishes.
           </p>
           <div className="flex items-center gap-4">
-            <button type="button" onClick={() => void load()} disabled={refreshing} className="text-[13px] font-medium text-[#003366] hover:underline disabled:opacity-50">
-              {refreshing ? "Refreshing…" : "Refresh"}
+            <button type="button" onClick={() => void load()} disabled={refreshing} className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-[13px] font-semibold text-[#003366] hover:bg-[#eaf0f6] disabled:cursor-not-allowed disabled:opacity-50">
+              {refreshing && <Loader2 size={13} className="animate-spin" />}{refreshing ? "Refreshing…" : "Refresh"}
             </button>
-            <button type="button" onClick={onClose} className="text-[13px] font-medium text-[#003366] hover:underline">
+            <button type="button" onClick={onClose} className="inline-flex h-8 items-center rounded-md px-2 text-[13px] font-semibold text-[#003366] hover:bg-[#eaf0f6]">
               Close
             </button>
           </div>

@@ -1,7 +1,7 @@
 "use client";
-import { Fragment, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import Link from "next/link";
-import { UserPlus, Trash2, Shield, Pencil, ChevronDown } from "lucide-react";
+import { UserPlus, Trash2, Shield, Pencil, ChevronDown, Loader2 } from "lucide-react";
 import { cleanupAdminJob, decideMeetingEditAccess, decideRecordingProcessing, getAdminMeetings, getAdminUserSyncStatus, getBusinessUnits, getRecordingJobs, getRegisteredUsers, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
 import type { RegisteredUser, BusinessUnit, RecordingJobOut, AdminAccessRequest, AdminMeetingOut, SyncState } from "@/lib/types";
 import { JobControls } from "@/components/recording-jobs";
@@ -28,6 +28,8 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
   const [syncByUser, setSyncByUser] = useState<Record<string, SyncState[]>>({});
   const [syncLoading, setSyncLoading] = useState<string | null>(null);
   const [syncErrors, setSyncErrors] = useState<Record<string, string>>({});
+  const [busyJob, setBusyJob] = useState<{ id: string; action: "reprocess" | "cleanup" } | null>(null);
+  const jobsInFlight = useRef(new Set<string>());
 
   async function loadSection(section: "meetings" | "jobs" | "users") {
     if (loaded[section]) return;
@@ -120,23 +122,35 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
   }
 
   async function handleReprocess(job: RecordingJobOut) {
+    if (jobsInFlight.current.has(job.job_id)) return;
+    jobsInFlight.current.add(job.job_id);
+    setBusyJob({ id: job.job_id, action: "reprocess" });
     setError(null);
     try {
       await reprocessRecordingJob(job.job_id, accessToken);
       await refreshJobs();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to reprocess recording");
+    } finally {
+      jobsInFlight.current.delete(job.job_id);
+      setBusyJob((current) => current?.id === job.job_id ? null : current);
     }
   }
 
   async function handleCleanup(job: RecordingJobOut) {
+    if (jobsInFlight.current.has(job.job_id)) return;
     if (!confirm(`Remove this ${job.status} operational job record? Saved meeting content will be kept.`)) return;
+    jobsInFlight.current.add(job.job_id);
+    setBusyJob({ id: job.job_id, action: "cleanup" });
     setError(null);
     try {
       await cleanupAdminJob(job.job_id, accessToken);
       await refreshJobs();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to clean up job record");
+    } finally {
+      jobsInFlight.current.delete(job.job_id);
+      setBusyJob((current) => current?.id === job.job_id ? null : current);
     }
   }
 
@@ -221,11 +235,11 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
             <p className="text-xs text-[#6b7280]">Owner: {job.owner_upn ?? "Unknown"}</p>
             {job.is_stuck && <p className="text-xs font-semibold text-amber-800">Worker lease appears stuck.</p>}
             {job.error && <p className="text-xs text-red-700">{job.error}</p>}
-            <div className="flex gap-3">
+            <div className="flex items-center gap-3">
               <JobControls job={job} token={accessToken} onChanged={refreshJobs} />
-              {job.can_reprocess && <button type="button" onClick={() => handleReprocess(job)} className="text-xs font-semibold text-blue-800">Reprocess</button>}
+              {job.can_reprocess && <button type="button" disabled={busyJob?.id === job.job_id} onClick={() => handleReprocess(job)} className="inline-flex items-center gap-1 text-xs font-semibold text-blue-800 disabled:cursor-not-allowed disabled:opacity-50">{busyJob?.id === job.job_id && busyJob.action === "reprocess" && <Loader2 size={12} className="animate-spin" />}{busyJob?.id === job.job_id && busyJob.action === "reprocess" ? "Reprocessing…" : "Reprocess"}</button>}
               {(job.status === "failed" || job.status === "cancelled") && (
-                <button type="button" onClick={() => void handleCleanup(job)} className="text-xs font-semibold text-red-700">Clean up</button>
+                <button type="button" disabled={busyJob?.id === job.job_id} onClick={() => void handleCleanup(job)} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 disabled:cursor-not-allowed disabled:opacity-50">{busyJob?.id === job.job_id && busyJob.action === "cleanup" && <Loader2 size={12} className="animate-spin" />}{busyJob?.id === job.job_id && busyJob.action === "cleanup" ? "Cleaning up…" : "Clean up"}</button>
               )}
             </div>
           </div>

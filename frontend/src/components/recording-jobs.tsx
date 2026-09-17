@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { cancelRecordingJob, getRecordingJobs, retryRecordingJob } from "@/lib/api";
@@ -8,19 +9,21 @@ import StateBadge from "./state-badge";
 
 export function JobControls({ job, token, onChanged }: { job: RecordingJobOut; token: string; onChanged: () => void | Promise<void> }) {
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   async function act(action: "retry" | "cancel") {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     try {
       const result = await (action === "retry" ? retryRecordingJob : cancelRecordingJob)(job.job_id, token);
       toast.success(result.status === "cancel_requested" ? "Cancellation requested; waiting for the current operation to stop." : action === "retry" ? "Recording queued for retry." : "Recording cancelled.");
       await onChanged();
     } catch (error) { toast.error(error instanceof Error ? error.message : "Recording operation failed"); }
-    finally { setBusy(false); }
+    finally { busyRef.current = false; setBusy(false); }
   }
-  return <div className="flex gap-3 text-xs font-semibold">
-    {job.can_retry && <button disabled={busy} onClick={() => act("retry")} className="text-blue-800 disabled:opacity-50">Retry</button>}
-    {job.can_cancel && <button disabled={busy} onClick={() => act("cancel")} className="text-red-700 disabled:opacity-50">Cancel</button>}
-    {busy && <span role="status">Working…</span>}
+  return <div className="flex items-center gap-3 text-xs font-semibold">
+    {job.can_retry && <button disabled={busy} onClick={() => act("retry")} className="inline-flex items-center gap-1 text-blue-800 disabled:cursor-not-allowed disabled:opacity-50">{busy && <Loader2 size={12} className="animate-spin" />} {busy ? "Retrying…" : "Retry"}</button>}
+    {job.can_cancel && <button disabled={busy} onClick={() => act("cancel")} className="inline-flex items-center gap-1 text-red-700 disabled:cursor-not-allowed disabled:opacity-50">{busy && !job.can_retry && <Loader2 size={12} className="animate-spin" />} {busy ? "Working…" : "Cancel"}</button>}
   </div>;
 }
 

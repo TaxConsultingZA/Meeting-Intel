@@ -58,6 +58,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [transcriptDraft, setTranscriptDraft] = useState(initial.transcript ?? "");
   const [editingTranscript, setEditingTranscript] = useState(false);
   const [speakerMappings, setSpeakerMappings] = useState<Record<string, string | null>>(initial.speaker_mappings ?? {});
+  const [savingSpeakerMappings, setSavingSpeakerMappings] = useState(false);
   const [savingAccess, setSavingAccess] = useState(false);
   const [sendingSelfCopy, setSendingSelfCopy] = useState(false);
   const pollingInFlight = useRef(false);
@@ -70,6 +71,9 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const canEdit = isReviewable && (meeting.can_edit || isOrganizer);
   const speakerLabels = Array.from(
     new Set(Array.from((meeting.transcript ?? "").matchAll(/\[(Speaker [^\]]+)\]/gi), (match) => match[1])),
+  );
+  const speakerMappingsChanged = speakerLabels.some(
+    (label) => (speakerMappings[label] ?? null) !== (meeting.speaker_mappings[label] ?? null),
   );
   const isProcessing = (["queued", "downloading", "transcribing", "extracting"] as ProcessingState[]).includes(meeting.state);
   const canSendSelfCopy = !isOrganizer
@@ -179,12 +183,16 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   }
 
   async function handleSaveSpeakerMappings() {
+    if (savingSpeakerMappings || !speakerMappingsChanged) return;
+    setSavingSpeakerMappings(true);
     try {
       await saveSpeakerMappings(meeting.id, speakerMappings, accessToken);
       setMeeting((current) => ({ ...current, speaker_mappings: speakerMappings }));
       toast.success("Speaker names saved.");
     } catch (e) {
       toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSavingSpeakerMappings(false);
     }
   }
 
@@ -401,30 +409,42 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
 
           {speakerLabels.length > 0 && (
             <Section title="Speaker Names" hint={canEdit ? "Match each detected voice to an Outlook attendee" : "Speaker names can be changed by approved editors"}>
-              <div className="space-y-3">
+              <div className="space-y-3.5">
                 {speakerLabels.map((label) => (
-                  <div key={label} className="grid items-center gap-2 sm:grid-cols-[180px_auto_1fr]">
-                    <span className="text-[13px] font-semibold text-[#003366]">{label}</span>
-                    {canApprove && (meeting.speaker_sample_labels ?? []).includes(label) && (
+                  <div key={label} className="grid items-center gap-2.5 rounded-md border border-[#edf0f4] bg-[#fafbfc] px-3 py-2.5 sm:grid-cols-[minmax(120px,180px)_120px_minmax(220px,1fr)]">
+                    <span className="truncate text-[13px] font-semibold text-[#003366]" title={label}>{label}</span>
+                    <div className="flex min-h-9 items-center">
+                      {canApprove && (meeting.speaker_sample_labels ?? []).includes(label) && (
                       <SpeakerSampleButton
                         meetingId={meeting.id}
                         speakerLabel={label}
                         accessToken={accessToken}
                       />
-                    )}
+                      )}
+                    </div>
                     <select
                       aria-label={`Name for ${label}`}
                       disabled={!canEdit}
                       value={speakerMappings[label] ?? ""}
                       onChange={(event) => setSpeakerMappings((current) => ({ ...current, [label]: event.target.value || null }))}
-                      className="rounded-md border border-[#dde1e8] bg-white px-3 py-2 text-sm disabled:bg-[#f3f4f6]"
+                      className="h-9 min-w-0 rounded-md border border-[#cfd6df] bg-white px-3 text-sm text-[#1a1a2e] disabled:bg-[#f3f4f6] disabled:text-[#6b7280]"
                     >
                       <option value="">Unknown / Guest</option>
                       {meeting.speaker_candidates.map((candidate) => <option key={candidate} value={candidate}>{candidate}</option>)}
                     </select>
                   </div>
                 ))}
-                {canEdit && <button onClick={handleSaveSpeakerMappings} className="rounded-md bg-[#003366] px-4 py-2 text-sm font-semibold text-white">Save speaker names</button>}
+                {canEdit && <div className="flex justify-end pt-0.5">
+                  <button
+                    type="button"
+                    onClick={handleSaveSpeakerMappings}
+                    disabled={!speakerMappingsChanged || savingSpeakerMappings}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[#003366] px-4 text-sm font-semibold text-white transition-colors hover:bg-[#0a4a8c] disabled:cursor-not-allowed disabled:bg-[#aeb9c5]"
+                  >
+                    {savingSpeakerMappings && <Loader2 size={14} className="animate-spin" />}
+                    {savingSpeakerMappings ? "Saving…" : "Save speaker names"}
+                  </button>
+                </div>}
               </div>
             </Section>
           )}
@@ -576,6 +596,7 @@ function SpeakerSampleButton({
   const objectUrlRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
+  const loadingRef = useRef(false);
 
   useEffect(() => () => {
     audioRef.current?.pause();
@@ -583,6 +604,7 @@ function SpeakerSampleButton({
   }, []);
 
   async function togglePlayback() {
+    if (loadingRef.current) return;
     if (audioRef.current) {
       if (playing) {
         audioRef.current.pause();
@@ -594,6 +616,7 @@ function SpeakerSampleButton({
       return;
     }
 
+    loadingRef.current = true;
     setLoading(true);
     try {
       const blob = await getSpeakerSample(meetingId, speakerLabel, accessToken);
@@ -607,6 +630,7 @@ function SpeakerSampleButton({
     } catch (error) {
       toast.error(`Audio sample failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
+      loadingRef.current = false;
       setLoading(false);
     }
   }
@@ -620,7 +644,7 @@ function SpeakerSampleButton({
       className="inline-flex items-center gap-1.5 rounded-md border border-[#b8c7d9] bg-white px-2.5 py-2 text-xs font-semibold text-[#003366] hover:bg-[#f4f7fa] disabled:opacity-60"
     >
       {loading ? <Loader2 size={13} className="animate-spin" /> : playing ? <Pause size={13} /> : <Play size={13} />}
-      {loading ? "Loading…" : playing ? "Pause" : "Play sample"}
+      {loading ? "Loading…" : playing ? "Playing" : "Play sample"}
     </button>
   );
 }

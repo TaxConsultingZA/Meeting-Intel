@@ -67,6 +67,10 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const [showImport, setShowImport] = useState(false);
   const [availableRecordings, setAvailableRecordings] = useState<AvailableRecording[] | null>(null);
   const [historical, setHistorical] = useState<MeetingOut[]>(initialHistorical);
+  const [historicalLoading, setHistoricalLoading] = useState(false);
+  const [historicalError, setHistoricalError] = useState("");
+  const historicalLoaded = useRef(initialHistorical.length > 0);
+  const historicalLoadInFlight = useRef(false);
   const [upcoming, setUpcoming] = useState<CalendarEvent[]>(initialUpcoming);
   const [syncStates, setSyncStates] = useState<SyncState[]>(initialSyncStates);
   const [loadErrors, setLoadErrors] = useState(initialLoadErrors);
@@ -95,7 +99,6 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
     const requests = [
       load(getAllMeetings(accessToken), "Meeting records could not be loaded", setMeetings),
-      load(getHistoricalMeetings(accessToken), "Historical meetings could not be loaded", setHistorical),
       load(getSyncStatus(accessToken), "Sync status could not be loaded", setSyncStates),
       load(getRecordingJobs(accessToken), "Recording processing status could not be loaded", setRecordingJobs),
     ];
@@ -150,6 +153,21 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
   function selectTab(nextTab: Tab) {
     if (nextTab === "recent") setHasOpenedRecent(true);
+    if (nextTab === "old_meetings" && !historicalLoaded.current && !historicalLoadInFlight.current) {
+      historicalLoadInFlight.current = true;
+      setHistoricalLoading(true);
+      setHistoricalError("");
+      void getHistoricalMeetings(accessToken)
+        .then((data) => {
+          setHistorical(data);
+          historicalLoaded.current = true;
+        })
+        .catch(() => setHistoricalError("Historical meetings could not be loaded."))
+        .finally(() => {
+          historicalLoadInFlight.current = false;
+          setHistoricalLoading(false);
+        });
+    }
     setTab(nextTab);
   }
 
@@ -414,7 +432,10 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
       {/* Old Meetings */}
       {tab === "old_meetings" && (
-        oldMeetings.length === 0
+        <>
+          {historicalLoading && <p role="status" className="mb-3 rounded-md bg-blue-50 p-3 text-sm text-[#003366]">Loading historical meetings…</p>}
+          {historicalError && <p role="alert" className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{historicalError}</p>}
+          {oldMeetings.length === 0
           ? <EmptyState icon="📂" title="No completed meetings yet" sub="Approved and sent meetings will appear here." />
           : <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
               <table className="w-full text-sm">
@@ -469,7 +490,8 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
                   ))}
                 </tbody>
               </table>
-            </div>
+            </div>}
+        </>
       )}
 
       {/* Cancelled */}

@@ -122,10 +122,34 @@ it("renders the dashboard frame while slow dashboard data loads asynchronously",
   expect(screen.getByRole("heading", { name: "Meeting Intelligence" })).toBeInTheDocument();
   expect(screen.getByRole("status")).toHaveTextContent("Loading dashboard data");
   expect(getUpcomingMeetings).toHaveBeenCalledWith("offline-test-token");
+  expect(getHistoricalMeetings).not.toHaveBeenCalled();
 
   finishUpcoming([calendarEvent({ subject: "Loaded later" })]);
   expect(await screen.findByText("Loaded later")).toBeInTheDocument();
   await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+});
+
+it("loads historical meetings once when Old Meetings is first opened and preserves their rendering", async () => {
+  const historical = processedMeeting({ id: "historical-1", title: "Historical client meeting", state: "sent", recorded_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() });
+  vi.mocked(getHistoricalMeetings).mockResolvedValue([historical]);
+  vi.mocked(getRecentMeetings).mockResolvedValue([]);
+
+  render(<DashboardClient meetings={[]} recordingJobs={[]} upcoming={[]} historical={[]}
+    upn="reviewer@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} />);
+
+  expect(getHistoricalMeetings).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByRole("button", { name: "Old Meetings" }));
+  expect(getHistoricalMeetings).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("status")).toHaveTextContent("Loading historical meetings");
+  await waitFor(() => expect(screen.queryByText("Loading historical meetings…")).not.toBeInTheDocument());
+
+  fireEvent.click(screen.getByRole("button", { name: "Meetings" }));
+  expect(await screen.findByText("Historical client meeting")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Old Meetings" }));
+  expect(getHistoricalMeetings).toHaveBeenCalledTimes(1);
 });
 
 it("keeps the dashboard stats, meeting tabs and import entry without the persistent job panel", () => {

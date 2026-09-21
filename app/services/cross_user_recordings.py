@@ -12,6 +12,7 @@ from app.graph import client as graph
 from app.models import (RegisteredUser, Meeting, MeetingParticipant, ProcessedItem,
                         RecordingJob, RecordingProcessingRequest, ProcessingState)
 from app.services.jobs import enqueue_recording_job, ACTIVE_JOB_STATUSES
+from app.services.access import NO_VIEW_ACCESS_TYPES, has_view_access
 from app.services.meeting_matching import clean_recording_title, recording_datetime, match_calendar_event, event_people
 from app.utils.timezones import parse_graph_datetime, utc_iso
 
@@ -206,7 +207,9 @@ async def user_by_upn(db, upn, *, lock=False):
 
 async def visible_result(db, upn, event):
     meetings = list(await db.scalars(select(Meeting).join(MeetingParticipant).where(
-        MeetingParticipant.user_upn == upn, Meeting.state.in_(DONE))))
+        MeetingParticipant.user_upn == upn,
+        MeetingParticipant.access_type.notin_(NO_VIEW_ACCESS_TYPES),
+        Meeting.state.in_(DONE))))
     matches = []
     for meeting in meetings:
         meta = meeting.extracted_json or {}
@@ -287,6 +290,7 @@ async def recent_states(db, requester, events):
         )
     )).all()
     visible_by_key = {}
+    restricted_by_key = {}
     for event in events:
         matches = []
         for meeting, participant in meeting_rows:
@@ -299,6 +303,9 @@ async def recent_states(db, requester, events):
                 and (meeting.organizer_upn or "").lower() == organizer(event)
             )
             if bound or legacy:
+                if not has_view_access(participant):
+                    restricted_by_key.setdefault(occurrence_key(event), (meeting, participant))
+                    continue
                 matches.append((meeting, participant))
         if len(matches) == 1:
             visible_by_key[occurrence_key(event)] = matches[0]
@@ -352,6 +359,34 @@ async def recent_states(db, requester, events):
                 "can_request_edit_access": bool(
                     is_attendee
                     and not is_privileged
+                    and participant.edit_access_status in {"none", "denied"}
+                ),
+                "pending_access_type": pending_access_type,
+            }
+            continue
+        restricted = restricted_by_key.get(key)
+        if restricted:
+            meeting, participant = restricted
+            is_privileged = bool(
+                requester.is_admin
+                or participant.is_organizer
+                or (meeting.organizer_upn or "").lower() == requester.upn
+            )
+            is_attendee = (
+                participant.access_type in {"participant", "historical"}
+                or requester.upn in people({"attendees": meeting.attendees_raw or []})
+            )
+            pending_access_type = None
+            if participant.edit_access_status == "pending":
+                pending_access_type = "view" if participant.access_type == "request_view" else "edit"
+            result[key] = {
+                "action": "request_pending" if pending_access_type else "request_access",
+                "meeting_id": str(meeting.id),
+                "can_request_view_access": bool(
+                    is_attendee and not is_privileged and not pending_access_type
+                ),
+                "can_request_edit_access": bool(
+                    is_attendee and not is_privileged
                     and participant.edit_access_status in {"none", "denied"}
                 ),
                 "pending_access_type": pending_access_type,

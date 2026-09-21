@@ -26,16 +26,16 @@ from ..graph import client as graph
 from ..email_templates import build_meeting_email
 from ..utils.identity import normalize_upn, normalize_upns
 from ..services.job_control import public_job_error
+from ..services.access import NO_VIEW_ACCESS_TYPES, has_view_access
 from .deps import current_user, require_registered  # noqa: F401 — re-exported; tests may import from here
 
 settings = get_settings()
 router = APIRouter()
 PENDING_ACCESS_TYPES = {"request_view", "request_edit"}
-NO_VIEW_ACCESS_TYPES = PENDING_ACCESS_TYPES | {"revoked"}
 
 
 def _has_view_access(participant: MeetingParticipant) -> bool:
-    return participant.access_type not in NO_VIEW_ACCESS_TYPES
+    return has_view_access(participant)
 
 
 def is_local_test_meeting(meeting) -> bool:
@@ -459,6 +459,7 @@ async def pending(db: AsyncSession = Depends(get_db), upn: str = Depends(current
         .where(
             Meeting.state == ProcessingState.awaiting_review,
             func.lower(MeetingParticipant.user_upn) == upn,
+            MeetingParticipant.access_type.notin_(NO_VIEW_ACCESS_TYPES),
             or_(
                 MeetingParticipant.is_organizer.is_(True),
                 func.lower(Meeting.organizer_upn) == upn,

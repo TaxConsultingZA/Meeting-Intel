@@ -168,12 +168,12 @@ async def test_recent_request_uses_durable_state_without_graph_scans(ctx, monkey
     [
         ("revoked", "denied", False, False, ("request_access", True, True, None)),
         ("request_view", "denied", False, False, ("request_access", True, True, None)),
-        ("request_view", "pending", False, False, ("request_access", False, False, "view")),
+        ("request_view", "pending", False, False, ("request_pending", False, False, "view")),
         ("historical", "none", False, False, ("view", False, True, None)),
         ("historical", "pending", False, False, ("view", False, False, "edit")),
-        ("revoked", "approved", False, False, ("view", False, False, None)),
-        ("revoked", "denied", True, False, ("view", False, False, None)),
-        ("revoked", "denied", False, True, ("view", False, False, None)),
+        ("revoked", "approved", False, False, ("request_access", True, False, None)),
+        ("revoked", "denied", True, False, ("request_access", False, False, None)),
+        ("revoked", "denied", False, True, ("request_access", False, False, None)),
     ],
 )
 async def test_recent_card_uses_effective_meeting_access(

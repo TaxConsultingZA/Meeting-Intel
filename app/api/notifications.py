@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_db
 from ..models import Meeting, MeetingParticipant, ProcessingState
+from ..services.access import NO_VIEW_ACCESS_TYPES
 from .reviews import current_user
 
 router = APIRouter()
@@ -33,7 +34,10 @@ async def get_notifications(
     rows = await db.scalars(
         select(Meeting)
         .join(MeetingParticipant)
-        .where(MeetingParticipant.user_upn == upn)
+        .where(
+            func.lower(MeetingParticipant.user_upn) == upn,
+            MeetingParticipant.access_type.notin_(NO_VIEW_ACCESS_TYPES),
+        )
         .order_by(Meeting.created_at.desc())
         .limit(30)
     )

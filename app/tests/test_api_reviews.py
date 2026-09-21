@@ -85,15 +85,47 @@ class TestAllMeetingsEndpoint:
         ) == []
 
         statement = db.scalars.await_args.args[0]
-        sql = str(statement.compile(dialect=postgresql.dialect()))
-        assert "JOIN meeting_participants" in sql
+        sql = str(statement.compile(dialect=postgresql.dialect())).lower()
+        assert "join meeting_participants" in sql
         assert "lower(meeting_participants.user_upn)" in sql
         assert "meetings.transcript" not in sql
         assert "meetings.summary" not in sql
         assert "meetings.extracted_json" not in sql
         assert "meetings.drive_item_id" not in sql
         assert "meetings.email_delivery_error" not in sql
+        assert "meeting_participants.access_type" in sql
+        assert "not in" in sql
         assert len(statement._with_options) == 2
+
+    async def test_removed_user_cannot_use_a_stale_participant_row(self):
+        from fastapi import HTTPException
+        from app.api import reviews
+
+        meeting = SimpleNamespace(participants=[SimpleNamespace(
+            user_upn="removed@taxconsulting.co.za", access_type="revoked"
+        )])
+        db = AsyncMock()
+        db.scalar = AsyncMock(return_value=meeting)
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews._authorize(
+                db, "meeting-1", "removed@taxconsulting.co.za"
+            )
+        assert exc.value.status_code == 403
+
+    async def test_pending_query_excludes_non_view_participant_rows(self):
+        from sqlalchemy.dialects import postgresql
+        from app.api import reviews
+
+        db = AsyncMock()
+        db.scalars.return_value = MagicMock(
+            unique=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+
+        assert await reviews.pending(db=db, upn="owner@taxconsulting.co.za") == []
+        sql = str(db.scalars.await_args.args[0].compile(dialect=postgresql.dialect())).lower()
+        assert "meeting_participants.access_type" in sql
+        assert "not in" in sql
 
     def test_list_output_keeps_contract_without_detail_payload(self):
         from app.api.reviews import _to_list_out

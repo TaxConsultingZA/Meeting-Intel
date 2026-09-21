@@ -27,9 +27,28 @@ def db_with_scalars(*values):
     db = MagicMock()
     db.scalar = AsyncMock(side_effect=values)
     db.execute = AsyncMock()
+    db.delete = AsyncMock()
     db.commit = AsyncMock()
     db.rollback = AsyncMock()
     return db
+
+
+async def test_admin_removal_revokes_all_participant_rows_before_deleting_user():
+    user = SimpleNamespace(upn="removed@example.test")
+    db = db_with_scalars(user)
+
+    await admin_api.remove_user(
+        "Removed@Example.Test", db, "admin@example.test"
+    )
+
+    statement = db.execute.await_args.args[0]
+    sql = str(statement.compile(dialect=postgresql.dialect())).lower()
+    assert "update meeting_participants" in sql
+    assert "lower(meeting_participants.user_upn)" in sql
+    assert statement.compile(dialect=postgresql.dialect()).params["access_type"] == "revoked"
+    assert statement.compile(dialect=postgresql.dialect()).params["edit_access_status"] == "denied"
+    db.delete.assert_awaited_once_with(user)
+    db.commit.assert_awaited_once()
 
 
 @pytest.mark.parametrize("operation,status", [("cancel", "pending"), ("retry", "failed")])

@@ -58,3 +58,13 @@ class TestNotificationsEndpoint:
         meeting = _mock_meeting(ProcessingState.sent, title=None)
         result = await get_notifications(db=self._make_db([meeting]), upn="user@taxconsulting.co.za")
         assert result[0]["title"] == "Untitled Meeting"
+
+    async def test_query_excludes_pending_and_revoked_participants(self):
+        from sqlalchemy.dialects import postgresql
+        from app.api.notifications import get_notifications
+
+        db = self._make_db([])
+        await get_notifications(db=db, upn="user@taxconsulting.co.za")
+        sql = str(db.scalars.await_args.args[0].compile(dialect=postgresql.dialect())).lower()
+        assert "meeting_participants.access_type" in sql
+        assert "not in" in sql

@@ -6,7 +6,7 @@ The first admin is bootstrapped via the ``ADMIN_UPNS`` env var at application st
 from datetime import datetime, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -18,13 +18,13 @@ from ..models import BusinessUnit, Meeting, MeetingParticipant, ProcessedItem, P
 from ..schemas import AdminRevokeAccessIn, BusinessUnitOut, RegisteredUserOut, RegisterUserIn, SyncStateOut, UpdateUserIn
 from ..services.sync_state import list_sync_status
 from ..services.job_control import RETRYABLE_JOB_STATES
+from ..services.access import NO_VIEW_ACCESS_TYPES
 from ..utils.identity import normalize_upn
 from .deps import current_user
 
 settings = get_settings()
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-NO_VIEW_ACCESS_TYPES = {"request_view", "request_edit", "revoked"}
 NO_ADMIN_PROCESSING_APPROVAL_STATES = {
     ProcessingState.awaiting_review, ProcessingState.approved, ProcessingState.sent,
 }
@@ -346,12 +346,26 @@ async def update_user(upn: str, body: UpdateUserIn, db: AsyncSession = Depends(g
 async def remove_user(upn: str, db: AsyncSession = Depends(get_db),
                       admin_upn: str = Depends(_require_admin)):
     """Remove a user from the platform.  An admin cannot remove themselves."""
-    if upn == admin_upn:
+    target_upn = normalize_upn(upn)
+    if target_upn == normalize_upn(admin_upn):
         raise HTTPException(400, "Cannot remove your own admin account")
 
-    user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
+    user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == target_upn))
     if not user:
-        raise HTTPException(404, f"{upn} is not registered")
+        raise HTTPException(404, f"{target_upn} is not registered")
+
+    # Participant rows are intentionally retained for audit/history, but must
+    # not remain a source of access after the account is removed.
+    await db.execute(
+        update(MeetingParticipant)
+        .where(func.lower(MeetingParticipant.user_upn) == target_upn)
+        .values(
+            access_type="revoked",
+            edit_access_status="denied",
+            edit_decided_at=datetime.now(timezone.utc),
+            edit_decided_by=admin_upn,
+        )
+    )
 
     await db.delete(user)
     await db.commit()

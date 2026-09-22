@@ -10,6 +10,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..models import RecordingJob, Meeting, MeetingParticipant, ProcessingState, RegisteredUser
 from ..services.job_control import RETRYABLE_JOB_STATES, public_job_error
+from ..services.access import NO_VIEW_ACCESS_TYPES
 from ..services.jobs import enqueue_retry_job
 from ..services.reprocessing import (
     MANUAL_REPROCESS_SOURCE,
@@ -74,12 +75,24 @@ async def list_jobs(meeting_id: UUID | None = None, db=Depends(get_db), user: Re
     participant = exists(select(MeetingParticipant.id).where(
         MeetingParticipant.meeting_id == Meeting.id,
         func.lower(MeetingParticipant.user_upn) == upn.lower(),
+        MeetingParticipant.access_type.notin_(NO_VIEW_ACCESS_TYPES),
     )).correlate(Meeting)
+    owner_can_see_meeting = or_(
+        Meeting.id.is_(None),
+        func.lower(Meeting.organizer_upn) == upn.lower(),
+        participant,
+    )
     query = (select(RecordingJob, Meeting)
              .outerjoin(Meeting, Meeting.drive_item_id == RecordingJob.drive_item_id)
              .options(selectinload(Meeting.participants), selectinload(Meeting.action_items)))
     if not user.is_admin:
-        query = query.where(or_(func.lower(RecordingJob.owner_upn) == upn.lower(), participant))
+        # The recording owner may still see an unassociated queue row, or a
+        # meeting they own/are an approved participant of. Never leak a linked
+        # meeting's metadata merely because the submitter owns the recording.
+        query = query.where(or_(
+            (func.lower(RecordingJob.owner_upn) == upn.lower()) & owner_can_see_meeting,
+            participant,
+        ))
     if meeting_id:
         query = query.where(Meeting.id == meeting_id)
     rows = (await db.execute(query.order_by(RecordingJob.created_at.desc()).limit(200))).all()

@@ -320,6 +320,35 @@ class TestToOut:
             },
         ]
 
+    def test_speaker_candidates_use_structured_contract(self):
+        from app.api.reviews import _to_out
+        from app.models import ProcessingState
+
+        meeting = SimpleNamespace(
+            id="meeting-speakers",
+            title="Speaker review",
+            state=ProcessingState.awaiting_review,
+            summary=None,
+            transcript="[Speaker A] Hello",
+            organizer_upn="owner@example.test",
+            extracted_json={
+                "speaker_candidates": [{"upn": "guest@example.test", "display_name": "Guest Person"}],
+            },
+            error=None,
+            recorded_at=None,
+            attendees_raw=[{"emailAddress": {"address": "guest@example.test", "name": "Guest Person"}}],
+            approved_recipients=[],
+            participants=[],
+            action_items=[],
+        )
+
+        out = _to_out(meeting)
+
+        assert [candidate.model_dump() for candidate in out.speaker_candidates] == [
+            {"upn": "guest@example.test", "email": "guest@example.test", "display_name": "Guest Person", "id": None},
+            {"upn": "owner@example.test", "email": "owner@example.test", "display_name": "owner@example.test", "id": None},
+        ]
+
 
 class TestOrganizerReviewGate:
     def test_organizer_is_allowed(self):
@@ -821,6 +850,44 @@ class TestEditAccessWorkflow:
         assert result == {"ok": True, "speaker_mappings": mappings}
         assert meeting.extracted_json["speaker_mappings"] == mappings
         db.commit.assert_awaited_once()
+
+    @staticmethod
+    def _labelled_meeting(status="approved"):
+        meeting, _ = TestEditAccessWorkflow._meeting(status=status)
+        meeting.transcript = "[Speaker A] Hello\n[Speaker B] Goodbye"
+        meeting.extracted_json = {
+            "transcript_segments": [
+                {"speaker": "Speaker A", "text": "Hello", "start": 0, "end": 1},
+                {"speaker": "Speaker B", "text": "Goodbye", "start": 1, "end": 2},
+            ]
+        }
+        return meeting
+
+    @pytest.mark.parametrize(
+        "mappings",
+        [
+            {"Speaker C": "guest@taxconsulting.co.za"},
+            {"Speaker A": "guest@taxconsulting.co.za", "Speaker B": "guest@taxconsulting.co.za"},
+            {"Speaker A": "guest@taxconsulting.co.za", "speaker a": "owner@taxconsulting.co.za"},
+        ],
+    )
+    async def test_speaker_mapping_rejects_invalid_labels_duplicates_and_conflicting_casing(
+        self, monkeypatch, mappings,
+    ):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import SpeakerMappingIn
+
+        meeting = self._labelled_meeting()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+
+        with pytest.raises(HTTPException) as exc:
+            await reviews.save_speaker_mappings(
+                "meeting-1", SpeakerMappingIn(mappings=mappings), db=AsyncMock(),
+                upn="guest@taxconsulting.co.za",
+            )
+
+        assert exc.value.status_code == 422
 
     async def test_approved_attendee_cannot_approve_or_group_email(self, monkeypatch):
         from fastapi import HTTPException

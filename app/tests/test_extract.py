@@ -5,11 +5,13 @@ from app.pipeline.transcribe import TranscriptSegment
 from app.pipeline.extract import (
     _transcript_to_text,
     _parse_raw,
+    validate_extraction,
     MockExtractor,
     TranscriptOnlyExtractor,
     get_extractor,
 )
 from app.models import Confidence
+from app.schemas import ExtractedActionItem, RichExtractionResult
 
 
 SEG_A = TranscriptSegment("Speaker A", "Let's review the action items.", 0.0, 3.0)
@@ -123,3 +125,63 @@ class TestGetExtractor:
         monkeypatch.setattr(settings, "extractor_impl", "not-real")
         with pytest.raises(ValueError, match="Unsupported EXTRACTOR_IMPL"):
             get_extractor()
+
+
+def _grounded_result(**item_overrides):
+    item = {
+        "action": "Send the report",
+        "assigned_to": "Sarah",
+        "due_date": "Friday",
+        "source_quote": "Sarah will send the report by Friday.",
+        "confidence": "high",
+    }
+    item.update(item_overrides)
+    return RichExtractionResult(summary="A grounded summary.", action_items=[ExtractedActionItem(**item)])
+
+
+class TestTranscriptGrounding:
+    transcript = "[Sarah] Sarah will send the report by Friday."
+
+    @pytest.mark.parametrize("field", ["assigned_to", "due_date"])
+    def test_non_null_action_fields_require_source_quote(self, field):
+        result = _grounded_result(source_quote=None)
+        with pytest.raises(ValueError, match="requires a source quote"):
+            validate_extraction(result, transcript_text=self.transcript)
+
+    def test_unrelated_source_quote_is_rejected(self):
+        with pytest.raises(ValueError, match="not present in the transcript"):
+            validate_extraction(
+                _grounded_result(source_quote="John will review the budget."),
+                transcript_text=self.transcript,
+            )
+
+    def test_invented_assignee_is_rejected(self):
+        with pytest.raises(ValueError, match="assignee is unsupported"):
+            validate_extraction(
+                _grounded_result(assigned_to="John"),
+                transcript_text=self.transcript,
+            )
+
+    def test_invented_deadline_is_rejected(self):
+        with pytest.raises(ValueError, match="deadline is unsupported"):
+            validate_extraction(
+                _grounded_result(due_date="Monday"),
+                transcript_text=self.transcript,
+            )
+
+    @pytest.mark.parametrize("vague", ["soon", "later", "next week"])
+    def test_vague_deadline_is_rejected(self, vague):
+        transcript = f"[Sarah] Sarah will send the report {vague}."
+        with pytest.raises(ValueError, match="deadline is unsupported"):
+            validate_extraction(
+                _grounded_result(due_date=vague, source_quote=f"Sarah will send the report {vague}."),
+                transcript_text=transcript,
+            )
+
+    def test_valid_explicit_action_item_with_terminal_punctuation_passes(self):
+        result = validate_extraction(
+            _grounded_result(),
+            transcript_text=self.transcript,
+            known_participants={"sarah@example.test"},
+        )
+        assert result.action_items[0].assigned_to == "Sarah"

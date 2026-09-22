@@ -21,6 +21,7 @@ from ..schemas import (
     MeetingOut, ActionItemOut, ActionItemEdit, ShareMeetingIn, ApproveMeetingIn,
     EmailPreviewOut, TranscriptEdit, SpeakerMappingIn, EditAccessDecisionIn,
     EditAccessRequestOut, CalendarParticipantOut, SendMeetingCopyIn, MeetingAccessRequestIn,
+    SpeakerCandidateOut,
 )
 from ..graph import client as graph
 from ..email_templates import build_meeting_email
@@ -84,6 +85,23 @@ def _participant_for(m: Meeting, upn: str | None) -> MeetingParticipant | None:
     if not upn:
         return None
     return next((p for p in m.participants if normalize_upn(p.user_upn) == upn), None)
+
+
+def _speaker_labels(m: Meeting) -> dict[str, str]:
+    """Return canonical diarized labels keyed case-insensitively."""
+    import re
+    extracted = m.extracted_json or {}
+    labels = [
+        str(segment.get("speaker")).strip()
+        for segment in (extracted.get("transcript_segments") or [])
+        if isinstance(segment, dict) and str(segment.get("speaker") or "").strip()
+    ]
+    # Some older records (and lightweight API test doubles) have no transcript
+    # text even though their mappings use the conventional Speaker A/B labels.
+    # Treat non-string values as absent rather than passing mocks into ``re``.
+    if not labels and isinstance(m.transcript, str) and m.transcript:
+        labels = [match.group(1).strip() for match in re.finditer(r"\[([^\]]+)\]", m.transcript)]
+    return {label.casefold(): label for label in dict.fromkeys(labels)}
 
 
 def _is_attendee_participant(m: Meeting, participant: MeetingParticipant | None) -> bool:
@@ -155,16 +173,37 @@ def _to_out(m: Meeting, upn: str | None = None, *, is_admin: bool = False) -> Me
     )
     extracted = m.extracted_json or {}
     raw_candidates = extracted.get("speaker_candidates") or []
-    speaker_candidates = set(known_recipients)
+    candidate_names: dict[str, str] = {}
+    for raw in m.attendees_raw or []:
+        if isinstance(raw, dict):
+            address = raw.get("emailAddress") or {}
+            email = normalize_upn(address.get("address") or raw.get("email") or raw.get("userPrincipalName"))
+            name = str(address.get("name") or raw.get("name") or "").strip()
+        else:
+            email, name = normalize_upn(raw), ""
+        if email:
+            candidate_names[email] = name or email
+    for participant in m.participants:
+        email = normalize_upn(participant.user_upn)
+        if email:
+            candidate_names.setdefault(email, email)
+    if m.organizer_upn:
+        candidate_names.setdefault(normalize_upn(m.organizer_upn), normalize_upn(m.organizer_upn))
     for candidate in raw_candidates:
         if isinstance(candidate, str):
-            value = normalize_upn(candidate) or candidate.strip()
+            value = normalize_upn(candidate)
+            name = candidate.strip()
         elif isinstance(candidate, dict):
-            value = normalize_upn(candidate.get("email")) or str(candidate.get("name") or "").strip()
+            value = normalize_upn(candidate.get("upn") or candidate.get("email"))
+            name = str(candidate.get("display_name") or candidate.get("name") or "").strip()
         else:
-            value = ""
+            value, name = "", ""
         if value:
-            speaker_candidates.add(value)
+            candidate_names[value] = name or candidate_names.get(value, value)
+    speaker_candidates = [
+        SpeakerCandidateOut(upn=email, email=email, display_name=name or None)
+        for email, name in sorted(candidate_names.items())
+    ]
     sample_labels = []
     if is_organizer or is_admin:
         sample_labels = list(dict.fromkeys(
@@ -203,7 +242,7 @@ def _to_out(m: Meeting, upn: str | None = None, *, is_admin: bool = False) -> Me
         edit_access_status="organizer" if is_organizer else (caller.edit_access_status if caller else "none"),
         access_request_type=None,
         edit_access_requests=edit_requests,
-        speaker_candidates=sorted(speaker_candidates),
+        speaker_candidates=speaker_candidates,
         speaker_mappings=extracted.get("speaker_mappings", {}),
         speaker_sample_labels=sample_labels,
         action_items=[
@@ -574,15 +613,27 @@ async def save_speaker_mappings(meeting_id: str, body: SpeakerMappingIn,
     _require_awaiting_review(meeting)
     allowed = set(normalize_upns(meeting.attendees_raw))
     allowed.update(normalize_upn(p.user_upn) for p in meeting.participants)
+    actual_labels = _speaker_labels(meeting)
     mappings: dict[str, str | None] = {}
+    assigned_candidates: set[str] = set()
     for label, candidate in body.mappings.items():
         clean_label = label.strip()
+        canonical_label = actual_labels.get(clean_label.casefold())
+        if not canonical_label and not actual_labels and clean_label.casefold().startswith("speaker "):
+            # Legacy meetings may predate persisted transcript_segments.
+            canonical_label = clean_label
+        if not canonical_label:
+            raise HTTPException(422, f"Speaker label is not present in the transcript: {clean_label}")
         clean_candidate = normalize_upn(candidate) if candidate else None
-        if not clean_label.lower().startswith("speaker "):
-            raise HTTPException(422, f"Invalid speaker label: {clean_label}")
         if clean_candidate and clean_candidate not in allowed:
             raise HTTPException(422, f"Speaker mapping is not a meeting participant: {clean_candidate}")
-        mappings[clean_label] = clean_candidate
+        if clean_candidate and clean_candidate in assigned_candidates:
+            raise HTTPException(422, f"Participant is already assigned to another speaker: {clean_candidate}")
+        if canonical_label in mappings and mappings[canonical_label] != clean_candidate:
+            raise HTTPException(422, f"Conflicting mappings for speaker label: {canonical_label}")
+        mappings[canonical_label] = clean_candidate
+        if clean_candidate:
+            assigned_candidates.add(clean_candidate)
     extracted = dict(meeting.extracted_json or {})
     extracted["speaker_mappings"] = mappings
     meeting.extracted_json = extracted

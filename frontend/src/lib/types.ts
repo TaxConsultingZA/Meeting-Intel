@@ -59,6 +59,14 @@ export interface CalendarParticipant {
   is_organizer: boolean;
 }
 
+/** A diarized speaker candidate returned by the reviews API. */
+export interface SpeakerCandidate {
+  upn: string;
+  email: string;
+  display_name?: string | null;
+  id?: string | null;
+}
+
 export interface MeetingOut {
   id: string;
   recorded_at?: string | null;
@@ -81,7 +89,8 @@ export interface MeetingOut {
   edit_access_status: "none" | "pending" | "approved" | "denied" | "organizer";
   access_request_type?: "view" | "edit" | null;
   edit_access_requests: { requester_upn: string; status: string; requested_at: string | null; requested_access: "view" | "edit" }[];
-  speaker_candidates: string[];
+  // Older meetings may still contain the pre-structured string form.
+  speaker_candidates: Array<SpeakerCandidate | string>;
   speaker_mappings: Record<string, string | null>;
   speaker_sample_labels: string[];
 }

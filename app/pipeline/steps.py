@@ -131,6 +131,8 @@ async def _reprocess_completed_recording(
         result = validate_extraction(
             await get_extractor().extract(segments),
             transcript_only=settings.extractor_impl == "transcript_only",
+            transcript_text=transcript,
+            known_participants=set(known_people or []),
         )
 
     extracted_json = preserved_extracted
@@ -443,6 +445,8 @@ async def process_recording(
             result = validate_extraction(
                 await get_extractor().extract(segments),
                 transcript_only=settings.extractor_impl == "transcript_only",
+                transcript_text=meeting.transcript,
+                known_participants=set(all_attendee_upns or []),
             )
             await commit()  # Stop here if cancellation arrived during extraction.
             meeting.summary = result.summary

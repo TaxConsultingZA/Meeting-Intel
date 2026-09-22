@@ -41,6 +41,22 @@ const SPEAKER_COLOURS = [
   "bg-[#1B2A4A]",
 ];
 
+type SpeakerCandidateValue = MeetingOut["speaker_candidates"][number];
+
+function speakerCandidateUpn(candidate: SpeakerCandidateValue): string {
+  return typeof candidate === "string" ? candidate : (candidate.upn || candidate.email);
+}
+
+function speakerCandidateLabel(candidate: SpeakerCandidateValue): string {
+  if (typeof candidate === "string") return candidate;
+  return candidate.display_name?.trim() || candidate.email || candidate.upn;
+}
+
+function mappingForLabel(mappings: Record<string, string | null>, label: string): string | null {
+  const matching = Object.entries(mappings).find(([key]) => key.toLowerCase() === label.toLowerCase());
+  return matching ? matching[1] : null;
+}
+
 interface Props {
   meeting: MeetingOut;
   upn: string;
@@ -63,6 +79,10 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [sendingSelfCopy, setSendingSelfCopy] = useState(false);
   const pollingInFlight = useRef(false);
 
+  useEffect(() => {
+    setSpeakerMappings(meeting.speaker_mappings ?? {});
+  }, [meeting.speaker_mappings]);
+
   const data = meeting.extracted_json ?? {};
   const isTranscriptOnly = data.extraction_mode === "transcript_only";
   const isReviewable = meeting.state === "awaiting_review";
@@ -73,7 +93,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
     new Set(Array.from((meeting.transcript ?? "").matchAll(/\[(Speaker [^\]]+)\]/gi), (match) => match[1])),
   );
   const speakerMappingsChanged = speakerLabels.some(
-    (label) => (speakerMappings[label] ?? null) !== (meeting.speaker_mappings[label] ?? null),
+    (label) => mappingForLabel(speakerMappings, label) !== mappingForLabel(meeting.speaker_mappings, label),
   );
   const isProcessing = (["queued", "downloading", "transcribing", "extracting"] as ProcessingState[]).includes(meeting.state);
   const canSendSelfCopy = !isOrganizer
@@ -425,12 +445,19 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                     <select
                       aria-label={`Name for ${label}`}
                       disabled={!canEdit}
-                      value={speakerMappings[label] ?? ""}
+                      value={mappingForLabel(speakerMappings, label) ?? ""}
                       onChange={(event) => setSpeakerMappings((current) => ({ ...current, [label]: event.target.value || null }))}
                       className="h-9 min-w-0 rounded-md border border-[#cfd6df] bg-white px-3 text-sm text-[#1a1a2e] disabled:bg-[#f3f4f6] disabled:text-[#6b7280]"
                     >
                       <option value="">Unknown / Guest</option>
-                      {meeting.speaker_candidates.map((candidate) => <option key={candidate} value={candidate}>{candidate}</option>)}
+                      {meeting.speaker_candidates.map((candidate) => {
+                        const value = speakerCandidateUpn(candidate);
+                        return (
+                          <option key={value} value={value}>
+                            {speakerCandidateLabel(candidate)}
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
                 ))}

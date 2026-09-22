@@ -17,6 +17,16 @@ Extract every section as completely as possible from what was actually said.
 If a section has no content, return an empty list or null — never invent information.
 
 IMPORTANT RULES:
+- Never invent facts. An assignee, deadline, date, role, outcome, attendee, or decision
+  must be explicitly supported by the transcript. If it is ambiguous, use null, "Unknown",
+  or leave it unassigned.
+- Do not turn vague phrases such as "soon", "later", "next week", or "someone" into a
+  named person or a specific date. Preserve the phrase as context only and keep the
+  structured assignee/deadline null unless the transcript supplies a reliable value.
+- Every non-null action-item assigned_to and due_date must be supported by that item's
+  source_quote. Use the exact wording from the transcript for source_quote.
+- Roles and outcomes may be included only when explicitly stated; if inferred, prefix the
+  value with "Inferred:" and keep it optional.
 - Be concise. Each field value should be 1-2 sentences max. Bullet points max 2 per speaker.
 - discussion_points: capture EVERY topic raised by ANY speaker, no matter how brief.
   Even a single sentence from one speaker that raises a point, states an opinion,
@@ -122,7 +132,77 @@ def require_transcript(segments: list[TranscriptSegment]) -> None:
         raise ValueError("Transcript is empty; extraction cannot proceed")
 
 
-def validate_extraction(value, *, transcript_only: bool = False) -> RichExtractionResult:
+def _text_tokens(value: str | None) -> set[str]:
+    return {
+        token.strip(".,!?;:")
+        for token in re.findall(r"[a-z0-9@._-]+", (value or "").casefold())
+        if token.strip(".,!?;:")
+    }
+
+
+def _normalise_text(value: str | None) -> str:
+    return re.sub(r"\s+", " ", (value or "").casefold()).strip()
+
+
+def _ground_action_items(
+    result: RichExtractionResult,
+    *,
+    transcript_text: str,
+    known_participants: set[str] | None = None,
+) -> None:
+    """Reject structured ownership/deadline claims that are not transcript-grounded."""
+    known = {p.casefold() for p in (known_participants or set())}
+    vague = {"soon", "later", "tomorrow", "today", "someone", "somebody", "next week"}
+    transcript = _normalise_text(transcript_text)
+    speaker_labels = {
+        label.casefold()
+        for label, segment in re.findall(r"\[([^\]]+)\]\s*(.*?)(?=\s*\[[^\]]+\]|$)", transcript_text or "", re.S)
+        if _normalise_text(segment)
+    }
+    for item in result.action_items:
+        if not item.source_quote or not item.source_quote.strip():
+            if item.assigned_to or item.due_date:
+                raise ValueError("Action-item ownership or deadline requires a source quote")
+            continue
+        if _normalise_text(item.source_quote) not in transcript:
+            raise ValueError("Action-item source quote is not present in the transcript")
+        quote_tokens = _text_tokens(item.source_quote)
+        if item.assigned_to:
+            assignee = item.assigned_to.strip()
+            if assignee.casefold() in vague or not quote_tokens:
+                raise ValueError("Action-item assignee is unsupported by its source quote")
+            assignee_tokens = _text_tokens(assignee)
+            speaker_supported = assignee.casefold() in speaker_labels and any(
+                _normalise_text(item.source_quote) in _normalise_text(segment)
+                for _, segment in re.findall(
+                    r"\[([^\]]+)\]\s*(.*?)(?=\s*\[[^\]]+\]|$)", transcript_text or "", re.S
+                )
+                if _normalise_text(segment)
+            )
+            if not assignee_tokens.intersection(quote_tokens) and not speaker_supported:
+                raise ValueError("Action-item assignee is unsupported by its source quote")
+            # A request phrased as a question is not confirmation that the person
+            # accepted ownership (e.g. "Sarah, can you send this?").
+            if re.search(r"\b(?:can|could|would)\s+you\b", item.source_quote or "", re.I):
+                raise ValueError("Action-item assignee is not explicitly confirmed")
+            if known and not speaker_supported and not any(
+                candidate.casefold() == assignee.casefold()
+                or candidate.casefold().split("@", 1)[0] == assignee.casefold()
+                or candidate.casefold().split("@", 1)[0].replace(".", " ") == assignee.casefold()
+                for candidate in known
+            ):
+                raise ValueError("Action-item assignee is not a known meeting participant")
+        if item.due_date:
+            due = item.due_date.strip()
+            if (due.casefold() in vague
+                    or re.fullmatch(r"next\s+(?:week|month|quarter|monday|tuesday|wednesday|thursday|friday|saturday|sunday)", due, re.I)
+                    or not quote_tokens or not _text_tokens(due).issubset(quote_tokens)):
+                raise ValueError("Action-item deadline is unsupported by its source quote")
+
+
+def validate_extraction(value, *, transcript_only: bool = False,
+                        transcript_text: str | None = None,
+                        known_participants: set[str] | None = None) -> RichExtractionResult:
     # Revalidate even model instances returned by adapters (including test doubles).
     if isinstance(value, RichExtractionResult):
         value = value.model_dump()
@@ -134,6 +214,12 @@ def validate_extraction(value, *, transcript_only: bool = False) -> RichExtracti
         raise ValueError("Structured extraction requires a nonempty summary")
     if any(not (item.action or item.task).strip() for item in result.action_items):
         raise ValueError("Extracted action items require nonempty task text")
+    if not transcript_only and transcript_text is not None:
+        _ground_action_items(
+            result,
+            transcript_text=transcript_text,
+            known_participants=known_participants,
+        )
     return result
 
 

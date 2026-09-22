@@ -131,6 +131,13 @@ class CalendarParticipantOut(BaseModel):
     is_organizer: bool = False
 
 
+class SpeakerCandidateOut(BaseModel):
+    upn: str
+    email: str
+    display_name: str | None = None
+    id: str | None = None
+
+
 class MeetingOut(BaseModel):
     """Full meeting representation returned by GET /reviews and GET /reviews/{id}."""
     id: str
@@ -152,7 +159,7 @@ class MeetingOut(BaseModel):
     edit_access_status: str = "none"
     access_request_type: Literal["view", "edit"] | None = None
     edit_access_requests: list[EditAccessRequestOut] = Field(default_factory=list)
-    speaker_candidates: list[str] = Field(default_factory=list)
+    speaker_candidates: list[SpeakerCandidateOut] = Field(default_factory=list)
     speaker_mappings: dict[str, str | None] = Field(default_factory=dict)
     speaker_sample_labels: list[str] = Field(default_factory=list)
     action_items: list[ActionItemOut]

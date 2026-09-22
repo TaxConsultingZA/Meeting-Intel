@@ -1,4 +1,5 @@
 """Security and durability tests for manual recording processing."""
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -104,6 +105,28 @@ class TestRecordingQueue:
         assert queued is False
         db.add.assert_not_called()
         db.commit.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "upn",
+    ["revoked@taxconsulting.co.za", "pending@taxconsulting.co.za", "owner@taxconsulting.co.za"],
+)
+async def test_list_jobs_query_excludes_no_view_users_but_preserves_owner_path(upn):
+    from sqlalchemy.dialects import postgresql
+    from app.api import recording_jobs
+
+    db = AsyncMock()
+    db.execute.return_value = SimpleNamespace(all=lambda: [])
+    user = SimpleNamespace(upn=upn, is_admin=False)
+
+    assert await recording_jobs.list_jobs(db=db, user=user) == []
+
+    statement = db.execute.await_args.args[0]
+    sql = str(statement.compile(dialect=postgresql.dialect())).lower()
+    assert "meeting_participants.access_type" in sql
+    assert "not in" in sql
+    assert "recording_jobs.owner_upn" in sql
+    assert "meetings.organizer_upn" in sql
 
 
 async def test_manual_import_queues_a_discovered_recording(monkeypatch):

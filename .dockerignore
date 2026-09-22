@@ -25,6 +25,8 @@ frontend/AGENTS.md
 *.stdout
 *.stderr
 artifacts/
+.deploy-admin-b23af56.tar
+.deploy-admin-b23af56/
 .pytest_tmp/
 .pytest_tmp_run*/
 .vercel/

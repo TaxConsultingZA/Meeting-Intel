@@ -4,6 +4,8 @@
 .pytest_tmp
 __pycache__
 artifacts
+.deploy-admin-b23af56.tar
+.deploy-admin-b23af56/
 .env
 .env.*
 *.stderr

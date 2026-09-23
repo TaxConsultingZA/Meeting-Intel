@@ -101,3 +101,37 @@ it("supports legacy string speaker candidates without object rendering", () => {
   expect(screen.getByRole("option", { name: "owner@taxconsulting.co.za" })).toHaveValue("owner@taxconsulting.co.za");
   expect(screen.queryByText("[object Object]")).not.toBeInTheDocument();
 });
+
+it.each([
+  ["pending", "Edit access request pending. The meeting organiser will review it."],
+  ["approved", "Edit access approved."],
+  ["denied", "Edit access request denied."],
+  ["rejected", "Edit access request denied."],
+] as const)("shows the %s edit-access status", (status, message) => {
+  const meeting: MeetingOut = {
+    id: `meeting-access-${status}`, recorded_at: null, title: "Access state", state: "awaiting_review",
+    summary: null, transcript: null, action_items: [], extracted_json: null,
+    calendar_participants: [], organizer_upn: "owner@taxconsulting.co.za", email_recipients: [], approved_recipients: [],
+    is_organizer: false, can_edit: status === "approved", can_request_edit_access: status !== "approved",
+    edit_access_status: status as MeetingOut["edit_access_status"], edit_access_requests: [],
+    speaker_candidates: [], speaker_mappings: {}, speaker_sample_labels: [],
+  };
+
+  render(<MeetingDetailClient meeting={meeting} upn="attendee@taxconsulting.co.za" accessToken="token" />);
+
+  expect(screen.getByRole("status")).toHaveTextContent(message);
+});
+
+it("shows the organiser edit-access status", () => {
+  const meeting: MeetingOut = {
+    id: "meeting-access-organizer", recorded_at: null, title: "Organizer access", state: "awaiting_review",
+    summary: null, transcript: null, action_items: [], extracted_json: null,
+    calendar_participants: [], organizer_upn: "owner@taxconsulting.co.za", email_recipients: [], approved_recipients: [],
+    is_organizer: true, can_edit: true, can_request_edit_access: false, edit_access_status: "organizer",
+    edit_access_requests: [], speaker_candidates: [], speaker_mappings: {}, speaker_sample_labels: [],
+  };
+
+  render(<MeetingDetailClient meeting={meeting} upn="owner@taxconsulting.co.za" accessToken="token" />);
+
+  expect(screen.getByRole("status")).toHaveTextContent("You are the meeting organiser and have full edit access.");
+});

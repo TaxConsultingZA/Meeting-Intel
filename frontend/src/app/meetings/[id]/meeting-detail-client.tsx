@@ -89,6 +89,16 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const isOrganizer = meeting.is_organizer ?? meeting.organizer_upn?.toLowerCase() === upn.toLowerCase();
   const canApprove = meeting.can_approve ?? isOrganizer;
   const canEdit = isReviewable && (meeting.can_edit || isOrganizer);
+  const editAccessStatus = meeting.edit_access_status as string;
+  const accessStatusMessage = isOrganizer || editAccessStatus === "organizer"
+    ? "You are the meeting organiser and have full edit access."
+    : editAccessStatus === "pending"
+      ? "Edit access request pending. The meeting organiser will review it."
+      : editAccessStatus === "approved"
+        ? "Edit access approved."
+        : editAccessStatus === "denied" || editAccessStatus === "rejected"
+          ? "Edit access request denied."
+          : null;
   const speakerLabels = Array.from(
     new Set(Array.from((meeting.transcript ?? "").matchAll(/\[(Speaker [^\]]+)\]/gi), (match) => match[1])),
   );
@@ -257,6 +267,11 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </div>
             <MetaRow label="Action Items" value={`${meeting.action_items.length} extracted`} />
             <div className="h-px bg-[#dde1e8]" />
+            {accessStatusMessage && (
+              <p className="rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-900" role="status">
+                {accessStatusMessage}
+              </p>
+            )}
             {isReviewable && meeting.can_request_edit_access && !meeting.can_edit && (
               <button
                 type="button"

@@ -73,7 +73,11 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const historicalLoadInFlight = useRef(false);
   const [upcoming, setUpcoming] = useState<CalendarEvent[]>(initialUpcoming);
   const [syncStates, setSyncStates] = useState<SyncState[]>(initialSyncStates);
-  const [loadErrors, setLoadErrors] = useState(initialLoadErrors);
+  const [meetingLoadErrors, setMeetingLoadErrors] = useState(initialLoadErrors);
+  const [recordingJobLoadErrors, setRecordingJobLoadErrors] = useState<string[]>([]);
+  const [syncLoadErrors, setSyncLoadErrors] = useState<string[]>([]);
+  const [calendarLoadErrors, setCalendarLoadErrors] = useState<string[]>([]);
+  const [pollingError, setPollingError] = useState("");
   const [dashboardLoading, setDashboardLoading] = useState(deferInitialLoad);
   const [shareModal, setShareModal] = useState<{ meetingId: string; title: string } | null>(null);
   const [unsubscribing, setUnsubscribing] = useState(false);
@@ -86,29 +90,32 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     if (!deferInitialLoad) return;
 
     let cancelled = false;
-    const errors: string[] = [];
-    const load = async <T,>(promise: Promise<T>, label: string, apply: (data: T) => void) => {
+    const errors = { meetings: [] as string[], recordingJobs: [] as string[], sync: [] as string[], calendar: [] as string[] };
+    const load = async <T,>(promise: Promise<T>, label: string, apply: (data: T) => void, category: keyof typeof errors) => {
       try {
         const data = await promise;
         if (!cancelled) apply(data);
       } catch (error) {
         const detail = error instanceof Error ? error.message : "Unknown error";
-        errors.push(`${label}: ${detail}`);
+        errors[category].push(`${label}: ${detail}`);
       }
     };
 
     const requests = [
-      load(getAllMeetings(accessToken), "Meeting records could not be loaded", setMeetings),
-      load(getSyncStatus(accessToken), "Sync status could not be loaded", setSyncStates),
-      load(getRecordingJobs(accessToken), "Recording processing status could not be loaded", setRecordingJobs),
+      load(getAllMeetings(accessToken), "Meeting records could not be loaded", setMeetings, "meetings"),
+      load(getSyncStatus(accessToken), "Sync status could not be loaded", setSyncStates, "sync"),
+      load(getRecordingJobs(accessToken), "Recording processing status could not be loaded", setRecordingJobs, "recordingJobs"),
     ];
     if (isSubscribed) {
-      requests.push(load(getUpcomingMeetings(accessToken), "Calendar sync failed", setUpcoming));
+      requests.push(load(getUpcomingMeetings(accessToken), "Calendar sync failed", setUpcoming, "calendar"));
     }
 
     void Promise.all(requests).then(() => {
       if (!cancelled) {
-        setLoadErrors(errors);
+        setMeetingLoadErrors(errors.meetings);
+        setRecordingJobLoadErrors(errors.recordingJobs);
+        setSyncLoadErrors(errors.sync);
+        setCalendarLoadErrors(errors.calendar);
         setDashboardLoading(false);
       }
     });
@@ -125,6 +132,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       ]);
       setRecordingJobs(nextJobs);
       setMeetings(nextMeetings);
+      setPollingError("");
     } finally {
       pollingInFlight.current = false;
     }
@@ -132,7 +140,9 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
   useEffect(() => {
     if (!hasActiveProcessing || showImport) return;
-    const timer = setInterval(() => { void refreshProcessing().catch(() => {}); }, 10000);
+    const timer = setInterval(() => {
+      void refreshProcessing().catch(() => setPollingError("Meeting and recording status could not be refreshed."));
+    }, 10000);
     return () => clearInterval(timer);
   }, [hasActiveProcessing, refreshProcessing, showImport]);
 
@@ -205,8 +215,9 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     .map((state) => `${state.source === "onedrive" ? "OneDrive" : "Calendar"}: ${state.last_error ?? "Last sync failed"}`);
   // Prefer errors from this page load. Stored sync failures are a fallback and
   // must not duplicate the same Microsoft failure in the warning panel.
-  const microsoftErrors = Array.from(new Set(
-    (loadErrors.length > 0 ? loadErrors : persistedSyncErrors).map(conciseMicrosoftError),
+  const microsoftErrors = Array.from(new Set(calendarLoadErrors.map(conciseMicrosoftError)));
+  const syncErrors = Array.from(new Set(
+    [...syncLoadErrors, ...persistedSyncErrors].map(conciseMicrosoftError),
   ));
 
   async function handleRequestAccess(meetingId: string, accessType: "view" | "edit") {
@@ -249,6 +260,25 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           <p className="mt-2 text-xs">No meetings are hidden as an empty result; try again after the permission or service issue is resolved.</p>
         </div>
       )}
+      {meetingLoadErrors.length > 0 && (
+        <div role="alert" className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <p className="font-semibold">Meeting data is temporarily unavailable</p>
+          <ul className="mt-1 list-disc space-y-1 pl-5 text-xs">{meetingLoadErrors.map((error) => <li key={error}>{error}</li>)}</ul>
+        </div>
+      )}
+      {recordingJobLoadErrors.length > 0 && (
+        <div role="alert" className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <p className="font-semibold">Recording status is temporarily unavailable</p>
+          <ul className="mt-1 list-disc space-y-1 pl-5 text-xs">{recordingJobLoadErrors.map((error) => <li key={error}>{error}</li>)}</ul>
+        </div>
+      )}
+      {syncErrors.length > 0 && (
+        <div role="alert" className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <p className="font-semibold">Sync status is temporarily unavailable</p>
+          <ul className="mt-1 list-disc space-y-1 pl-5 text-xs">{syncErrors.map((error) => <li key={error}>{error}</li>)}</ul>
+        </div>
+      )}
+      {pollingError && <p role="alert" className="mb-5 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{pollingError}</p>}
       <div className="mb-6 flex items-start justify-between gap-4">
         <div>
           <h1 className="text-[22px] font-bold text-[#003366]">Meeting Intelligence</h1>
@@ -437,7 +467,8 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           {historicalError && <p role="alert" className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{historicalError}</p>}
           {oldMeetings.length === 0
           ? <EmptyState icon="📂" title="No completed meetings yet" sub="Approved and sent meetings will appear here." />
-          : <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
+          : <div className="overflow-x-auto rounded-lg">
+            <div className="min-w-[760px] bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
               <table className="w-full text-sm">
                 <thead>
                   <tr>
@@ -474,7 +505,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
                           >
                             View notes
                           </Link>
-                          {m.organizer_upn === upn && (
+                          {m.organizer_upn?.toLowerCase() === upn.toLowerCase() && (
                             <button
                               type="button"
                               onClick={() => setShareModal({ meetingId: m.id, title: m.title ?? "Untitled Meeting" })}
@@ -490,6 +521,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
                   ))}
                 </tbody>
               </table>
+            </div>
             </div>}
         </>
       )}

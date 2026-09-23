@@ -312,3 +312,13 @@ it("shows a single Meetings tab without Historical Access", () => {
   expect(screen.getByRole("button", { name: "Meetings" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /Historical Access/ })).not.toBeInTheDocument();
 });
+
+it("shows Share for an organizer when UPN casing differs", () => {
+  render(<DashboardClient meetings={[processedMeeting({ state: "sent", organizer_upn: "OWNER@EXAMPLE.TEST" })]} upcoming={[]} historical={[]}
+    upn="owner@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Old Meetings" }));
+
+  expect(screen.getByRole("button", { name: /Share/ })).toBeInTheDocument();
+});

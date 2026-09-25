@@ -37,7 +37,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
     setError(null);
     try {
       if (section === "meetings") setMeetings(await getAdminMeetings(accessToken));
-      if (section === "jobs") setJobs(await getRecordingJobs(accessToken));
+      if (section === "jobs") setJobs(await getRecordingJobs(accessToken, undefined, 200));
       if (section === "users") {
         const [nextUsers, nextUnits] = await Promise.all([
           getRegisteredUsers(accessToken), getBusinessUnits(accessToken),
@@ -118,7 +118,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
   }
 
   async function refreshJobs() {
-    setJobs(await getRecordingJobs(accessToken));
+    setJobs(await getRecordingJobs(accessToken, undefined, 200));
   }
 
   async function handleReprocess(job: RecordingJobOut) {

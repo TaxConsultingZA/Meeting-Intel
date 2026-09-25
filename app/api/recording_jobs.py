@@ -2,7 +2,7 @@
 from datetime import datetime, timezone, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, or_, exists, func
 from sqlalchemy.orm import selectinload
 
@@ -70,7 +70,12 @@ def job_out(job, meeting, upn, is_admin=False):
 
 
 @router.get("/recordings/jobs")
-async def list_jobs(meeting_id: UUID | None = None, db=Depends(get_db), user: RegisteredUser = Depends(registered_user)):
+async def list_jobs(
+    meeting_id: UUID | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    db=Depends(get_db),
+    user: RegisteredUser = Depends(registered_user),
+):
     upn = user.upn
     participant = exists(select(MeetingParticipant.id).where(
         MeetingParticipant.meeting_id == Meeting.id,
@@ -84,7 +89,7 @@ async def list_jobs(meeting_id: UUID | None = None, db=Depends(get_db), user: Re
     )
     query = (select(RecordingJob, Meeting)
              .outerjoin(Meeting, Meeting.drive_item_id == RecordingJob.drive_item_id)
-             .options(selectinload(Meeting.participants), selectinload(Meeting.action_items)))
+             .options(selectinload(Meeting.participants)))
     if not user.is_admin:
         # The recording owner may still see an unassociated queue row, or a
         # meeting they own/are an approved participant of. Never leak a linked
@@ -95,7 +100,7 @@ async def list_jobs(meeting_id: UUID | None = None, db=Depends(get_db), user: Re
         ))
     if meeting_id:
         query = query.where(Meeting.id == meeting_id)
-    rows = (await db.execute(query.order_by(RecordingJob.created_at.desc()).limit(200))).all()
+    rows = (await db.execute(query.order_by(RecordingJob.created_at.desc()).limit(limit))).all()
     seen = set()
     result = []
     for job, meeting in rows:

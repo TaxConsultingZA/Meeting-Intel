@@ -104,7 +104,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     const requests = [
       load(getAllMeetings(accessToken), "Meeting records could not be loaded", setMeetings, "meetings"),
       load(getSyncStatus(accessToken), "Sync status could not be loaded", setSyncStates, "sync"),
-      load(getRecordingJobs(accessToken), "Recording processing status could not be loaded", setRecordingJobs, "recordingJobs"),
+      load(getRecordingJobs(accessToken, undefined, 20), "Recording processing status could not be loaded", setRecordingJobs, "recordingJobs"),
     ];
     if (isSubscribed) {
       requests.push(load(getUpcomingMeetings(accessToken), "Calendar sync failed", setUpcoming, "calendar"));

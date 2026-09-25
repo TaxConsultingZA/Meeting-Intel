@@ -1,5 +1,5 @@
 """Shared FastAPI dependencies used across multiple routers."""
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,7 @@ def _domain_user(upn: str) -> str:
 async def current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
+    request: Request = None,
 ) -> str:
     """Authenticate the caller using a bearer token.
 
@@ -59,6 +60,8 @@ async def current_user(
 
     by_oid = await db.scalar(select(RegisteredUser).where(RegisteredUser.entra_oid == oid))
     if by_oid:
+        if request is not None:
+            request.state.registered_user = by_oid
         return by_oid.upn
 
     by_upn = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
@@ -67,18 +70,23 @@ async def current_user(
             raise HTTPException(403, "Microsoft identity does not match this user record")
         by_upn.entra_oid = oid
         await db.commit()
+        if request is not None:
+            request.state.registered_user = by_upn
     return upn
 
 
 async def registered_user(
     upn: str = Depends(current_user),
     db: AsyncSession = Depends(get_db),
+    request: Request = None,
 ) -> RegisteredUser:
     """Resolve and verify the caller as a registered platform user.
 
     Raises 403 for outside-domain UPNs and for domain users not yet registered.
     """
-    user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
+    user = getattr(request.state, "registered_user", None) if request is not None else None
+    if user is None or user.upn != upn:
+        user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
     if not user:
         raise HTTPException(403, "Not registered on the platform")
     return user
@@ -92,9 +100,12 @@ async def require_registered(user: RegisteredUser = Depends(registered_user)) ->
 async def require_subscribed(
     upn: str = Depends(current_user),
     db: AsyncSession = Depends(get_db),
+    request: Request = None,
 ) -> str:
     """Allow Microsoft data access only after the user explicitly opts in."""
-    user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
+    user = getattr(request.state, "registered_user", None) if request is not None else None
+    if user is None or user.upn != upn:
+        user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
     if not user or not user.is_subscribed:
         raise HTTPException(403, "Subscribe before accessing Calendar or OneDrive")
     return upn

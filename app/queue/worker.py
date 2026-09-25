@@ -255,12 +255,12 @@ async def run_worker(stop_event: asyncio.Event | None = None) -> None:
         logger.info("Worker connected to PostgreSQL; recording processing enabled=%s", settings.recording_processing_enabled)
         while not stop.is_set():
             try:
-                await _recover_interrupted_jobs()
-                if stop.is_set():
-                    break
                 if not settings.recording_processing_enabled:
                     await _idle(stop)
                     continue
+                await _recover_interrupted_jobs()
+                if stop.is_set():
+                    break
                 job = await _claim_next()
                 if job is None:
                     await _idle(stop)

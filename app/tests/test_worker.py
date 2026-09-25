@@ -80,6 +80,36 @@ async def test_claim_allowlist_selects_target_even_with_older_pending_job(monkey
     assert older.status == "pending" and older.attempts == 3 and older.lease_token is None
 
 
+async def test_disabled_worker_does_not_recover_jobs_each_poll(monkeypatch):
+    stop = asyncio.Event()
+    recover = AsyncMock()
+
+    async def idle(_stop):
+        stop.set()
+
+    monkeypatch.setattr(worker.settings, "recording_processing_enabled", False)
+    monkeypatch.setattr(worker, "_recover_interrupted_jobs", recover)
+    monkeypatch.setattr(worker, "_idle", idle)
+    await worker.run_worker(stop)
+    recover.assert_not_awaited()
+
+
+async def test_enabled_worker_still_recovers_jobs(monkeypatch):
+    stop = asyncio.Event()
+    recover = AsyncMock()
+    claim = AsyncMock(return_value=None)
+
+    async def idle(_stop):
+        stop.set()
+
+    monkeypatch.setattr(worker.settings, "recording_processing_enabled", True)
+    monkeypatch.setattr(worker, "_recover_interrupted_jobs", recover)
+    monkeypatch.setattr(worker, "_claim_next", claim)
+    monkeypatch.setattr(worker, "_idle", idle)
+    await worker.run_worker(stop)
+    recover.assert_awaited_once()
+
+
 @pytest.mark.parametrize("unavailable_reason", ["missing", "completed", "cancelled", "not_yet_available"])
 async def test_claim_allowlist_never_falls_back_when_target_is_unavailable(
     monkeypatch, unavailable_reason,

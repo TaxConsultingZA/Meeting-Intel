@@ -88,7 +88,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
   processingRequestsRef.current = processingRequests;
   const load = useCallback(() => Promise.allSettled([
       isSubscribed ? getRecentMeetings(token) : Promise.resolve([]),
-      controlledRequests ? Promise.resolve(processingRequestsRef.current ?? []) : getProcessingRequests(token),
+      controlledRequests ? Promise.resolve(processingRequestsRef.current ?? []) : getProcessingRequests(token, null),
     ]), [token, isSubscribed, controlledRequests]);
   const applyResults = useCallback((results: Awaited<ReturnType<typeof load>>, options?: { silent?: boolean }) => {
     const errors: string[] = [];

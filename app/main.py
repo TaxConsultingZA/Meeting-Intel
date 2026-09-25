@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +17,7 @@ settings = get_settings()
 log = logging.getLogger("meeting_intel")
 
 _RECONCILE_INTERVAL = 10 * 60  # 10 minutes
+_manual_reconcile_task: asyncio.Task | None = None
 
 
 async def _sync_microsoft_once() -> tuple[int, int]:
@@ -104,6 +105,8 @@ async def _lifespan(app: FastAPI):
         yield
     finally:
         task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 app = FastAPI(title="Meeting Intelligence", lifespan=_lifespan)
@@ -151,10 +154,16 @@ async def trigger_reconcile(x_reconcile_secret: str = Header(...)):
     if not settings.reconcile_secret or x_reconcile_secret != settings.reconcile_secret:
         raise HTTPException(status_code=401, detail="Invalid secret")
 
-    # Run in background so the HTTP response returns immediately
+    global _manual_reconcile_task
+
+    # Run in background so the HTTP response returns immediately. Reuse the
+    # in-flight task when GitHub retries or overlaps the scheduled request.
+    if _manual_reconcile_task is not None and not _manual_reconcile_task.done():
+        return {"status": "reconciliation started"}
+
     async def _run():
         from app.workers.reconcile import reconcile
         await reconcile()
 
-    asyncio.create_task(_run())
+    _manual_reconcile_task = asyncio.create_task(_run())
     return {"status": "reconciliation started"}

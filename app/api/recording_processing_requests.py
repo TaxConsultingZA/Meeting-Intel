@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import aliased
@@ -46,7 +46,11 @@ async def create(body: EventReference, db=Depends(get_db), upn=Depends(require_s
 
 
 @router.get("")
-async def listing(db=Depends(get_db), user: RegisteredUser = Depends(registered_user)):
+async def listing(
+    status: str | None = Query(default=None, pattern="^(pending|approved|rejected)$"),
+    db=Depends(get_db),
+    user: RegisteredUser = Depends(registered_user),
+):
     requester = aliased(RegisteredUser)
     query = (
         select(
@@ -70,6 +74,8 @@ async def listing(db=Depends(get_db), user: RegisteredUser = Depends(registered_
             RecordingProcessingRequest.requester_user_id == user.id,
             RecordingProcessingRequest.recording_owner_user_id == user.id,
         ))
+    if status:
+        query = query.where(RecordingProcessingRequest.status == status)
     rows = await db.execute(query)
     result = []
     for row in rows:

@@ -12,8 +12,12 @@ class ApiError extends Error {
   }
 }
 
-export function getRecordingJobs(token: string, meetingId?: string): Promise<RecordingJobOut[]> {
-  return apiFetch(`/recordings/jobs${meetingId ? `?meeting_id=${encodeURIComponent(meetingId)}` : ""}`, token);
+export function getRecordingJobs(token: string, meetingId?: string, limit?: number): Promise<RecordingJobOut[]> {
+  const params = new URLSearchParams();
+  if (meetingId) params.set("meeting_id", meetingId);
+  if (limit !== undefined) params.set("limit", String(limit));
+  const query = params.toString();
+  return apiFetch(`/recordings/jobs${query ? `?${query}` : ""}`, token);
 }
 
 export function retryRecordingJob(jobId: string, token: string) {
@@ -185,8 +189,8 @@ export function getRecentMeetings(token: string): Promise<RecentMeeting[]> {
   return apiFetch("/calendar/recent", token);
 }
 
-export function getProcessingRequests(token: string): Promise<RecordingProcessingRequest[]> {
-  return apiFetch("/recording-processing-requests", token);
+export function getProcessingRequests(token: string, status: "pending" | "approved" | "rejected" | null = "pending"): Promise<RecordingProcessingRequest[]> {
+  return apiFetch(`/recording-processing-requests${status ? `?status=${status}` : ""}`, token);
 }
 
 export function requestRecordingProcessing(eventId: string, token: string): Promise<RecordingProcessingRequest> {

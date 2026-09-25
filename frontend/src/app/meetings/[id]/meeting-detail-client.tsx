@@ -79,10 +79,6 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [sendingSelfCopy, setSendingSelfCopy] = useState(false);
   const pollingInFlight = useRef(false);
 
-  useEffect(() => {
-    setSpeakerMappings(meeting.speaker_mappings ?? {});
-  }, [meeting.speaker_mappings]);
-
   const data = meeting.extracted_json ?? {};
   const isTranscriptOnly = data.extraction_mode === "transcript_only";
   const isReviewable = meeting.state === "awaiting_review";
@@ -116,10 +112,10 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
       if (document.visibilityState === "hidden" || pollingInFlight.current) return;
       pollingInFlight.current = true;
       void getMeeting(initial.id, accessToken)
-        .then(setMeeting)
+        .then((next) => { setMeeting(next); setSpeakerMappings(next.speaker_mappings ?? {}); })
         .catch(() => {})
         .finally(() => { pollingInFlight.current = false; });
-    }, 5000);
+    }, 10000);
     return () => clearInterval(timer);
   }, [initial.id, accessToken, isProcessing]);
 

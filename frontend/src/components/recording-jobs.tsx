@@ -50,7 +50,7 @@ export default function RecordingJobs({ token, meetingId, onChanged }: { token: 
     if (!hasActiveJobs) return;
     const timer = setInterval(() => {
       if (document.visibilityState !== "hidden") void refresh();
-    }, 5000);
+    }, 10000);
     return () => clearInterval(timer);
   }, [hasActiveJobs, refresh]);
   if (!loading && !jobs.length && !error) return null;

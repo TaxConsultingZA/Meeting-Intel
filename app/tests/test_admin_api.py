@@ -247,6 +247,73 @@ class TestRemoveUser:
         )
         assert resp.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_admin_can_remove_one_of_multiple_admins(self):
+        from app.api.admin import remove_user
+
+        actor = _admin_user("admin@taxconsulting.co.za")
+        target = _admin_user("other-admin@taxconsulting.co.za")
+        db = AsyncMock()
+        db.scalar = AsyncMock(side_effect=[target, 2])
+        db.execute = AsyncMock()
+
+        result = await remove_user(target.upn, db=db, admin_upn=actor.upn)
+
+        assert result is None
+        db.delete.assert_awaited_once_with(target)
+        db.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_admin_cannot_remove_last_admin(self):
+        from fastapi import HTTPException
+        from app.api.admin import remove_user
+
+        actor = _admin_user("admin@taxconsulting.co.za")
+        db = AsyncMock()
+        db.scalar = AsyncMock(side_effect=[actor, 1])
+
+        with pytest.raises(HTTPException) as exc:
+            await remove_user("other-admin@taxconsulting.co.za", db=db, admin_upn=actor.upn)
+
+        assert exc.value.status_code == 409
+        db.delete.assert_not_awaited()
+
+
+class TestLastAdminUpdate:
+    @pytest.mark.asyncio
+    async def test_admin_can_revoke_one_of_multiple_admins(self):
+        from app.api.admin import update_user
+        from app.schemas import UpdateUserIn
+
+        target = _admin_user("other-admin@taxconsulting.co.za")
+        refreshed = _admin_user(target.upn)
+        refreshed.is_admin = False
+        db = AsyncMock()
+        db.scalar = AsyncMock(side_effect=[target, 2, refreshed])
+
+        result = await update_user(target.upn, UpdateUserIn(is_admin=False), db=db, _admin_upn="admin@taxconsulting.co.za")
+
+        assert result.is_admin is False
+        assert target.is_admin is False
+        db.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_admin_cannot_revoke_last_admin(self):
+        from fastapi import HTTPException
+        from app.api.admin import update_user
+        from app.schemas import UpdateUserIn
+
+        target = _admin_user("admin@taxconsulting.co.za")
+        db = AsyncMock()
+        db.scalar = AsyncMock(side_effect=[target, 1])
+
+        with pytest.raises(HTTPException) as exc:
+            await update_user(target.upn, UpdateUserIn(is_admin=False), db=db, _admin_upn=target.upn)
+
+        assert exc.value.status_code == 409
+        assert target.is_admin is True
+        db.commit.assert_not_awaited()
+
 
 class TestGetMe:
     def test_registered_user_returns_200(self):

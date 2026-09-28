@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
+import logging
 
 from ..config import get_settings
 from ..db import get_db
@@ -19,6 +20,7 @@ from ..services.reprocessing import (
 from .deps import registered_user, require_subscribed
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -36,8 +38,9 @@ async def _verify_owned_drive_item(upn: str, drive_id: str, drive_item_id: str) 
         item = await graph.get_drive_item(owned_drive_id, drive_item_id)
     except HTTPException:
         raise
-    except Exception as exc:
-        raise HTTPException(502, f"Could not verify OneDrive recording: {exc}") from exc
+    except Exception:
+        logger.exception("OneDrive recording verification failed for user %s", upn)
+        raise HTTPException(502, "Unable to access recording") from None
 
     if item.get("id") and item["id"] != drive_item_id:
         raise HTTPException(403, "Recording identity could not be verified")

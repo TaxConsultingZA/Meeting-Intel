@@ -47,7 +47,7 @@ async def create(body: EventReference, db=Depends(get_db), upn=Depends(require_s
 
 @router.get("")
 async def listing(
-    status: str | None = Query(default=None, pattern="^(pending|approved|rejected)$"),
+    status: str | None = Query(default=None, pattern="^(pending|approved|denied)$"),
     db=Depends(get_db),
     user: RegisteredUser = Depends(registered_user),
 ):

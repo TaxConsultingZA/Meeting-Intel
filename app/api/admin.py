@@ -38,6 +38,17 @@ async def _require_admin(upn: str = Depends(current_user), db: AsyncSession = De
     return upn
 
 
+async def _ensure_not_last_admin(db: AsyncSession, user: RegisteredUser) -> None:
+    """Keep at least one registered admin able to manage the platform."""
+    if not getattr(user, "is_admin", False):
+        return
+    admin_count = await db.scalar(
+        select(func.count(RegisteredUser.id)).where(RegisteredUser.is_admin.is_(True))
+    )
+    if admin_count <= 1:
+        raise HTTPException(409, "Cannot remove the last administrator")
+
+
 def _user_to_out(u: RegisteredUser) -> RegisteredUserOut:
     """Convert a RegisteredUser ORM row to its API response shape."""
     return RegisteredUserOut(
@@ -330,6 +341,8 @@ async def update_user(upn: str, body: UpdateUserIn, db: AsyncSession = Depends(g
         user.display_name = body.display_name
     if body.business_unit_id is not None:
         user.business_unit_id = body.business_unit_id
+    if body.is_admin is False and user.is_admin:
+        await _ensure_not_last_admin(db, user)
     if body.is_admin is not None:
         user.is_admin = body.is_admin
 
@@ -353,6 +366,7 @@ async def remove_user(upn: str, db: AsyncSession = Depends(get_db),
     user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == target_upn))
     if not user:
         raise HTTPException(404, f"{target_upn} is not registered")
+    await _ensure_not_last_admin(db, user)
 
     # Participant rows are intentionally retained for audit/history, but must
     # not remain a source of access after the account is removed.

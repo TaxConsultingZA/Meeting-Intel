@@ -12,6 +12,25 @@ class ApiError extends Error {
   }
 }
 
+function safeErrorMessage(status: number, body: string): string {
+  if (status === 401) return "Your session has expired. Please sign in again.";
+  if (status === 403) return "You do not have permission to perform this action.";
+  if (status === 404) {
+    // /users/me uses this explicit application state to enter registration flow.
+    if (/not registered on the platform/i.test(body)) {
+      return JSON.stringify({ detail: "Not registered on the platform" });
+    }
+    return "The requested item could not be found.";
+  }
+  if (status === 409) return "This action conflicts with the current state. Refresh and try again.";
+  if (status === 422) return "Some submitted information is invalid.";
+  if (status >= 500) return "The service is temporarily unavailable. Please try again later.";
+  if (/one drive|onedrive|graph|external service|recording/i.test(body)) {
+    return "The external service is temporarily unavailable.";
+  }
+  return "The request could not be completed. Please try again.";
+}
+
 export function getRecordingJobs(token: string, meetingId?: string, limit?: number): Promise<RecordingJobOut[]> {
   const params = new URLSearchParams();
   if (meetingId) params.set("meeting_id", meetingId);
@@ -52,7 +71,7 @@ async function apiFetch<T>(
   });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new ApiError(res.status, text);
+    throw new ApiError(res.status, safeErrorMessage(res.status, text));
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -189,7 +208,7 @@ export function getRecentMeetings(token: string): Promise<RecentMeeting[]> {
   return apiFetch("/calendar/recent", token);
 }
 
-export function getProcessingRequests(token: string, status: "pending" | "approved" | "rejected" | null = "pending"): Promise<RecordingProcessingRequest[]> {
+export function getProcessingRequests(token: string, status: "pending" | "approved" | "denied" | null = "pending"): Promise<RecordingProcessingRequest[]> {
   return apiFetch(`/recording-processing-requests${status ? `?status=${status}` : ""}`, token);
 }
 

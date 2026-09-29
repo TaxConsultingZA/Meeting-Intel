@@ -2,6 +2,7 @@ import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, App
 import type { RecentMeeting, RecordingProcessingRequest } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+const API_TIMEOUT_MS = 30_000;
 
 class ApiError extends Error {
   constructor(
@@ -22,7 +23,12 @@ function safeErrorMessage(status: number, body: string): string {
     }
     return "The requested item could not be found.";
   }
-  if (status === 409) return "This action conflicts with the current state. Refresh and try again.";
+  if (status === 409) {
+    if (/Cannot remove the last administrator/i.test(body)) {
+      return "Cannot remove the last administrator";
+    }
+    return "This action conflicts with the current state. Refresh and try again.";
+  }
   if (status === 422) return "Some submitted information is invalid.";
   if (status >= 500) return "The service is temporarily unavailable. Please try again later.";
   if (/one drive|onedrive|graph|external service|recording/i.test(body)) {
@@ -61,14 +67,38 @@ async function apiFetch<T>(
   accessToken: string,
   init?: RequestInit,
 ): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-      ...(init?.headers ?? {}),
-    },
-  });
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, API_TIMEOUT_MS);
+  const forwardAbort = () => controller.abort();
+  if (init?.signal) {
+    if (init.signal.aborted) controller.abort();
+    else init.signal.addEventListener("abort", forwardAbort, { once: true });
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (error) {
+    if (timedOut) {
+      throw new ApiError(408, "Request timed out. Please try again.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    init?.signal?.removeEventListener("abort", forwardAbort);
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new ApiError(res.status, safeErrorMessage(res.status, text));

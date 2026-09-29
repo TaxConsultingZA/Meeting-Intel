@@ -61,6 +61,11 @@ export default function RecordingJobs({ token, meetingId, onChanged }: { token: 
     {jobs.map(job => <div key={job.job_id} className="border-t py-3 text-sm space-y-2">
       {!meetingId && (job.meeting_id ? <Link className="font-medium underline" href={`/meetings/${job.meeting_id}`}>{job.title}</Link> : <p>{job.title}</p>)}
       <StateBadge state={job.processing_status} />
+      {job.status === "failed" && (
+        <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-800">
+          Processing failed. {job.can_retry ? "You can retry this job using Retry below." : "Please contact an administrator for help."}
+        </p>
+      )}
       {job.processing_status === "completed" && job.review_status && <div className="flex items-center gap-1 text-xs text-[#6b7280]">Review: <StateBadge state={job.review_status} /></div>}
       {job.processing_status === "queued" && !job.processing_enabled && <p className="text-xs text-amber-800">Queued — processing is paused in staging. No paid transcription will run.</p>}
       {job.processing_status === "cancel_requested" && <p className="text-xs text-amber-800">Waiting for the current operation to stop. Saved data will be kept.</p>}

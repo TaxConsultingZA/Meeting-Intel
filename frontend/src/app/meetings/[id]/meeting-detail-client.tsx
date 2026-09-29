@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { ChevronLeft, Pencil, Check, X, CheckCircle2, Loader2, Pause, Play } from "lucide-react";
@@ -77,6 +77,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [savingSpeakerMappings, setSavingSpeakerMappings] = useState(false);
   const [savingAccess, setSavingAccess] = useState(false);
   const [sendingSelfCopy, setSendingSelfCopy] = useState(false);
+  const [pollingError, setPollingError] = useState<string | null>(null);
   const pollingInFlight = useRef(false);
 
   const data = meeting.extracted_json ?? {};
@@ -106,18 +107,26 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
     && meeting.edit_access_status === "approved"
     && (meeting.state === "approved" || meeting.state === "sent");
 
+  const refreshMeetingStatus = useCallback(() => {
+    if (document.visibilityState === "hidden" || pollingInFlight.current) return;
+    pollingInFlight.current = true;
+    void getMeeting(initial.id, accessToken)
+      .then((next) => {
+        setMeeting(next);
+        setSpeakerMappings(next.speaker_mappings ?? {});
+        setPollingError(null);
+      })
+      .catch(() => {
+        setPollingError("Unable to refresh meeting status. Please try again.");
+      })
+      .finally(() => { pollingInFlight.current = false; });
+  }, [initial.id, accessToken]);
+
   useEffect(() => {
     if (!isProcessing) return;
-    const timer = setInterval(() => {
-      if (document.visibilityState === "hidden" || pollingInFlight.current) return;
-      pollingInFlight.current = true;
-      void getMeeting(initial.id, accessToken)
-        .then((next) => { setMeeting(next); setSpeakerMappings(next.speaker_mappings ?? {}); })
-        .catch(() => {})
-        .finally(() => { pollingInFlight.current = false; });
-    }, 10000);
+    const timer = setInterval(refreshMeetingStatus, 10000);
     return () => clearInterval(timer);
-  }, [initial.id, accessToken, isProcessing]);
+  }, [isProcessing, refreshMeetingStatus]);
 
   async function handleApprove() {
     setApproving(true);
@@ -227,6 +236,19 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
       <Link href="/" className="inline-flex items-center gap-1.5 text-[#6b7280] text-[13px] hover:text-[#003366] mb-4 transition-colors">
         <ChevronLeft size={15} /> Back to Dashboard
       </Link>
+
+      {pollingError && isProcessing && (
+        <div role="alert" className="mb-5 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <span>{pollingError}</span>
+          <button
+            type="button"
+            onClick={refreshMeetingStatus}
+            className="shrink-0 rounded-md border border-amber-300 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+          >
+            Retry refresh
+          </button>
+        </div>
+      )}
 
       {meeting.state === "approved" || meeting.state === "sent" ? (
         <div className="flex items-center gap-2.5 bg-green-50 border border-green-200 rounded-lg px-4 py-3 mb-5 text-green-800 text-[13.5px] font-medium">

@@ -78,6 +78,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [savingAccess, setSavingAccess] = useState(false);
   const [sendingSelfCopy, setSendingSelfCopy] = useState(false);
   const [pollingError, setPollingError] = useState<string | null>(null);
+  const [approvalVerificationError, setApprovalVerificationError] = useState<string | null>(null);
   const pollingInFlight = useRef(false);
 
   const data = meeting.extracted_json ?? {};
@@ -115,6 +116,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
         setMeeting(next);
         setSpeakerMappings(next.speaker_mappings ?? {});
         setPollingError(null);
+        setApprovalVerificationError(null);
       })
       .catch(() => {
         setPollingError("Unable to refresh meeting status. Please try again.");
@@ -130,17 +132,42 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
 
   async function handleApprove() {
     setApproving(true);
+    setApprovalVerificationError(null);
     try {
       const res = await approveMeeting(meeting.id, accessToken, recipients);
-      setMeeting((m) => ({ ...m, state: res.state as never }));
+      let confirmedState = res.state;
+      try {
+        const latest = await getMeeting(meeting.id, accessToken);
+        setMeeting(latest);
+        setSpeakerMappings(latest.speaker_mappings ?? {});
+        confirmedState = latest.state;
+      } catch {
+        // Keep the successful response state visible if reconciliation itself fails,
+        // but make the unverifiable fields explicit to the user.
+        setMeeting((m) => ({ ...m, state: res.state as never }));
+        setApprovalVerificationError("Unable to verify meeting approval status. Please refresh and try again.");
+      }
       setShowModal(false);
       toast.success(
-        res.state === "sent"
+        confirmedState === "sent"
           ? `Meeting notes approved and emailed to ${recipients.length} selected recipient(s).`
           : "Meeting notes approved. No email was sent.",
       );
     } catch (e: unknown) {
-      toast.error(`Approval failed: ${e instanceof Error ? e.message : String(e)}`);
+      try {
+        const latest = await getMeeting(meeting.id, accessToken);
+        setMeeting(latest);
+        setSpeakerMappings(latest.speaker_mappings ?? {});
+        if (latest.state === "approved" || latest.state === "sent") {
+          setShowModal(false);
+          toast.success("Approval may have completed. The latest meeting status has been loaded.");
+        } else {
+          toast.error(`Approval failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      } catch {
+        setApprovalVerificationError("Unable to verify meeting approval status. Please refresh and try again.");
+        toast.error(`Approval failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
     } finally {
       setApproving(false);
     }
@@ -236,6 +263,21 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
       <Link href="/" className="inline-flex items-center gap-1.5 text-[#6b7280] text-[13px] hover:text-[#003366] mb-4 transition-colors">
         <ChevronLeft size={15} /> Back to Dashboard
       </Link>
+
+      {approvalVerificationError && (
+        <div role="alert" className="mb-5 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <span>{approvalVerificationError}</span>
+          <button
+            type="button"
+            onClick={() => {
+              refreshMeetingStatus();
+            }}
+            className="shrink-0 rounded-md border border-amber-300 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+          >
+            Retry refresh
+          </button>
+        </div>
+      )}
 
       {pollingError && isProcessing && (
         <div role="alert" className="mb-5 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">

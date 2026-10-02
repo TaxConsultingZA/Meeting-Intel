@@ -10,7 +10,6 @@ frontend/
 tests/
 mockup.html
 *.md
-alembic/
 docker-compose.yml
 Procfile
 .vscode

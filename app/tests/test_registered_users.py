@@ -6,15 +6,24 @@ from app.models import BUSINESS_UNITS
 
 class TestBusinessUnitsList:
     def test_business_units_constant_contains_expected_entries(self):
-        assert "Tax Technical" in BUSINESS_UNITS
-        assert "xpatweb" in BUSINESS_UNITS
-        assert "Financial Emigration" in BUSINESS_UNITS
+        assert "Africorp" in BUSINESS_UNITS
+        assert "AI Department" in BUSINESS_UNITS
+        assert "BAM" in BUSINESS_UNITS
         assert "CPD Consortium" in BUSINESS_UNITS
+        assert "Crypto Tax consulting" in BUSINESS_UNITS
+        assert "DEV" in BUSINESS_UNITS
+        assert "FBPS" in BUSINESS_UNITS
+        assert "FE" in BUSINESS_UNITS
+        assert "IT" in BUSINESS_UNITS
         assert "Marketing" in BUSINESS_UNITS
-        assert "IT and Devs" in BUSINESS_UNITS
+        assert "MySarsAssistant" in BUSINESS_UNITS
+        assert "Rem" in BUSINESS_UNITS
+        assert "SubmitMyVisa" in BUSINESS_UNITS
+        assert "TRS" in BUSINESS_UNITS
+        assert "Xpatweb" in BUSINESS_UNITS
 
     def test_business_units_has_correct_count(self):
-        assert len(BUSINESS_UNITS) == 6
+        assert len(BUSINESS_UNITS) == 15
 
 
 class TestReconcileSubscribedFilter:

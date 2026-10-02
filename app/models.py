@@ -51,12 +51,21 @@ class Confidence(str, enum.Enum):
 # --- Registration --------------------------------------------------------
 
 BUSINESS_UNITS = [
-    "Tax Technical",
-    "xpatweb",
-    "Financial Emigration",
+    "Africorp",
+    "AI Department",
+    "BAM",
     "CPD Consortium",
+    "Crypto Tax consulting",
+    "DEV",
+    "FBPS",
+    "FE",
+    "IT",
     "Marketing",
-    "IT and Devs",
+    "MySarsAssistant",
+    "Rem",
+    "SubmitMyVisa",
+    "TRS",
+    "Xpatweb",
 ]
 
 

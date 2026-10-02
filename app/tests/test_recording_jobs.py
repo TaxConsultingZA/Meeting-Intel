@@ -119,7 +119,7 @@ async def test_list_jobs_query_excludes_no_view_users_but_preserves_owner_path(u
     db.execute.return_value = SimpleNamespace(all=lambda: [])
     user = SimpleNamespace(upn=upn, is_admin=False)
 
-    assert await recording_jobs.list_jobs(db=db, user=user) == []
+    assert await recording_jobs.list_jobs(db=db, user=user, limit=20) == []
 
     statement = db.execute.await_args.args[0]
     sql = str(statement.compile(dialect=postgresql.dialect())).lower()
@@ -127,6 +127,7 @@ async def test_list_jobs_query_excludes_no_view_users_but_preserves_owner_path(u
     assert "not in" in sql
     assert "recording_jobs.owner_upn" in sql
     assert "meetings.organizer_upn" in sql
+    assert any("Meeting.action_items" in str(option.path) for option in statement._with_options)
 
 
 async def test_manual_import_queues_a_discovered_recording(monkeypatch):

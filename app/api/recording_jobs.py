@@ -89,7 +89,10 @@ async def list_jobs(
     )
     query = (select(RecordingJob, Meeting)
              .outerjoin(Meeting, Meeting.drive_item_id == RecordingJob.drive_item_id)
-             .options(selectinload(Meeting.participants)))
+             .options(
+                 selectinload(Meeting.participants),
+                 selectinload(Meeting.action_items),
+             ))
     if not user.is_admin:
         # The recording owner may still see an unassociated queue row, or a
         # meeting they own/are an approved participant of. Never leak a linked

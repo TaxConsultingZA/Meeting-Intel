@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = ""
 
-    worker_poll_seconds: float = Field(default=3, gt=0)
+    worker_poll_seconds: float = Field(default=60, gt=0)
     worker_lease_seconds: float = Field(default=120, gt=0)
     worker_heartbeat_seconds: float = Field(default=20, gt=0)
     worker_shutdown_seconds: float = Field(default=30, ge=0)

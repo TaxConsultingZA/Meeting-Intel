@@ -11,6 +11,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import StateBadge from "@/components/state-badge";
+import RecordingJobs from "@/components/recording-jobs";
 import LocalDateTime from "@/components/local-date-time";
 import PipelineView from "./pipeline-view";
 import {
@@ -103,18 +104,23 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const speakerMappingsChanged = speakerLabels.some(
     (label) => mappingForLabel(speakerMappings, label) !== mappingForLabel(meeting.speaker_mappings, label),
   );
+  const reviewDrafts = useRef({ speakerMappingsChanged, editingTranscript });
+  useEffect(() => {
+    reviewDrafts.current = { speakerMappingsChanged, editingTranscript };
+  }, [speakerMappingsChanged, editingTranscript]);
   const isProcessing = (["queued", "downloading", "transcribing", "extracting"] as ProcessingState[]).includes(meeting.state);
   const canSendSelfCopy = !isOrganizer
     && meeting.edit_access_status === "approved"
     && (meeting.state === "approved" || meeting.state === "sent");
 
-  const refreshMeetingStatus = useCallback(() => {
+  const refreshMeetingStatus = useCallback(async () => {
     if (document.visibilityState === "hidden" || pollingInFlight.current) return;
     pollingInFlight.current = true;
-    void getMeeting(initial.id, accessToken)
+    await getMeeting(initial.id, accessToken)
       .then((next) => {
         setMeeting(next);
-        setSpeakerMappings(next.speaker_mappings ?? {});
+        if (!reviewDrafts.current.speakerMappingsChanged) setSpeakerMappings(next.speaker_mappings ?? {});
+        if (!reviewDrafts.current.editingTranscript) setTranscriptDraft(next.transcript ?? "");
         setPollingError(null);
         setApprovalVerificationError(null);
       })
@@ -301,6 +307,13 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
         </div>
       ) : null}
 
+      <RecordingJobs
+        token={accessToken}
+        meetingId={meeting.id}
+        onChanged={refreshMeetingStatus}
+        onTerminalTransition={refreshMeetingStatus}
+      />
+
       <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 items-start">
         {/* Sidebar */}
         <div className="lg:sticky lg:top-[76px] bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
@@ -322,7 +335,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             )}
             <div className="h-px bg-[#dde1e8]" />
             <div>
-              <span className="text-[11px] font-semibold text-[#6b7280] uppercase tracking-wide">Status</span>
+              <span className="text-[11px] font-semibold text-[#6b7280] uppercase tracking-wide">Meeting status</span>
               <div className="mt-1"><StateBadge state={meeting.state} /></div>
             </div>
             <MetaRow label="Action Items" value={`${meeting.action_items.length} extracted`} />
@@ -392,7 +405,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           {isProcessing ? (
             <PipelineView state={meeting.state} />
           ) : meeting.state === "cancelled" ? (
-            <div className="rounded-lg border bg-white p-5"><h2 className="font-semibold">Recording cancelled</h2><p>Saved meeting information and transcript have been kept.</p>{meeting.transcript && <pre className="whitespace-pre-wrap mt-3 text-sm">{meeting.transcript}</pre>}</div>
+            <div className="rounded-lg border border-[#dde1e8] bg-white p-5"><h2 className="font-semibold text-[#003366]">Recording cancelled</h2><p className="mt-2 text-sm leading-6 text-[#6b7280]">Saved meeting information and transcript have been kept. Check the recording processing panel above for any recovery actions available to you.</p>{meeting.transcript && <pre className="mt-4 whitespace-pre-wrap rounded-md bg-[#fafbfc] p-4 text-sm leading-6">{meeting.transcript}</pre>}</div>
           ) : meeting.state === "failed" ? (
             <div className="bg-white rounded-lg border border-red-200 shadow-sm overflow-hidden">
               <div className="bg-red-600 border-b-[3px] border-[#C9A52C] px-5 py-4">
@@ -406,7 +419,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                   </p>
                 )}
                 <p className="text-[13px] text-[#6b7280] mt-3">
-                  You can retry this recording from the <strong>Import Recordings</strong> panel on the dashboard.
+                  Check the recording processing panel above for the latest status and any recovery actions available to you.
                 </p>
               </div>
             </div>

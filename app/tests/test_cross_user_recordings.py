@@ -14,8 +14,6 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.schema import CreateIndex
 from sqlalchemy.dialects import postgresql
 
@@ -23,11 +21,6 @@ from app.models import Base, RegisteredUser, RecordingJob, Meeting, MeetingParti
 from app.services import cross_user_recordings as service
 from app.api import calendar, recordings, recording_processing_requests
 from app.api.recording_processing_requests import EventReference, public_request
-
-
-@compiles(JSONB, "sqlite")
-def sqlite_json(type_, compiler, **kwargs):
-    return "JSON"
 
 
 class OfflineDB:

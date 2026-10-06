@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -21,6 +22,7 @@ async def enqueue_recording_job(
     etag: str | None = None,
     filename: str | None = None,
     commit: bool = True,
+    job_id: UUID | None = None,
 ) -> bool:
     """Atomically claim a new Graph item and persist its processing job."""
     claimed = await claim_item(
@@ -29,6 +31,7 @@ async def enqueue_recording_job(
     if not claimed:
         return False
     db.add(RecordingJob(
+        **({"id": job_id} if job_id is not None else {}),
         drive_item_id=drive_item_id,
         drive_id=drive_id,
         owner_upn=owner_upn,
@@ -48,6 +51,8 @@ async def enqueue_retry_job(
     drive_id: str,
     owner_upn: str,
     source: str = "manual_retry",
+    commit: bool = True,
+    job_id: UUID | None = None,
 ) -> bool:
     """Persist a retry unless this item already has active queued work."""
     active = await db.scalar(
@@ -59,6 +64,7 @@ async def enqueue_retry_job(
     if active:
         return False
     statement = insert(RecordingJob).values(
+        **({"id": job_id} if job_id is not None else {}),
         drive_item_id=drive_item_id,
         drive_id=drive_id,
         owner_upn=owner_upn,
@@ -72,5 +78,6 @@ async def enqueue_retry_job(
     if created_id is None:
         await db.rollback()
         return False
-    await db.commit()
+    if commit:
+        await db.commit()
     return created_id is not None

@@ -1,6 +1,7 @@
 """Security and durability tests for manual recording processing."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
@@ -127,14 +128,17 @@ async def test_list_jobs_query_excludes_no_view_users_but_preserves_owner_path(u
     assert "not in" in sql
     assert "recording_jobs.owner_upn" in sql
     assert "meetings.organizer_upn" in sql
-    assert any("Meeting.action_items" in str(option.path) for option in statement._with_options)
+    assert "meetings.transcript" not in sql
+    assert "meetings.extracted_json" not in sql
+    assert not any("Meeting.action_items" in str(option.path) for option in statement._with_options)
 
 
 async def test_manual_import_queues_a_discovered_recording(monkeypatch):
     from app.api import recordings
 
     db = AsyncMock()
-    db.scalar = AsyncMock(side_effect=[MagicMock(), None])
+    db.add = MagicMock()
+    db.scalar = AsyncMock(side_effect=[SimpleNamespace(id=uuid4(), upn="owner@example.com", entra_oid=None), MagicMock(), None])
     monkeypatch.setattr(
         recordings, "_verify_owned_drive_item",
         AsyncMock(return_value={"id": "item-1", "name": "test03.mp4"}),
@@ -148,7 +152,101 @@ async def test_manual_import_queues_a_discovered_recording(monkeypatch):
     )
 
     assert result == {"ok": True, "queued": True}
-    enqueue.assert_awaited_once_with(
-        db, drive_item_id="item-1", drive_id="drive-1",
-        owner_upn="owner@example.com", source="manual",
+    enqueue.assert_awaited_once()
+    assert enqueue.await_args.kwargs["commit"] is False
+    assert enqueue.await_args.kwargs["source"] == "manual"
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.parametrize("admin", [False, True])
+@pytest.mark.parametrize("status", ["pending", "processing", "completed", "failed", "cancelled"])
+@pytest.mark.parametrize("state", ["awaiting_review", "sent"])
+async def test_status_projection_preserves_controls_and_conditional_loading(admin, status, state):
+    from app.api.recording_jobs import list_jobs, job_out
+    from app.models import ProcessingState
+    from app.services.reprocessing import MANUAL_REPROCESS_SOURCE
+
+    upn = "owner@example.test"
+    meeting = SimpleNamespace(
+        id=uuid4(), title="Meeting", state=ProcessingState(state),
+        organizer_upn=upn, participants=[], transcript="words",
+        extracted_json={"raw_transcript": "words"}, approved_by=None,
+        approved_at=None, approved_recipients=None, email_delivery_status=None,
+        action_items=[],
     )
+    job = SimpleNamespace(
+        id=uuid4(), drive_item_id="item", owner_upn=upn, status=status,
+        source=MANUAL_REPROCESS_SOURCE, attempts=1, max_attempts=3,
+        last_error=None, locked_at=None, cancel_requested_at=None,
+    )
+    db = AsyncMock()
+    db.execute.return_value = SimpleNamespace(all=lambda: [(job, meeting)])
+    db.scalars.return_value = SimpleNamespace(all=lambda: [meeting])
+    actual = await list_jobs(db=db, user=SimpleNamespace(upn=upn, is_admin=admin), limit=20)
+    assert actual == [job_out(job, meeting, upn, admin)]
+    needs_clean = state == "awaiting_review" and status in {"completed", "failed", "cancelled"}
+    needs_organizer = state == "awaiting_review" and status == "completed" and not admin
+    assert db.scalars.await_count == int(needs_clean) + int(needs_organizer)
+
+
+@pytest.mark.parametrize("edited", [False, True])
+async def test_status_clean_candidate_preserves_action_item_edit_check(edited):
+    from app.api.recording_jobs import list_jobs
+    from app.models import ProcessingState
+
+    meeting = SimpleNamespace(
+        id=uuid4(), title="Meeting", state=ProcessingState.awaiting_review,
+        transcript="words", extracted_json={"raw_transcript": "words"},
+        approved_by=None, approved_at=None, approved_recipients=None,
+        email_delivery_status=None,
+        action_items=[SimpleNamespace(edited_by="user" if edited else None, approved=False)],
+    )
+    job = SimpleNamespace(
+        id=uuid4(), drive_item_id="item", owner_upn="owner", status="completed",
+        source="manual", attempts=1, max_attempts=3, last_error=None,
+        locked_at=None, cancel_requested_at=None,
+    )
+    db = AsyncMock()
+    db.execute.return_value = SimpleNamespace(all=lambda: [(job, meeting), (job, meeting)])
+    db.scalars.return_value = SimpleNamespace(all=lambda: [meeting])
+    result = await list_jobs(db=db, user=SimpleNamespace(upn="admin", is_admin=True), limit=20)
+    assert all(row["can_reprocess"] is (not edited) for row in result)
+    assert db.scalars.await_count == 1
+
+
+async def test_status_unassociated_job_preserves_response_without_review_loading():
+    from app.api.recording_jobs import list_jobs, job_out
+    job = SimpleNamespace(
+        id=uuid4(), drive_item_id="item", owner_upn="owner", status="pending",
+        source="manual", attempts=0, max_attempts=3, last_error=None,
+        locked_at=None, cancel_requested_at=None,
+    )
+    db = AsyncMock()
+    db.execute.return_value = SimpleNamespace(all=lambda: [(job, None)])
+    result = await list_jobs(db=db, user=SimpleNamespace(upn="owner", is_admin=False), limit=20)
+    assert result == [job_out(job, None, "owner", False)]
+    db.scalars.assert_not_awaited()
+
+
+async def test_status_nonorganizer_skips_large_review_fields():
+    from app.api.recording_jobs import list_jobs, job_out
+    from app.models import ProcessingState
+    meeting = SimpleNamespace(
+        id=uuid4(), title="Meeting", state=ProcessingState.awaiting_review,
+        organizer_upn="someone_else", participants=[],
+    )
+    job = SimpleNamespace(
+        id=uuid4(), drive_item_id="item", owner_upn="owner", status="completed",
+        source="manual", attempts=1, max_attempts=3, last_error=None,
+        locked_at=None, cancel_requested_at=None,
+    )
+    db = AsyncMock()
+    db.execute.return_value = SimpleNamespace(all=lambda: [(job, meeting), (job, meeting)])
+    db.scalars.return_value = SimpleNamespace(all=lambda: [meeting])
+    result = await list_jobs(db=db, user=SimpleNamespace(upn="owner", is_admin=False), limit=20)
+    assert result == [job_out(job, meeting, "owner", False)]
+    db.scalars.assert_awaited_once()
+    from sqlalchemy.dialects import postgresql
+    sql = str(db.scalars.await_args.args[0].compile(dialect=postgresql.dialect()))
+    assert "meetings.transcript" not in sql
+    assert "meetings.extracted_json" not in sql

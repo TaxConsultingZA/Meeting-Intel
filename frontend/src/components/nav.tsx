@@ -45,7 +45,7 @@ export default function Nav({ userEmail, accessToken, isAdmin }: NavProps) {
             href={href}
             className={cn(
               "px-3.5 py-1.5 rounded-md text-[13.5px] transition-colors",
-              path === href
+              (path === href || (href === "/admin" && path.startsWith("/admin/")))
                 ? "text-[#C9A52C] bg-white/10"
                 : "text-white/70 hover:text-white hover:bg-white/10",
             )}

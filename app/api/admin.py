@@ -5,7 +5,9 @@ The first admin is bootstrapped via the ``ADMIN_UPNS`` env var at application st
 """
 from datetime import datetime, timezone
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Response
+from typing import Literal
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import AwareDatetime
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -19,6 +21,8 @@ from ..schemas import AdminRevokeAccessIn, BusinessUnitOut, RegisteredUserOut, R
 from ..services.sync_state import list_sync_status
 from ..services.job_control import RETRYABLE_JOB_STATES
 from ..services.access import NO_VIEW_ACCESS_TYPES
+from ..services.audit_queries import query_audit_events
+from ..schemas import AuditEventsPageOut
 from ..utils.identity import normalize_upn
 from .deps import current_user
 
@@ -36,6 +40,33 @@ async def _require_admin(upn: str = Depends(current_user), db: AsyncSession = De
     if not user or not user.is_admin:
         raise HTTPException(403, "Admin access required")
     return upn
+
+
+@router.get("/audit-events", response_model=AuditEventsPageOut)
+async def list_audit_events(
+    response: Response,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None, min_length=1, max_length=2048),
+    start: AwareDatetime | None = Query(default=None, alias="from"),
+    end: AwareDatetime | None = Query(default=None, alias="to"),
+    event_type: str | None = Query(default=None, max_length=64, pattern=r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$"),
+    outcome: Literal["requested", "succeeded", "failed", "unknown"] | None = None,
+    actor_type: Literal["user", "system"] | None = None,
+    actor_id: str | None = Query(default=None, min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$"),
+    actor_upn: str | None = Query(default=None, max_length=255, pattern=r"^[^\s@]+@[^\s@]+$"),
+    db: AsyncSession = Depends(get_db),
+    _upn: str = Depends(_require_admin),
+):
+    """Read safe history with a bounded date window and descending keyset cursor."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return await query_audit_events(
+            db, limit=limit, cursor=cursor, start=start, end=end,
+            event_type=event_type, outcome=outcome, actor_type=actor_type,
+            actor_id=actor_id, actor_upn=actor_upn,
+        )
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(422, "Invalid audit query: check date range, cursor, and filters") from exc
 
 
 async def _ensure_not_last_admin(db: AsyncSession, user: RegisteredUser) -> None:

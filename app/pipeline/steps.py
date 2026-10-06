@@ -12,6 +12,7 @@ from ..utils.identity import normalize_upn, normalize_upns
 from .transcribe import get_transcriber, normalize_single_person_diarization, TranscriptSegment
 from .extract import get_extractor, require_transcript, validate_extraction
 from ..services.job_control import guarded_commit, JobCancelled, public_job_error
+from ..services.recording_audit import add_processing_outcome
 from ..services.reprocessing import (
     MANUAL_REPROCESS_SOURCE,
     is_clean_reprocess_candidate,
@@ -39,6 +40,7 @@ async def _stop_reprocess_conflict(db, job_id, lease_token, detail: str) -> None
     job.locked_at = None
     job.lease_token = None
     job.last_error = f"reprocess conflict: {detail}"
+    add_processing_outcome(db, job, "failed", error_category="reprocess_conflict")
     await db.commit()
     raise ReprocessConflict(job.last_error)
 
@@ -74,6 +76,8 @@ async def _commit_reprocess_result(
         job.locked_at = None
         job.lease_token = None
         job.last_error = "reprocess conflict: meeting results changed during processing"
+        add_processing_outcome(db, job, "failed", meeting_id=meeting_id,
+                               error_category="reprocess_conflict")
         await db.commit()
         raise ReprocessConflict(job.last_error)
 
@@ -99,6 +103,7 @@ async def _commit_reprocess_result(
     job.last_error = None
     job.locked_at = None
     job.lease_token = None
+    add_processing_outcome(db, job, "succeeded", meeting_id=meeting.id)
     await db.commit()
     return meeting
 

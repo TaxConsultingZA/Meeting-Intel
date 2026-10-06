@@ -5,7 +5,8 @@ import json
 import os
 import subprocess
 import tempfile
-from fastapi import APIRouter, Body, Depends, HTTPException, Response
+from uuid import NAMESPACE_URL, uuid5
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from sqlalchemy import Text, case, cast, column, exists, func, literal, not_, or_, select
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import load_only, selectinload
@@ -28,6 +29,7 @@ from ..email_templates import build_meeting_email
 from ..utils.identity import normalize_upn, normalize_upns
 from ..services.job_control import public_job_error
 from ..services.access import NO_VIEW_ACCESS_TYPES, has_view_access
+from ..services.email_audit import add_email_event, submission_failure
 from .deps import current_user, require_registered  # noqa: F401 — re-exported; tests may import from here
 
 settings = get_settings()
@@ -566,13 +568,27 @@ async def get_meeting(meeting_id: str, db: AsyncSession = Depends(get_db),
     return _to_out(m, upn, is_admin=is_admin)
 
 
+def _email_fingerprint(meeting_id, recipients: list[str], subject: str, html: str) -> str:
+    # The renderer's exact strings are canonical: do not strip HTML whitespace
+    # or otherwise hide changes to the payload that Graph will receive.
+    return hashlib.sha256(json.dumps(
+        {"meeting_id": str(meeting_id),
+         "recipients": sorted(set(v.strip().lower() for v in recipients if v.strip())),
+         "subject": subject, "html": html},
+        sort_keys=True,
+    ).encode("utf-8")).hexdigest()
+
+
 @router.get("/reviews/{meeting_id}/email-preview", response_model=EmailPreviewOut)
 async def email_preview(meeting_id: str, db: AsyncSession = Depends(get_db),
-                        upn: str = Depends(current_user)):
+                        upn: str = Depends(current_user),
+                        recipients: list[str] = Query(default=[])):
     """Render the exact branded HTML that approval would send, without sending it."""
     m = await _authorize(db, meeting_id, upn, allow_admin=await _is_admin(db, upn))
     subject, html = build_meeting_email(m)
-    return EmailPreviewOut(subject=subject, html=html)
+    recipients = ApproveMeetingIn(recipients=recipients).recipients
+    return EmailPreviewOut(subject=subject, html=html, recipients=sorted(recipients),
+                           fingerprint=_email_fingerprint(m.id, recipients, subject, html))
 
 
 @router.patch("/reviews/action-items/{item_id}")
@@ -738,6 +754,16 @@ async def decide_edit_access(meeting_id: str, requester_upn: str, body: EditAcce
     }
 
 
+async def _email_audit_actor(db: AsyncSession, upn: str) -> dict:
+    user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
+    # Legacy authorized organizers need not have a RegisteredUser row. Preserve
+    # their existing access and use a namespaced identity with the UPN snapshot.
+    return {"actor_id": str(user.id) if user else str(uuid5(NAMESPACE_URL,
+                f"meeting-intel:legacy-email-actor:{upn}")),
+            "actor_upn": upn,
+            "actor_entra_oid": user.entra_oid if user else None}
+
+
 @router.post("/reviews/{meeting_id}/approve")
 async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
                   upn: str = Depends(current_user),
@@ -761,10 +787,9 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
 
     recipients = sorted(set(body.recipients))
     subject, email_body = build_meeting_email(m)
-    fingerprint = hashlib.sha256(json.dumps(
-        {"meeting_id": str(m.id), "recipients": recipients, "subject": subject, "html": email_body},
-        sort_keys=True,
-    ).encode("utf-8")).hexdigest()
+    fingerprint = _email_fingerprint(m.id, recipients, subject, email_body)
+    if not body.expected_fingerprint or body.expected_fingerprint != fingerprint:
+        raise HTTPException(409, "Email preview is missing or has changed. Review a fresh preview before approving.")
 
     # Repeated delivery of the exact same approval is idempotent.
     if m.email_delivery_status == "sent" and m.email_delivery_fingerprint == fingerprint:
@@ -775,11 +800,15 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
             "Email delivery is already in progress or its outcome is unknown; automatic resend is blocked",
         )
     _require_awaiting_review(m)
+    actor = await _email_audit_actor(db, upn)
+    sender = settings.mail_sender_upn or m.organizer_upn
+    audit_context = {"meeting_id": m.id, "attempt": m.email_delivery_attempts,
+                     "fingerprint": fingerprint, "recipient_count": len(recipients)}
 
     # The explicit organiser approval is the send gate. AUTO_SEND_EMAIL is no
     # longer used here: selected recipients are never contacted before this POST.
-    # Send before committing approval so a Graph failure leaves the meeting in
-    # awaiting_review and the organiser can safely retry from the UI.
+    # Send before committing approval. Confirmed failures remain retryable;
+    # uncertain submission outcomes retain the durable resend block.
     sent = False
     if settings.emails_enabled and not is_local_test_meeting(m) and recipients and m.organizer_upn:
         m.email_delivery_status = "sending"
@@ -787,28 +816,39 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
         m.email_delivery_error = None
         m.email_delivery_attempts += 1
         m.approved_recipients = recipients
+        audit_context["attempt"] = m.email_delivery_attempts
+        add_email_event(db, **audit_context, event_type="email.approval_requested",
+                        outcome="requested", actor=actor)
         # Persist the delivery claim before calling Graph. If the web process
         # dies after Graph accepts the mail, a later request will be blocked
         # instead of silently sending a duplicate.
         await db.commit()
         try:
             await graph.send_mail(
-                settings.mail_sender_upn or m.organizer_upn,
+                sender,
                 recipients,
                 subject,
                 email_body,
             )
-        except Exception as exc:
-            m.email_delivery_status = "failed"
-            m.email_delivery_error = str(exc)[:1000]
+        except (Exception, asyncio.CancelledError) as exc:
+            outcome, error_category = submission_failure(exc)
+            m.email_delivery_status = "failed" if outcome == "failed" else "sending"
+            m.email_delivery_error = error_category
+            add_email_event(db, **audit_context, event_type="email.send",
+                            outcome=outcome, error_category=error_category)
             await db.commit()
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise HTTPException(
                 502,
-                "Email delivery failed; the meeting remains awaiting review and can be retried",
+                "Email delivery failed; the meeting remains awaiting review and can be retried"
+                if outcome == "failed" else
+                "Email submission outcome is unknown; automatic resend is blocked",
             ) from exc
         m.email_delivery_status = "sent"
         m.email_delivery_error = None
         sent = True
+        add_email_event(db, **audit_context, event_type="email.send", outcome="succeeded")
     else:
         m.email_delivery_status = "not_required"
         m.email_delivery_fingerprint = fingerprint
@@ -820,6 +860,8 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
     m.approved_recipients = recipients
     m.approved_by = upn
     m.approved_at = datetime.now(timezone.utc)
+    add_email_event(db, **audit_context, event_type="email.approved",
+                    outcome="succeeded", actor=actor)
     await db.commit()
 
     return {"ok": True, "state": m.state}

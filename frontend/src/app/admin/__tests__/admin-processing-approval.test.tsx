@@ -28,6 +28,15 @@ function processing(overrides: Partial<AdminAccessRequest> = {}): AdminAccessReq
   };
 }
 
+it("provides an intentional Audit Logs entry within the existing Admin layout", () => {
+  render(<AdminClient initialRequests={[]} callerUpn="admin@example.test" accessToken="token" />);
+  const entry = screen.getByRole("link", { name: /Audit Logs/ });
+  expect(entry).toHaveAttribute("href", "/admin/audit-logs");
+  expect(entry).toHaveClass("border-l-4", "rounded-lg");
+  expect(entry).toHaveTextContent("email approvals");
+  expect(screen.getByRole("main")).toHaveClass("max-w-5xl");
+});
+
 it("confirms and decides only pending processing requests", async () => {
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   vi.mocked(decideRecordingProcessing).mockResolvedValue({} as never);

@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from .config import get_settings
+from .services.status_diagnostics import install_database_timings, measure
 
 
 class Base(DeclarativeBase):
@@ -21,9 +22,12 @@ def _make_engine():
 
 engine = _make_engine()
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+install_database_timings(SessionLocal)
 
 
 async def get_db() -> AsyncSession:
     """FastAPI dependency that yields a single AsyncSession per request and closes it on exit."""
-    async with SessionLocal() as session:
+    with measure("db_session_ms"):
+        session = SessionLocal()
+    async with session:
         yield session

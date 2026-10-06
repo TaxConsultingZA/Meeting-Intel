@@ -1,16 +1,26 @@
 import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, AppNotification, RegisteredUser, BusinessUnit, SyncState, RecordingJobOut, AdminMeetingOut, AdminAccessRequest } from "./types";
 import type { RecentMeeting, RecordingProcessingRequest } from "./types";
+import type { AuditEventsPage, AuditFilters } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 const API_TIMEOUT_MS = 30_000;
 
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly responseBody: string,
   ) {
     super(`${status}: ${responseBody}`);
   }
+}
+
+export function getAuditEvents(token: string, filters: AuditFilters = {}, cursor?: string, signal?: AbortSignal): Promise<AuditEventsPage> {
+  const params = new URLSearchParams({ limit: "50" });
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) params.set(key, value);
+  }
+  if (cursor) params.set("cursor", cursor);
+  return apiFetch(`/admin/audit-events?${params}`, token, { signal, cache: "no-store" });
 }
 
 function safeErrorMessage(status: number, body: string): string {
@@ -126,8 +136,11 @@ export async function getMeeting(id: string, upn: string): Promise<MeetingOut> {
 export async function previewMeetingEmail(
   meetingId: string,
   accessToken: string,
-): Promise<{ subject: string; html: string }> {
-  return apiFetch(`/reviews/${meetingId}/email-preview`, accessToken);
+  recipients: string[],
+): Promise<{ subject: string; html: string; recipients: string[]; fingerprint: string }> {
+  const query = new URLSearchParams();
+  recipients.forEach((recipient) => query.append("recipients", recipient));
+  return apiFetch(`/reviews/${meetingId}/email-preview?${query}`, accessToken);
 }
 
 /** Partially update an action item's fields (task, owner, deadline, confidence). */
@@ -147,10 +160,11 @@ export async function approveMeeting(
   meetingId: string,
   accessToken: string,
   recipients: string[],
+  expectedFingerprint: string,
 ): Promise<{ ok: boolean; state: string }> {
   return apiFetch(`/reviews/${meetingId}/approve`, accessToken, {
     method: "POST",
-    body: JSON.stringify({ recipients }),
+    body: JSON.stringify({ recipients, expected_fingerprint: expectedFingerprint }),
   });
 }
 

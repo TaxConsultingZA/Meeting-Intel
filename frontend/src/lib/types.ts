@@ -311,3 +311,37 @@ export interface AdminAccessRequest {
   requested_at: string | null;
   can_approve?: boolean;
 }
+export type AuditOutcome = "requested" | "succeeded" | "failed" | "unknown";
+
+export interface AuditEvent {
+  id: string;
+  occurred_at: string;
+  event_type: string;
+  outcome: AuditOutcome;
+  actor_type: "user" | "system";
+  actor_id: string;
+  actor_upn: string | null;
+  resource_type: string;
+  resource_id: string;
+  meeting_id: string | null;
+  job_id: string | null;
+  correlation_id: string;
+  metadata: Record<string, string | number | boolean | null>;
+}
+
+export interface AuditEventsPage {
+  items: AuditEvent[];
+  next_cursor: string | null;
+  has_more: boolean;
+  window_start: string;
+  window_end: string;
+}
+
+export interface AuditFilters {
+  from?: string;
+  to?: string;
+  event_type?: string;
+  outcome?: AuditOutcome;
+  actor_upn?: string;
+  actor_id?: string;
+}

@@ -1,7 +1,7 @@
 "use client";
 import { Fragment, useRef, useState } from "react";
 import Link from "next/link";
-import { UserPlus, Trash2, Shield, Pencil, ChevronDown, Loader2 } from "lucide-react";
+import { UserPlus, Trash2, Shield, Pencil, ChevronDown, Loader2, History, ArrowRight } from "lucide-react";
 import { cleanupAdminJob, decideMeetingEditAccess, decideRecordingProcessing, getAdminMeetings, getAdminUserSyncStatus, getBusinessUnits, getRecordingJobs, getRegisteredUsers, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
 import type { RegisteredUser, BusinessUnit, RecordingJobOut, AdminAccessRequest, AdminMeetingOut, SyncState } from "@/lib/types";
 import { JobControls } from "@/components/recording-jobs";
@@ -204,6 +204,11 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
           <p className="text-[#6b7280] text-[13.5px] mt-0.5">
             Manage meetings, processing, access, and registered users.
           </p>
+          <Link href="/admin/audit-logs" className="mt-4 flex items-center gap-3 rounded-lg border border-[#dde1e8] border-l-4 border-l-[#C9A52C] bg-white px-4 py-3 text-[#003366] shadow-sm hover:border-[#003366] hover:bg-[#f8fafc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#003366]">
+            <History size={20} aria-hidden="true" />
+            <span className="flex-1"><span className="block text-sm font-semibold">Audit Logs</span><span className="block mt-0.5 text-xs text-[#6b7280]">Review recording activity, email approvals, and sending outcomes.</span></span>
+            <ArrowRight size={18} aria-hidden="true" />
+          </Link>
         </div>
       </div>
 

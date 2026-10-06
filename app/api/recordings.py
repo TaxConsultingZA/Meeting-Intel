@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
-from uuid import UUID
+from uuid import UUID, uuid4
 import logging
 
 from ..config import get_settings
@@ -12,6 +12,7 @@ from ..models import ProcessedItem, RecordingJob, Meeting, ProcessingState, Regi
 from ..graph import client as graph
 from ..services.jobs import enqueue_recording_job, enqueue_retry_job
 from ..services.job_control import public_job_error
+from ..services.audit import add_audit_event
 from ..services.reprocessing import (
     MANUAL_REPROCESS_SOURCE,
     is_clean_reprocess_candidate,
@@ -105,6 +106,10 @@ async def import_recording(
 ):
     """Trigger background processing of a new recording."""
     item = await _verify_owned_drive_item(upn, req.drive_id, req.drive_item_id)
+    actor = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
+    if actor is None:
+        raise HTTPException(403, "Subscribe before accessing Calendar or OneDrive")
+    new_job_id = uuid4()
     ledger = await db.scalar(
         select(ProcessedItem).where(ProcessedItem.drive_item_id == req.drive_item_id)
     )
@@ -115,6 +120,7 @@ async def import_recording(
         queued = False if prior_job else await enqueue_retry_job(
             db, drive_item_id=req.drive_item_id, drive_id=req.drive_id,
             owner_upn=upn, source="manual",
+            commit=False, job_id=new_job_id,
         )
     else:
         queued = await enqueue_recording_job(
@@ -125,9 +131,18 @@ async def import_recording(
             source="manual",
             etag=item.get("eTag"),
             filename=item.get("name"),
+            commit=False, job_id=new_job_id,
         )
     if not queued:
         raise HTTPException(status_code=409, detail="Already imported or currently processing")
+    add_audit_event(
+        db, event_type="recording.import", outcome="requested",
+        actor_type="user", actor_id=str(actor.id), actor_upn=actor.upn,
+        actor_entra_oid=actor.entra_oid, resource_type="recording_job",
+        resource_id=new_job_id, job_id=new_job_id, correlation_id=new_job_id,
+        event_key=f"recording.import:{new_job_id}", metadata={"source": "manual"},
+    )
+    await db.commit()
     return {"ok": True, "queued": True}
 
 
@@ -200,14 +215,26 @@ async def _queue_reprocess(
     if not completed_job or (source_job is not None and source_job.status != "completed"):
         raise HTTPException(409, "A completed recording job could not be verified")
 
+    new_job_id = uuid4()
     queued = await enqueue_retry_job(
         db,
         drive_item_id=drive_item_id,
         drive_id=ledger.drive_id,
         owner_upn=owner_upn,
         source=MANUAL_REPROCESS_SOURCE,
+        commit=False, job_id=new_job_id,
     )
     if not queued:
         await db.rollback()
         raise HTTPException(409, "Recording is already queued or processing")
+    add_audit_event(
+        db, event_type="recording.reprocess", outcome="requested",
+        actor_type="user", actor_id=str(user.id), actor_upn=user.upn,
+        actor_entra_oid=getattr(user, "entra_oid", None), resource_type="recording_job",
+        resource_id=new_job_id, job_id=new_job_id, meeting_id=m.id,
+        correlation_id=new_job_id, event_key=f"recording.reprocess:{new_job_id}",
+        metadata={"source": MANUAL_REPROCESS_SOURCE,
+                  "parent_job_id": str(source_job.id if source_job else completed_job)},
+    )
+    await db.commit()
     return {"ok": True, "queued": True}

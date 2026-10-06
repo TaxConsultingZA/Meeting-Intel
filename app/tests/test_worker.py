@@ -19,7 +19,7 @@ from app.services.job_control import public_job_error
 def job(**overrides):
     values = dict(id=uuid.uuid4(), drive_item_id="offline-recording", drive_id="drive",
                   owner_upn="owner@example.test", status="processing", attempts=1,
-                  max_attempts=3, lease_token=uuid.uuid4(), locked_at=worker._now(),
+                  max_attempts=3, source="manual", lease_token=uuid.uuid4(), locked_at=worker._now(),
                   available_at=worker._now(), last_error=None, cancel_requested_at=None)
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -29,6 +29,8 @@ def session(monkeypatch):
     db = MagicMock()
     for name in ("scalar", "scalars", "execute", "commit", "rollback"):
         setattr(db, name, AsyncMock())
+    db.execute.return_value = MagicMock()
+    db.execute.return_value.scalars.return_value = []
     db.__aenter__ = AsyncMock(return_value=db)
     db.__aexit__ = AsyncMock(return_value=False)
     monkeypatch.setattr(worker, "SessionLocal", MagicMock(return_value=db))
@@ -66,7 +68,7 @@ async def test_claim_marks_processing_increments_attempt_and_commits(monkeypatch
 async def test_claim_allowlist_selects_target_even_with_older_pending_job(monkeypatch):
     db = session(monkeypatch)
     target = job(status="pending", attempts=0, lease_token=None)
-    older = job(status="pending", attempts=3, max_attempts=3, lease_token=None)
+    older = job(status="pending", attempts=3, max_attempts=3, source="manual", lease_token=None)
     monkeypatch.setattr(worker.settings, "process_only_job_id", str(target.id))
     db.scalar.return_value = target
 

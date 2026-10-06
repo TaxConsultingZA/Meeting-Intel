@@ -3,14 +3,47 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import MeetingDetailClient from "../meeting-detail-client";
 import type { MeetingOut } from "@/lib/types";
 
-import { saveSpeakerMappings } from "@/lib/api";
+import { approveMeeting, getMeeting, previewMeetingEmail, saveSpeakerMappings } from "@/lib/api";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
-  return { ...actual, saveSpeakerMappings: vi.fn().mockResolvedValue(undefined) };
+  return { ...actual, saveSpeakerMappings: vi.fn().mockResolvedValue(undefined),
+    approveMeeting: vi.fn(), getMeeting: vi.fn(), previewMeetingEmail: vi.fn() };
 });
 
 afterEach(cleanup);
+
+it("requires a matching recipient preview, sends its fingerprint, and clears it after rejection", async () => {
+  const meeting: MeetingOut = {
+    id: "safe-meeting", recorded_at: null, title: "Safety", state: "awaiting_review",
+    summary: "Notes", transcript: null, action_items: [], extracted_json: {},
+    calendar_participants: [], organizer_upn: "owner@example.com",
+    email_recipients: ["owner@example.com"], approved_recipients: [],
+    is_organizer: true, can_edit: true, can_approve: true, can_request_edit_access: false,
+    edit_access_status: "organizer", edit_access_requests: [],
+    speaker_candidates: [], speaker_mappings: {}, speaker_sample_labels: [],
+  };
+  vi.mocked(getMeeting).mockResolvedValue(meeting);
+  vi.mocked(approveMeeting).mockRejectedValue(new Error("Review a fresh preview"));
+  vi.mocked(previewMeetingEmail).mockResolvedValue({ subject: "Reviewed subject", html: "<p>Reviewed</p>",
+    recipients: ["owner@example.com"], fingerprint: "reviewed-fingerprint" });
+  render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="token" />);
+  fireEvent.click(screen.getByRole("button", { name: /Approve Meeting Notes/ }));
+  expect(await screen.findByRole("button", { name: "Approve & Send Email" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Review Email Preview" }));
+  expect(await screen.findByText("Reviewed subject")).toBeInTheDocument();
+  expect(previewMeetingEmail).toHaveBeenCalledWith("safe-meeting", "token", ["owner@example.com"]);
+  fireEvent.click(screen.getByRole("button", { name: "Close Preview" }));
+  const send = await screen.findByRole("button", { name: "Approve & Send Email" });
+  expect(send).toBeEnabled();
+  fireEvent.click(screen.getByRole("checkbox"));
+  expect(screen.getByRole("button", { name: "Approve Without Sending" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: "Approve & Send Email" }));
+  await waitFor(() => expect(approveMeeting).toHaveBeenCalledWith(
+    "safe-meeting", "token", ["owner@example.com"], "reviewed-fingerprint"));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Approve & Send Email" })).toBeDisabled());
+});
 
 it("displays Calendar participants when extracted attendees are empty", () => {
   const meeting: MeetingOut = {

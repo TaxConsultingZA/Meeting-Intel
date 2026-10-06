@@ -8,6 +8,7 @@ from ..config import get_settings
 from ..auth.entra import validate_access_token
 from ..db import get_db
 from ..models import RegisteredUser
+from ..services.status_diagnostics import authentication_timing
 
 settings = get_settings()
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -20,6 +21,7 @@ def _domain_user(upn: str) -> str:
     return normalized
 
 
+@authentication_timing
 async def current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
@@ -75,6 +77,7 @@ async def current_user(
     return upn
 
 
+@authentication_timing
 async def registered_user(
     upn: str = Depends(current_user),
     db: AsyncSession = Depends(get_db),

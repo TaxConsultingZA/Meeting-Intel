@@ -1,6 +1,7 @@
 """Cancellation fences shared by the API, worker and pipeline."""
 from sqlalchemy import select
 from ..models import RecordingJob
+from .recording_audit import add_processing_outcome
 
 RETRYABLE_JOB_STATES = frozenset({"failed", "cancelled"})
 
@@ -24,6 +25,7 @@ async def guarded_commit(db, job_id=None, lease_token=None, *, complete=False):
             job.locked_at = None
             job.lease_token = None
             job.last_error = None
+            add_processing_outcome(db, job, "succeeded")
     await db.commit()
 
 

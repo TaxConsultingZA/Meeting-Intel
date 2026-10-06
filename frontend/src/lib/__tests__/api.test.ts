@@ -19,6 +19,31 @@ function makeResponse(body: unknown, status = 200): Response {
   } as unknown as Response;
 }
 
+describe("getAuditEvents", () => {
+  it("uses the existing API with safe query encoding, bearer auth, and no caching", async () => {
+    mockFetch.mockResolvedValueOnce(makeResponse({ items: [], next_cursor: null }));
+    const { getAuditEvents } = await import("../api");
+    await getAuditEvents("token", { actor_upn: "admin+audit@example.test", outcome: "failed" }, "cursor");
+    const [url, init] = mockFetch.mock.calls[0];
+    const query = new URL(url).searchParams;
+    expect(query.get("actor_upn")).toBe("admin+audit@example.test");
+    expect(query.get("cursor")).toBe("cursor");
+    expect(query.get("limit")).toBe("50");
+    expect(init.cache).toBe("no-store");
+    expect(init.headers.Authorization).toBe("Bearer token");
+  });
+  it("forwards cancellation to the fetch wrapper", async () => {
+    const outer = new AbortController();
+    mockFetch.mockImplementationOnce((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    }));
+    const { getAuditEvents } = await import("../api");
+    const pending = getAuditEvents("token", {}, undefined, outer.signal);
+    outer.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
+
 describe("getAllMeetings", () => {
   it("passes the bearer token", async () => {
     mockFetch.mockResolvedValueOnce(makeResponse([]));
@@ -49,9 +74,10 @@ describe("approveMeeting", () => {
   it("sends POST method", async () => {
     mockFetch.mockResolvedValueOnce(makeResponse({ ok: true, state: "sent" }));
     const { approveMeeting } = await import("../api");
-    await approveMeeting("meeting-id", "alice@taxconsulting.co.za", []);
+    await approveMeeting("meeting-id", "alice@taxconsulting.co.za", [], "reviewed-fingerprint");
     const [, init] = mockFetch.mock.calls[0];
     expect((init as RequestInit).method).toBe("POST");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ recipients: [], expected_fingerprint: "reviewed-fingerprint" });
   });
 });
 
@@ -95,14 +121,16 @@ describe("sendMeetingCopyToSelf", () => {
 describe("previewMeetingEmail", () => {
   it("requests the exact email preview without sending", async () => {
     mockFetch.mockResolvedValueOnce(
-      makeResponse({ subject: "Meeting Notes", html: "<p>Preview</p>" }),
+      makeResponse({ subject: "Meeting Notes", html: "<p>Preview</p>", recipients: ["alice@example.com"], fingerprint: "reviewed-fingerprint" }),
     );
     const { previewMeetingEmail } = await import("../api");
-    const result = await previewMeetingEmail("meeting-id", "token-1");
+    const result = await previewMeetingEmail("meeting-id", "token-1", ["alice@example.com"]);
     const [url, init] = mockFetch.mock.calls[0];
     expect(url).toContain("/reviews/meeting-id/email-preview");
     expect((init as RequestInit).method).toBeUndefined();
     expect(result.subject).toBe("Meeting Notes");
+    expect(url).toContain("recipients=alice%40example.com");
+    expect(result.fingerprint).toBe("reviewed-fingerprint");
   });
 });
 

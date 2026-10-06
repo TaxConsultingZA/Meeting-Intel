@@ -69,9 +69,12 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [approving, setApproving] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [showEmailPreview, setShowEmailPreview] = useState(false);
-  const [emailPreview, setEmailPreview] = useState<{ subject: string; html: string } | null>(null);
+  const [emailPreview, setEmailPreview] = useState<Awaited<ReturnType<typeof previewMeetingEmail>> | null>(null);
   const [previewingEmail, setPreviewingEmail] = useState(false);
   const [recipients, setRecipients] = useState<string[]>(initial.email_recipients ?? []);
+  const previewMatchesRecipients = emailPreview !== null &&
+    JSON.stringify([...new Set(recipients.map((value) => value.trim().toLowerCase()))].sort()) ===
+    JSON.stringify(emailPreview.recipients);
   const [transcriptDraft, setTranscriptDraft] = useState(initial.transcript ?? "");
   const [editingTranscript, setEditingTranscript] = useState(false);
   const [speakerMappings, setSpeakerMappings] = useState<Record<string, string | null>>(initial.speaker_mappings ?? {});
@@ -137,10 +140,11 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   }, [isProcessing, refreshMeetingStatus]);
 
   async function handleApprove() {
+    if (!emailPreview || !previewMatchesRecipients) return;
     setApproving(true);
     setApprovalVerificationError(null);
     try {
-      const res = await approveMeeting(meeting.id, accessToken, recipients);
+      const res = await approveMeeting(meeting.id, accessToken, recipients, emailPreview.fingerprint);
       let confirmedState = res.state;
       try {
         const latest = await getMeeting(meeting.id, accessToken);
@@ -160,6 +164,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           : "Meeting notes approved. No email was sent.",
       );
     } catch (e: unknown) {
+      setEmailPreview(null);
       try {
         const latest = await getMeeting(meeting.id, accessToken);
         setMeeting(latest);
@@ -189,7 +194,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   async function handlePreviewEmail() {
     setPreviewingEmail(true);
     try {
-      const preview = await previewMeetingEmail(meeting.id, accessToken);
+      const preview = await previewMeetingEmail(meeting.id, accessToken, recipients);
       setEmailPreview(preview);
       setShowEmailPreview(true);
     } catch (e) {
@@ -601,7 +606,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
       </div>
 
       {/* Approve Modal */}
-      {isOrganizer && <Dialog open={showModal} onOpenChange={setShowModal}>
+      {canApprove && <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Approve Meeting Notes</DialogTitle>
@@ -644,7 +649,14 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               ? "Approval will be recorded without sending an email."
               : `${recipients.length} recipient(s) selected.`}
           </p>
+          {!previewMatchesRecipients && (
+            <p className="text-xs text-[#6b7280]">Review an email preview for these recipients before approving.</p>
+          )}
           <DialogFooter>
+            <button type="button" onClick={handlePreviewEmail} disabled={previewingEmail || approving}
+              className="border border-[#dde1e8] text-[#003366] px-4 py-2 rounded-md text-sm font-semibold">
+              {previewingEmail ? "Preparing preview…" : "Review Email Preview"}
+            </button>
             <button
               type="button"
               onClick={() => setShowModal(false)}
@@ -655,10 +667,10 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             <button
               type="button"
               onClick={handleApprove}
-              disabled={approving}
+              disabled={approving || previewingEmail || !previewMatchesRecipients}
               className="bg-[#C9A52C] hover:bg-[#e8c84a] text-[#003366] px-5 py-2 rounded-md text-sm font-bold transition-colors disabled:opacity-60"
             >
-              {approving ? "Approving…" : "✓ Confirm Approval"}
+              {approving ? "Approving…" : recipients.length ? "Approve & Send Email" : "Approve Without Sending"}
             </button>
           </DialogFooter>
         </DialogContent>

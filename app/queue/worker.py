@@ -19,6 +19,7 @@ from ..db import SessionLocal, engine
 from ..models import Meeting, ProcessingState, RecordingJob
 from ..pipeline.steps import process_recording
 from ..services.job_control import public_job_error
+from ..services.recording_audit import add_processing_outcome
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -84,6 +85,8 @@ async def _recover_interrupted_jobs() -> None:
                     _cancel(job)
                 else:
                     _retry_or_fail(job, RuntimeError("Worker lease expired; interrupted attempt"))
+                    add_processing_outcome(db, job, "failed", error_category="interrupted",
+                                           reason="lease_expired")
                 await _mark_meeting_interrupted(db, job)
         await db.commit()
 
@@ -100,11 +103,14 @@ async def _claim_next() -> RecordingJob | None:
         target_filters = ()
 
     async with SessionLocal() as db:
-        await db.execute(update(RecordingJob).where(
+        exhausted_jobs = await db.execute(update(RecordingJob).where(
             RecordingJob.status == "pending",
             RecordingJob.attempts >= RecordingJob.max_attempts,
             *target_filters,
-        ).values(status="failed", last_error="Maximum attempts exhausted"))
+        ).values(status="failed", last_error="Maximum attempts exhausted").returning(RecordingJob))
+        for exhausted_job in exhausted_jobs.scalars():
+            add_processing_outcome(db, exhausted_job, "failed", exhausted=True,
+                                   error_category="attempts_exhausted")
         job = await db.scalar(
             select(RecordingJob).where(
                 RecordingJob.status == "pending",
@@ -153,9 +159,11 @@ async def _finish(job_id, lease_token, error: Exception | None = None) -> None:
             job.last_error = None
             job.locked_at = None
             job.lease_token = None
+            add_processing_outcome(db, job, "succeeded", reason="existing_result_preserved")
         else:
             _retry_or_fail(job, error)
             await _mark_meeting_interrupted(db, job)
+            add_processing_outcome(db, job, "failed", error_category="processing_error")
         await db.commit()
 
 

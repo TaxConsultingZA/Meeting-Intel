@@ -171,7 +171,7 @@ async def test_provider_exception_reaches_job_retry_or_failure(monkeypatch, pipe
     monkeypatch.setattr(steps, "get_extractor", lambda: SimpleNamespace(extract=AsyncMock(side_effect=RuntimeError("AI unavailable"))))
     row = SimpleNamespace(id=uuid.uuid4(), drive_item_id="offline-item", drive_id="offline-drive",
                           owner_upn="owner@example.test", lease_token=uuid.uuid4(), status="processing",
-                          attempts=attempts, max_attempts=3, cancel_requested_at=None)
+                          attempts=attempts, max_attempts=3, source="manual", cancel_requested_at=None)
     queue_db = MagicMock()
     queue_db.scalar = AsyncMock(return_value=row)
     queue_db.execute = AsyncMock()

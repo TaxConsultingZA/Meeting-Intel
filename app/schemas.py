@@ -1,8 +1,33 @@
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 from .models import Confidence, ProcessingState
+
+
+class AuditEventOut(BaseModel):
+    id: UUID
+    occurred_at: datetime
+    event_type: str
+    outcome: Literal["requested", "succeeded", "failed", "unknown"]
+    actor_type: Literal["user", "system"]
+    actor_id: str
+    actor_upn: str | None
+    resource_type: str
+    resource_id: UUID
+    meeting_id: UUID | None
+    job_id: UUID | None
+    correlation_id: UUID
+    metadata: dict[str, str | int | bool | None]
+
+
+class AuditEventsPageOut(BaseModel):
+    items: list[AuditEventOut]
+    next_cursor: str | None
+    has_more: bool
+    window_start: datetime
+    window_end: datetime
 
 
 # ── Registration schemas ──────────────────────────────────────────────────────
@@ -168,10 +193,13 @@ class MeetingOut(BaseModel):
 class EmailPreviewOut(BaseModel):
     subject: str
     html: str
+    recipients: list[str]
+    fingerprint: str
 
 
 class ApproveMeetingIn(BaseModel):
     recipients: list[str] = []
+    expected_fingerprint: str | None = None
 
     @field_validator("recipients")
     @classmethod

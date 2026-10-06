@@ -80,9 +80,9 @@ async def test_other_attendee_cannot_control_recording(method):
 
 async def test_cancel_queued_keeps_transcript_and_marks_cancelled():
     job = row()
-    meeting = SimpleNamespace(state=ProcessingState.queued, transcript="saved raw", extracted_json={"original": "kept"})
+    meeting = SimpleNamespace(id=uuid4(), state=ProcessingState.queued, transcript="saved raw", extracted_json={"original": "kept"})
     db = db_for(job, meeting)
-    result = await api.cancel_job(job.id, db, job.owner_upn)
+    result = await api.cancel_job(job.id, db, SimpleNamespace(id=uuid4(), upn=job.owner_upn, is_admin=False))
     assert result["status"] == "cancelled" and job.status == "cancelled"
     assert meeting.state == ProcessingState.cancelled and meeting.transcript == "saved raw"
     db.commit.assert_awaited_once()
@@ -92,7 +92,7 @@ async def test_running_cancel_requests_stop_without_claiming_completion():
     job = row(status="processing")
     token = job.lease_token
     db = db_for(job)
-    result = await api.cancel_job(job.id, db, job.owner_upn)
+    result = await api.cancel_job(job.id, db, SimpleNamespace(id=uuid4(), upn=job.owner_upn, is_admin=False))
     assert result["status"] == "cancel_requested"
     assert job.status == "processing" and job.lease_token == token and job.cancel_requested_at
 
@@ -111,15 +111,15 @@ async def test_retry_reuses_trusted_queue_ids_preserves_transcript_and_handles_d
     monkeypatch, queued, status,
 ):
     job = row(status=status)
-    meeting = SimpleNamespace(state=ProcessingState.failed, transcript="original raw", extracted_json={"kept": True})
+    meeting = SimpleNamespace(id=uuid4(), state=ProcessingState.failed, transcript="original raw", extracted_json={"kept": True})
     db = db_for(job, meeting)
     enqueue = AsyncMock(return_value=queued)
     monkeypatch.setattr(api, "enqueue_retry_job", enqueue)
     if queued:
-        assert (await api.retry_job(job.id, db, job.owner_upn))["status"] == "queued"
+        assert (await api.retry_job(job.id, db, SimpleNamespace(id=uuid4(), upn=job.owner_upn, is_admin=False)))["status"] == "queued"
     else:
         with pytest.raises(HTTPException) as exc:
-            await api.retry_job(job.id, db, job.owner_upn)
+            await api.retry_job(job.id, db, SimpleNamespace(id=uuid4(), upn=job.owner_upn, is_admin=False))
         assert exc.value.status_code == 409
         db.rollback.assert_awaited_once()
     assert meeting.transcript == "original raw" and meeting.extracted_json == {"kept": True}

@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api import recordings
-from app.models import ProcessingState
+from app.models import AuditEvent, ProcessingState
 from app.pipeline import extract, steps
 from app.pipeline.transcribe import TranscriptSegment
 from app.services.reprocessing import (
@@ -53,7 +53,7 @@ async def test_clean_awaiting_review_reprocess_queues_distinct_job(monkeypatch):
     result = await recordings.reprocess_recording(
         recordings.ImportRequest(drive_item_id="item", drive_id="untrusted"),
         db,
-        "owner@example.test",
+        SimpleNamespace(id=uuid4(), upn="owner@example.test", is_subscribed=True),
     )
 
     assert result == {"ok": True, "queued": True}
@@ -155,7 +155,7 @@ async def test_manual_reprocess_job_dispatches_to_safe_pipeline_branch(monkeypat
 
 async def test_reprocess_always_transcribes_and_success_replaces_atomically(monkeypatch):
     meeting = clean_meeting()
-    job = SimpleNamespace(status="processing", lease_token=uuid4(), locked_at=object(), last_error=None)
+    job = SimpleNamespace(id=uuid4(), attempts=1, source=MANUAL_REPROCESS_SOURCE, status="processing", lease_token=uuid4(), locked_at=object(), last_error=None)
     baseline = result_fingerprint(meeting)
     db = fake_db(job, meeting)
     result = await extract.MockExtractor().extract([
@@ -179,6 +179,11 @@ async def test_reprocess_always_transcribes_and_success_replaces_atomically(monk
     assert updated.extracted_json == new_json
     assert updated.state == ProcessingState.awaiting_review
     assert job.status == "completed" and job.lease_token is None
+    audit_events = [call.args[0] for call in db.add.call_args_list
+                    if isinstance(call.args[0], AuditEvent)]
+    assert len(audit_events) == 1
+    assert audit_events[0].outcome == "succeeded"
+    assert audit_events[0].meeting_id == meeting.id
     db.execute.assert_awaited_once()
     db.commit.assert_awaited_once()
 
@@ -187,7 +192,7 @@ async def test_edit_during_reprocess_is_not_overwritten():
     meeting = clean_meeting()
     baseline = result_fingerprint(meeting)
     meeting.transcript = "human edit during processing"
-    job = SimpleNamespace(status="processing", lease_token=uuid4(), locked_at=object(), last_error=None)
+    job = SimpleNamespace(id=uuid4(), attempts=1, source=MANUAL_REPROCESS_SOURCE, status="processing", lease_token=uuid4(), locked_at=object(), last_error=None)
     db = fake_db(job, meeting)
     result = await extract.MockExtractor().extract([
         TranscriptSegment("Speaker A", "new words", 0, 1)
@@ -208,4 +213,7 @@ async def test_edit_during_reprocess_is_not_overwritten():
     assert meeting.transcript == "human edit during processing"
     assert meeting.summary == "old summary"
     assert job.status == "failed" and "reprocess conflict" in job.last_error
+    event = db.add.call_args.args[0]
+    assert isinstance(event, AuditEvent) and event.outcome == "failed"
+    assert event.event_metadata["error_category"] == "reprocess_conflict"
     db.execute.assert_not_awaited()

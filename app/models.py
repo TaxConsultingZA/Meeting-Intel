@@ -353,3 +353,37 @@ class ActionItem(Base):
     raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     meeting: Mapped["Meeting"] = relationship(back_populates="action_items")
+
+
+class AuditEvent(Base):
+    """Historical action/outcome snapshots, independent of resource deletion.
+
+    The writer only inserts rows; database-enforced immutability is not provided.
+    ``event_metadata`` maps to SQL ``metadata`` because Base.metadata is reserved.
+    """
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("outcome IN ('requested', 'succeeded', 'failed', 'unknown')",
+                        name="ck_audit_events_outcome"),
+        CheckConstraint("actor_type IN ('user', 'system')", name="ck_audit_events_actor_type"),
+        UniqueConstraint("event_key", name="uq_audit_events_event_key"),
+        Index("ix_audit_events_resource_time", "resource_type", "resource_id", "occurred_at"),
+        Index("ix_audit_events_meeting_time", "meeting_id", "occurred_at"),
+        Index("ix_audit_events_correlation_id", "correlation_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"))
+    event_type: Mapped[str] = mapped_column(String(64))
+    outcome: Mapped[str] = mapped_column(String(16))
+    actor_type: Mapped[str] = mapped_column(String(16))
+    actor_id: Mapped[str] = mapped_column(String(64))
+    actor_upn: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    actor_entra_oid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resource_type: Mapped[str] = mapped_column(String(32))
+    resource_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    meeting_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    event_key: Mapped[str] = mapped_column(String(255))
+    event_metadata: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, server_default=text("'{}'::jsonb"))

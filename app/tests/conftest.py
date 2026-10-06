@@ -5,6 +5,9 @@ import sys
 import asyncio
 
 import pytest
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.elements import TextClause
 
 # Set harmless process-local values BEFORE test collection imports the app.
 # Never read a production database URL or credential into a test client.
@@ -20,6 +23,22 @@ for _name, _value in {
     "ENABLE_AUTO_RECONCILE": "false", "AUTO_SEND_EMAIL": "false",
 }.items():
     os.environ[_name] = _value
+
+
+@compiles(JSONB, "sqlite")
+def sqlite_json(type_, compiler, **kwargs):
+    """Adapt the production JSONB type for isolated SQLite test schemas."""
+    return "JSON"
+
+
+@compiles(TextClause, "sqlite")
+def sqlite_audit_default(element, compiler, **kwargs):
+    """Adapt only the audit JSON default, without mutating model metadata."""
+    from app.models import AuditEvent
+
+    if element is AuditEvent.__table__.c.metadata.server_default.arg:
+        return "'{}'"
+    return compiler.visit_textclause(element, **kwargs)
 
 
 def _deny_network(*args, **kwargs):

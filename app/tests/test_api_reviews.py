@@ -1,6 +1,8 @@
 """Tests for app/api/reviews.py — domain validation and endpoint behaviour (mocked DB)."""
 import pytest
+import httpx
 from types import SimpleNamespace
+from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 from fastapi.security import HTTPAuthorizationCredentials
@@ -441,7 +443,10 @@ class TestAdminMeetingControl:
         from app.schemas import ApproveMeetingIn
 
         meeting = self._meeting()
+        meeting.id = uuid4()
         db = AsyncMock()
+        db.add = MagicMock()
+        db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="admin-oid")
         send_mail = AsyncMock()
         monkeypatch.setattr(reviews, "_is_admin", AsyncMock(return_value=True))
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
@@ -451,7 +456,7 @@ class TestAdminMeetingControl:
 
         result = await reviews.approve(
             "meeting-1", db=db, upn="admin@taxconsulting.co.za",
-            body=ApproveMeetingIn(recipients=["owner@taxconsulting.co.za"]),
+            body=ApproveMeetingIn(recipients=["owner@taxconsulting.co.za"], expected_fingerprint=reviews._email_fingerprint(meeting.id, ["owner@taxconsulting.co.za"], "Subject", "Body")),
         )
 
         assert result["state"] == ProcessingState.sent
@@ -1009,6 +1014,85 @@ class TestReviewStateGate:
 
 
 class TestApprovalDelivery:
+    @pytest.mark.parametrize("change", ["subject", "html", "recipients", "meeting_id", "missing"])
+    async def test_stale_or_missing_preview_never_sends(self, monkeypatch, change):
+        from fastapi import HTTPException
+        from app.api import reviews
+        from app.schemas import ApproveMeetingIn
+
+        meeting = self._meeting()
+        db = AsyncMock()
+        db.add = MagicMock()
+        db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
+        send_mail = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        monkeypatch.setattr(reviews.settings, "emails_enabled", True)
+        monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
+        monkeypatch.setattr(reviews, "build_meeting_email", lambda _: ("Subject", "Body"))
+        preview = await reviews.email_preview(meeting.id, db=db,
+            upn=meeting.organizer_upn, recipients=["guest@taxconsulting.co.za"])
+        if change in {"subject", "html"}:
+            monkeypatch.setattr(reviews, "build_meeting_email", lambda _: (
+                "Changed" if change == "subject" else "Subject",
+                "Changed" if change == "html" else "Body"))
+        if change == "meeting_id":
+            meeting.id = "another-meeting"
+        recipients = [] if change == "recipients" else preview.recipients
+        with pytest.raises(HTTPException) as exc:
+            await reviews.approve(meeting.id, db=db, upn=meeting.organizer_upn,
+                body=ApproveMeetingIn(recipients=recipients,
+                    expected_fingerprint=None if change == "missing" else preview.fingerprint))
+        assert exc.value.status_code == 409
+        assert "fresh preview" in exc.value.detail
+        send_mail.assert_not_awaited()
+        db.commit.assert_not_awaited()
+        assert meeting.email_delivery_status is None
+        assert meeting.action_items[0].approved is False
+
+    @pytest.mark.parametrize("enabled,recipients", [(True, []), (False, ["guest@taxconsulting.co.za"])])
+    async def test_matching_preview_preserves_no_send(self, monkeypatch, enabled, recipients):
+        from app.api import reviews
+        from app.schemas import ApproveMeetingIn
+        from app.models import ProcessingState
+
+        meeting = self._meeting()
+        db = AsyncMock()
+        db.add = MagicMock()
+        db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
+        send_mail = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        monkeypatch.setattr(reviews.settings, "emails_enabled", enabled)
+        monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
+        monkeypatch.setattr(reviews, "build_meeting_email", lambda _: ("Subject", "Body"))
+        preview = await reviews.email_preview(meeting.id, db=db,
+            upn=meeting.organizer_upn, recipients=recipients)
+        result = await reviews.approve(meeting.id, db=db, upn=meeting.organizer_upn,
+            body=ApproveMeetingIn(recipients=recipients, expected_fingerprint=preview.fingerprint))
+        assert result["state"] == ProcessingState.approved
+        send_mail.assert_not_awaited()
+
+    async def test_normalized_preview_sends_exact_payload_and_retry_is_idempotent(self, monkeypatch):
+        from app.api import reviews
+        from app.schemas import ApproveMeetingIn
+
+        meeting = self._meeting()
+        db = AsyncMock()
+        db.add = MagicMock()
+        db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
+        send_mail = AsyncMock()
+        monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
+        monkeypatch.setattr(reviews.settings, "emails_enabled", True)
+        monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
+        monkeypatch.setattr(reviews, "build_meeting_email", lambda _: ("Subject", "Body"))
+        preview = await reviews.email_preview(meeting.id, db=db, upn=meeting.organizer_upn,
+            recipients=[" GUEST@taxconsulting.co.za ", "owner@taxconsulting.co.za", "guest@taxconsulting.co.za"])
+        body = ApproveMeetingIn(recipients=list(reversed(preview.recipients)), expected_fingerprint=preview.fingerprint)
+        await reviews.approve(meeting.id, db=db, upn=meeting.organizer_upn, body=body)
+        result = await reviews.approve(meeting.id, db=db, upn=meeting.organizer_upn, body=body)
+        assert result["already_sent"] is True
+        send_mail.assert_awaited_once_with(reviews.settings.mail_sender_upn or meeting.organizer_upn,
+            preview.recipients, preview.subject, preview.html)
+
     @staticmethod
     def _meeting():
         from app.models import ProcessingState
@@ -1019,7 +1103,7 @@ class TestApprovalDelivery:
         meeting.participants = []
         meeting.action_items = [MagicMock(approved=False)]
         meeting.state = ProcessingState.awaiting_review
-        meeting.id = "meeting-1"
+        meeting.id = uuid4()
         meeting.email_delivery_status = None
         meeting.email_delivery_fingerprint = None
         meeting.email_delivery_error = None
@@ -1034,17 +1118,19 @@ class TestApprovalDelivery:
 
         meeting = self._meeting()
         db = AsyncMock()
+        db.add = MagicMock()
+        db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
         monkeypatch.setattr(reviews.settings, "emails_enabled", True)
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
         monkeypatch.setattr(reviews, "build_meeting_email", lambda _: ("Subject", "Body"))
-        monkeypatch.setattr(reviews.graph, "send_mail", AsyncMock(side_effect=RuntimeError("Graph failed")))
+        monkeypatch.setattr(reviews.graph, "send_mail", AsyncMock(side_effect=httpx.HTTPStatusError("PRIVATE provider error", request=httpx.Request("POST", "https://graph.test"), response=httpx.Response(400))))
 
         with pytest.raises(HTTPException) as exc:
             await reviews.approve(
                 "meeting-1",
                 db=db,
                 upn="owner@taxconsulting.co.za",
-                body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"]),
+                body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"], expected_fingerprint=reviews._email_fingerprint(meeting.id, ["guest@taxconsulting.co.za"], "Subject", "Body")),
             )
 
         assert exc.value.status_code == 502
@@ -1052,7 +1138,7 @@ class TestApprovalDelivery:
         assert meeting.action_items[0].approved is False
         assert meeting.email_delivery_status == "failed"
         assert meeting.email_delivery_attempts == 1
-        assert "Graph failed" in meeting.email_delivery_error
+        assert meeting.email_delivery_error == "provider_rejected"
         assert db.commit.await_count == 2
 
     async def test_successful_mail_and_approval_commit_together(self, monkeypatch):
@@ -1062,6 +1148,8 @@ class TestApprovalDelivery:
 
         meeting = self._meeting()
         db = AsyncMock()
+        db.add = MagicMock()
+        db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
         send_mail = AsyncMock()
         monkeypatch.setattr(reviews.settings, "emails_enabled", True)
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
@@ -1072,7 +1160,7 @@ class TestApprovalDelivery:
             "meeting-1",
             db=db,
             upn="owner@taxconsulting.co.za",
-            body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"]),
+            body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"], expected_fingerprint=reviews._email_fingerprint(meeting.id, ["guest@taxconsulting.co.za"], "Subject", "Body")),
         )
 
         assert result["state"] == ProcessingState.sent
@@ -1090,6 +1178,8 @@ class TestApprovalDelivery:
         meeting = self._meeting()
         meeting.email_delivery_status = "sending"
         db = AsyncMock()
+        db.add = MagicMock()
+        db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
         monkeypatch.setattr(reviews.settings, "emails_enabled", True)
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
         monkeypatch.setattr(reviews, "build_meeting_email", lambda _: ("Subject", "Body"))
@@ -1099,7 +1189,7 @@ class TestApprovalDelivery:
         with pytest.raises(HTTPException) as exc:
             await reviews.approve(
                 "meeting-1", db=db, upn="owner@taxconsulting.co.za",
-                body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"]),
+                body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"], expected_fingerprint=reviews._email_fingerprint(meeting.id, ["guest@taxconsulting.co.za"], "Subject", "Body")),
             )
 
         assert exc.value.status_code == 409
@@ -1114,6 +1204,8 @@ class TestApprovalDelivery:
         meeting.drive_item_id = "meeting-intel-test-t2-speaker-audio"
         meeting.extracted_json = {"local_test_data": True}
         db = AsyncMock()
+        db.add = MagicMock()
+        db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
         send_mail = AsyncMock()
         monkeypatch.setattr(reviews.settings, "emails_enabled", True)
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
@@ -1122,7 +1214,7 @@ class TestApprovalDelivery:
 
         result = await reviews.approve(
             "meeting-1", db=db, upn="owner@taxconsulting.co.za",
-            body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"]),
+            body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"], expected_fingerprint=reviews._email_fingerprint(meeting.id, ["guest@taxconsulting.co.za"], "Subject", "Body")),
         )
 
         assert result["state"] == ProcessingState.approved

@@ -44,6 +44,25 @@ describe("getAuditEvents", () => {
   });
 });
 
+describe("getApprovedActionItems", () => {
+  it("uses only GET with bearer auth, uncached results and literal query encoding", async () => {
+    mockFetch.mockResolvedValueOnce(makeResponse({ items: [], has_more: false, viewer_upn: "alice@example.test" }));
+    const { getApprovedActionItems } = await import("../api");
+    await getApprovedActionItems("token", { view: "all", meeting: "Budget & Tax", owner: "Alice+team", deadline: "Monday", offset: 50 });
+    const [url, init] = mockFetch.mock.calls[0];
+    const query = new URL(url).searchParams;
+    expect(new URL(url).pathname).toBe("/action-items");
+    expect(query.get("meeting")).toBe("Budget & Tax");
+    expect(query.get("owner")).toBe("Alice+team");
+    expect(query.get("deadline")).toBe("Monday");
+    expect(query.get("offset")).toBe("50");
+    expect(init.method).toBeUndefined();
+    expect(init.body).toBeUndefined();
+    expect(init.cache).toBe("no-store");
+    expect(init.headers.Authorization).toBe("Bearer token");
+  });
+});
+
 describe("getAllMeetings", () => {
   it("passes the bearer token", async () => {
     mockFetch.mockResolvedValueOnce(makeResponse([]));

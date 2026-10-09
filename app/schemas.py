@@ -116,6 +116,23 @@ class ActionItemOut(BaseModel):
     approved: bool
 
 
+class ApprovedActionItemOut(BaseModel):
+    id: UUID
+    task: str
+    meeting_id: UUID
+    meeting_title: str | None
+    owner: str | None
+    deadline_iso: str | None
+    deadline_text: str | None
+    source_quote: str | None
+
+
+class ApprovedActionItemsPageOut(BaseModel):
+    items: list[ApprovedActionItemOut]
+    has_more: bool
+    viewer_upn: str
+
+
 class ActionItemEdit(BaseModel):
     """Partial-update payload accepted by PATCH /reviews/action-items/{id}.
 

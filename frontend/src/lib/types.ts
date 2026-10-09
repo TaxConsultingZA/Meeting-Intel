@@ -44,6 +44,32 @@ export interface ActionItemOut {
   approved: boolean;
 }
 
+/** Approved source actions for the read-only cross-meeting page. */
+export interface ApprovedActionItem {
+  id: string;
+  meeting_id: string;
+  meeting_title: string | null;
+  task: string;
+  owner: string | null;
+  deadline_iso: string | null;
+  deadline_text: string | null;
+  source_quote: string | null;
+}
+
+export interface ApprovedActionItemsPage {
+  items: ApprovedActionItem[];
+  has_more: boolean;
+  viewer_upn: string;
+}
+
+export interface ActionItemFilters {
+  view: "mine" | "all";
+  meeting: string;
+  owner: string;
+  deadline: string;
+  offset: number;
+}
+
 /** Partial update payload sent to PATCH /reviews/action-items/{id}. All fields optional. */
 export interface ActionItemEdit {
   task?: string;

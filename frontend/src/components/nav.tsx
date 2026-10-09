@@ -38,6 +38,7 @@ export default function Nav({ userEmail, accessToken, isAdmin }: NavProps) {
       <div className="flex gap-1 ml-2">
         {[
           { href: "/", label: "Dashboard" },
+          { href: "/action-items", label: "Action Items" },
           ...(isAdmin ? [{ href: "/admin", label: "Admin" }] : []),
         ].map(({ href, label }) => (
           <Link

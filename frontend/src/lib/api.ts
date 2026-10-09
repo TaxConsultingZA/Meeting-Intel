@@ -1,9 +1,15 @@
 import type { ActionItemEdit, MeetingOut, AvailableRecording, CalendarEvent, AppNotification, RegisteredUser, BusinessUnit, SyncState, RecordingJobOut, AdminMeetingOut, AdminAccessRequest } from "./types";
 import type { RecentMeeting, RecordingProcessingRequest } from "./types";
 import type { AuditEventsPage, AuditFilters } from "./types";
+import type { ActionItemFilters, ApprovedActionItemsPage } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 const API_TIMEOUT_MS = 30_000;
+
+export function getApprovedActionItems(token: string, filters: ActionItemFilters, signal?: AbortSignal): Promise<ApprovedActionItemsPage> {
+  const params = new URLSearchParams({ ...filters, offset: String(filters.offset), limit: "50" });
+  return apiFetch(`/action-items?${params}`, token, { signal, cache: "no-store" });
+}
 
 export class ApiError extends Error {
   constructor(

@@ -10,7 +10,8 @@ from ..models import Meeting, ActionItem, MeetingParticipant, ProcessingState, R
 from ..graph import client as graph
 from ..utils.identity import normalize_upn, normalize_upns
 from .transcribe import get_transcriber, normalize_single_person_diarization, TranscriptSegment
-from .extract import get_extractor, require_transcript, validate_extraction
+from .extract import require_transcript
+from ..ai.runtime_bridge import extract_with_foundation
 from ..services.job_control import guarded_commit, JobCancelled, public_job_error
 from ..services.recording_audit import add_processing_outcome
 from ..services.reprocessing import (
@@ -133,10 +134,9 @@ async def _reprocess_completed_recording(
             segments = normalize_single_person_diarization(segments, known_people)
         require_transcript(segments)
         transcript = "\n".join(f"[{segment.speaker}] {segment.text}" for segment in segments)
-        result = validate_extraction(
-            await get_extractor().extract(segments),
-            transcript_only=settings.extractor_impl == "transcript_only",
-            transcript_text=transcript,
+        result = await extract_with_foundation(
+            meeting_id, segments,
+            implementation=settings.extractor_impl,
             known_participants=set(known_people or []),
         )
 
@@ -447,11 +447,11 @@ async def process_recording(
             meeting.extracted_json = extracted_json
             meeting.state = ProcessingState.extracting
             await commit()
-            result = validate_extraction(
-                await get_extractor().extract(segments),
-                transcript_only=settings.extractor_impl == "transcript_only",
-                transcript_text=meeting.transcript,
+            result = await extract_with_foundation(
+                meeting.id, segments,
+                implementation=settings.extractor_impl,
                 known_participants=set(all_attendee_upns or []),
+                timestamps_available=bool(transcript_segments),
             )
             await commit()  # Stop here if cancellation arrived during extraction.
             meeting.summary = result.summary

@@ -1,3 +1,4 @@
+import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -9,6 +10,9 @@ from fastapi import HTTPException
 from app.api import recordings
 from app.models import AuditEvent, ProcessingState
 from app.pipeline import extract, steps
+from app.ai import runtime_bridge
+from app.ai.providers import ProviderIdentity
+from app.ai.processing import ProcessingCancelled
 from app.pipeline.transcribe import TranscriptSegment
 from app.services.reprocessing import (
     MANUAL_REPROCESS_SOURCE,
@@ -111,6 +115,36 @@ async def test_reprocess_failure_or_cancel_keeps_old_result(monkeypatch, failure
 
     assert (meeting.state, meeting.transcript, meeting.summary, meeting.extracted_json) == before
     commit_result.assert_not_awaited()
+
+
+@pytest.mark.parametrize("failure", ["failed", "invalid", "cancelled"])
+async def test_foundation_reprocess_failure_preserves_previous_success(monkeypatch, failure):
+    meeting = clean_meeting()
+    previous_action = SimpleNamespace(task="Keep reviewed action", approved=False)
+    meeting.action_items = [previous_action]
+    before = (meeting.state, meeting.transcript, meeting.summary, deepcopy(meeting.extracted_json))
+    db = fake_db()
+    monkeypatch.setattr(steps.graph, "download_drive_item", AsyncMock())
+    monkeypatch.setattr(steps, "get_transcriber", lambda: SimpleNamespace(
+        transcribe=AsyncMock(return_value=[TranscriptSegment("Speaker A", "Fresh words", 0, 1)])))
+    provider = SimpleNamespace(identity=ProviderIdentity("test.local"), process=AsyncMock(
+        return_value={"summary": "invalid"},
+        side_effect=(RuntimeError("failure") if failure == "failed" else
+                     asyncio.CancelledError() if failure == "cancelled" else None)))
+    monkeypatch.setattr(runtime_bridge, "get_local_provider", lambda _: provider)
+    install = AsyncMock()
+    notify = AsyncMock()
+    monkeypatch.setattr(steps, "_commit_reprocess_result", install)
+    monkeypatch.setattr(steps, "_send_ready_for_review", notify)
+    expected = ProcessingCancelled if failure == "cancelled" else runtime_bridge.FoundationExtractionError
+    with pytest.raises(expected):
+        await steps._reprocess_completed_recording(
+            db, meeting, "item", "drive", job_id=uuid4(), lease_token=uuid4())
+    assert (meeting.state, meeting.transcript, meeting.summary, meeting.extracted_json) == before
+    assert meeting.action_items == [previous_action]
+    install.assert_not_awaited()
+    db.execute.assert_not_awaited()
+    notify.assert_not_awaited()
 
 
 async def test_reprocess_uses_fresh_transcription_instead_of_old_transcript(monkeypatch):

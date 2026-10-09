@@ -14,7 +14,9 @@ from app.models import (
     ProcessingState,
     RecordingProcessingRequest,
 )
-from app.pipeline import extract, steps
+from app.pipeline import steps
+from app.ai import runtime_bridge
+from app.ai.providers import ProviderIdentity
 from app.pipeline.transcribe import MockTranscriber
 from app.queue import worker
 
@@ -64,13 +66,13 @@ async def run(p):
     await steps.process_recording(p.db, "offline-item", "offline-drive", owner_upn="owner@example.test")
 
 
-async def test_mock_pipeline_persists_sections_and_stops_for_human_review(pipeline):
+async def test_foundation_pipeline_persists_summary_actions_and_stops_for_review(pipeline):
     p = pipeline
     await run(p)
     assert p.meeting.state == ProcessingState.awaiting_review
     data = p.meeting.extracted_json
-    assert p.meeting.summary and data["speaker_highlights"][0]["key_points"]
-    assert data["action_items"] and data["risks"] and data["next_steps"]
+    assert p.meeting.summary and data["action_items"]
+    assert not data["speaker_highlights"] and not data["risks"] and not data["next_steps"]
     assert data["raw_transcript"] == p.meeting.transcript
     assert data["transcript_segments"][0]["start"] == 0
     before_ai = next(s for s in p.snapshots if s[0] == ProcessingState.extracting)
@@ -81,12 +83,23 @@ async def test_mock_pipeline_persists_sections_and_stops_for_human_review(pipeli
     assert p.meeting.approved_by is None and p.meeting.approved_at is None
     p.mail.assert_not_awaited()
 
+    # The real review serializer still accepts the existing summary/action rows.
+    from app.api.reviews import _to_out
+    p.meeting.participants = []
+    p.meeting.action_items = actions
+    review = _to_out(p.meeting, p.meeting.organizer_upn)
+    assert review.summary == p.meeting.summary
+    assert review.transcript == p.meeting.transcript
+    assert review.action_items[0].task == actions[0].task
+    assert not review.action_items[0].approved
+
 
 @pytest.mark.parametrize("failure", [RuntimeError("provider unavailable"), {"summary": "", "risks": 5}])
 async def test_ai_failure_preserves_raw_and_retry_reuses_transcription(monkeypatch, pipeline, failure):
     p = pipeline
     failing = AsyncMock(side_effect=failure) if isinstance(failure, Exception) else AsyncMock(return_value=failure)
-    monkeypatch.setattr(steps, "get_extractor", lambda: SimpleNamespace(extract=failing))
+    monkeypatch.setattr(runtime_bridge, "get_local_provider", lambda _: SimpleNamespace(
+        identity=ProviderIdentity("test.local"), process=failing))
     with pytest.raises((RuntimeError, ValueError)):
         await run(p)
     assert p.meeting.state == ProcessingState.failed and p.meeting.error
@@ -94,7 +107,7 @@ async def test_ai_failure_preserves_raw_and_retry_reuses_transcription(monkeypat
     assert raw and p.meeting.extracted_json["raw_transcript"] == raw
     timestamps = deepcopy(p.meeting.extracted_json["transcript_segments"])
     assert timestamps
-    monkeypatch.setattr(steps, "get_extractor", extract.MockExtractor)
+    monkeypatch.setattr(runtime_bridge, "get_local_provider", lambda _: runtime_bridge.LocalMockProvider())
     await run(p)
     assert p.meeting.state == ProcessingState.awaiting_review and p.meeting.error is None
     assert p.meeting.transcript == raw and p.meeting.extracted_json["transcript_segments"] == timestamps
@@ -107,22 +120,22 @@ async def test_empty_transcription_fails_before_ai(monkeypatch, pipeline):
     p = pipeline
     p.transcriber.transcribe.side_effect = None
     p.transcriber.transcribe.return_value = []
-    provider = SimpleNamespace(extract=AsyncMock())
-    monkeypatch.setattr(steps, "get_extractor", lambda: provider)
+    provider = SimpleNamespace(identity=ProviderIdentity("test.local"), process=AsyncMock())
+    monkeypatch.setattr(runtime_bridge, "get_local_provider", lambda _: provider)
     with pytest.raises(ValueError, match="Transcript is empty"):
         await run(p)
     assert p.meeting.state == ProcessingState.failed
-    provider.extract.assert_not_awaited()
+    provider.process.assert_not_awaited()
 
 
 async def test_cancel_during_extraction_preserves_raw_without_final_writes(monkeypatch, pipeline):
     p = pipeline
     cancelled = False
-    original_extractor = extract.MockExtractor()
+    original_provider = runtime_bridge.LocalMockProvider()
 
-    async def extraction(segments):
+    async def extraction(request):
         nonlocal cancelled
-        result = await original_extractor.extract(segments)
+        result = await original_provider.process(request)
         cancelled = True
         return result
 
@@ -131,7 +144,8 @@ async def test_cancel_during_extraction_preserves_raw_without_final_writes(monke
             raise steps.JobCancelled("Cancelled during extraction")
         await db.commit()
 
-    monkeypatch.setattr(steps, "get_extractor", lambda: SimpleNamespace(extract=extraction))
+    monkeypatch.setattr(runtime_bridge, "get_local_provider", lambda _: SimpleNamespace(
+        identity=ProviderIdentity("test.local"), process=extraction))
     monkeypatch.setattr(steps, "guarded_commit", fence)
     with pytest.raises(steps.JobCancelled):
         await run(p)
@@ -165,10 +179,30 @@ async def test_existing_plain_transcript_has_no_invented_audio_timestamps(pipeli
     p.download.assert_not_awaited()
 
 
+@pytest.mark.parametrize("invalid", [False, True])
+async def test_bridge_failure_does_not_replace_previous_results(monkeypatch, pipeline, invalid):
+    p = pipeline
+    p.meeting.summary = "Previous successful summary"
+    p.meeting.extracted_json = {"summary": p.meeting.summary, "action_items": [{"action": "Keep"}]}
+    process = (AsyncMock(return_value={"summary": "invalid"}) if invalid else
+               AsyncMock(side_effect=RuntimeError("AI failure")))
+    monkeypatch.setattr(runtime_bridge, "get_local_provider", lambda _: SimpleNamespace(
+        identity=ProviderIdentity("test.local"), process=process))
+    with pytest.raises(runtime_bridge.FoundationExtractionError):
+        await run(p)
+    assert p.meeting.summary == "Previous successful summary"
+    assert p.meeting.extracted_json["action_items"] == [{"action": "Keep"}]
+    assert p.meeting.transcript == p.meeting.extracted_json["raw_transcript"]
+    p.db.execute.assert_not_awaited()
+    assert not any(isinstance(c.args[0], ActionItem) for c in p.db.add.call_args_list)
+    p.mail.assert_not_awaited()
+
+
 @pytest.mark.parametrize("attempts,expected", [(1, "pending"), (3, "failed")])
 async def test_provider_exception_reaches_job_retry_or_failure(monkeypatch, pipeline, attempts, expected):
     p = pipeline
-    monkeypatch.setattr(steps, "get_extractor", lambda: SimpleNamespace(extract=AsyncMock(side_effect=RuntimeError("AI unavailable"))))
+    monkeypatch.setattr(runtime_bridge, "get_local_provider", lambda _: SimpleNamespace(
+        identity=ProviderIdentity("test.local"), process=AsyncMock(side_effect=RuntimeError("AI unavailable"))))
     row = SimpleNamespace(id=uuid.uuid4(), drive_item_id="offline-item", drive_id="offline-drive",
                           owner_upn="owner@example.test", lease_token=uuid.uuid4(), status="processing",
                           attempts=attempts, max_attempts=3, source="manual", cancel_requested_at=None)

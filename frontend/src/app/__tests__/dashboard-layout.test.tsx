@@ -17,6 +17,7 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/components/recording-jobs", () => ({
   default: () => <section aria-label="Recording processing">Recording processing</section>,
   JobControls: () => null,
+  recordingStatusMessage: () => "Recording processing status",
 }));
 vi.mock("@/components/import-modal", () => ({
   default: () => <div role="dialog" aria-label="Process Past Recording">Recording import</div>,

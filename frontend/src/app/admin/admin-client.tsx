@@ -5,6 +5,8 @@ import { UserPlus, Trash2, Shield, Pencil, ChevronDown, Loader2, History, ArrowR
 import { cleanupAdminJob, decideMeetingEditAccess, decideRecordingProcessing, getAdminMeetings, getAdminUserSyncStatus, getBusinessUnits, getRecordingJobs, getRegisteredUsers, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
 import type { RegisteredUser, BusinessUnit, RecordingJobOut, AdminAccessRequest, AdminMeetingOut, SyncState } from "@/lib/types";
 import { JobControls } from "@/components/recording-jobs";
+import { toast } from "sonner";
+import { recordingStatusMessage } from "@/components/recording-jobs";
 import StateBadge from "@/components/state-badge";
 
 interface Props {
@@ -47,7 +49,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
       }
       setLoaded((current) => ({ ...current, [section]: true }));
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : `Failed to load ${section}`);
+      setError(section === "jobs" ? "Recording jobs could not be loaded. Close and reopen Processing Jobs to try again." : e instanceof Error ? e.message : `Failed to load ${section}`);
     } finally {
       setLoading((current) => current === section ? null : current);
     }
@@ -128,9 +130,11 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
     setError(null);
     try {
       await reprocessRecordingJob(job.job_id, accessToken);
-      await refreshJobs();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to reprocess recording");
+      toast.success("Recording queued for reprocessing. Saved results remain available until replacement succeeds.");
+      try { await refreshJobs(); }
+      catch { setError("Reprocessing was queued, but the latest status could not be loaded. Reload the page before taking another action."); }
+    } catch {
+      setError("We could not confirm the reprocess request. Reload the page to check the status before trying again.");
     } finally {
       jobsInFlight.current.delete(job.job_id);
       setBusyJob((current) => current?.id === job.job_id ? null : current);
@@ -228,9 +232,9 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
         <SectionHeader id="admin-jobs" label="Processing Jobs" count={loaded.jobs ? jobs.length : undefined} />
         <div className="px-4 pb-4">
         <p className="text-xs text-[#6b7280] mb-3">Jobs across all registered users.</p>
-        {loading === "jobs" && <Loading />}
+        {loading === "jobs" && <p role="status" className="flex items-center gap-2 text-sm text-[#6b7280]"><Loader2 size={16} aria-hidden="true" className="animate-spin" />Loading recording jobs… This may take a moment.</p>}
         {loaded.jobs && <>
-        {jobs.length === 0 && <p className="text-sm text-[#9ca3af]">No processing jobs.</p>}
+        {jobs.length === 0 && <p className="text-sm text-[#9ca3af]">No recording jobs yet. Jobs appear here once recordings are queued for processing.</p>}
         {jobs.map((job) => (
           <div key={job.job_id} className="border-t py-3 text-sm space-y-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -238,8 +242,9 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
               <StateBadge state={job.processing_status} />
             </div>
             <p className="text-xs text-[#6b7280]">Owner: {job.owner_upn ?? "Unknown"}</p>
-            {job.is_stuck && <p className="text-xs font-semibold text-amber-800">Worker lease appears stuck.</p>}
-            {job.error && <p className="text-xs text-red-700">{job.error}</p>}
+            <p className="text-xs leading-5 text-[#6b7280]">{recordingStatusMessage(job)}</p>
+            {job.is_stuck && <p className="text-xs font-semibold text-amber-800">Processing is taking longer than expected. Check the recovery actions below.</p>}
+            {job.error && <p className="text-xs text-red-700">This attempt could not finish. Use a recovery action below, or check audit logs for details.</p>}
             <div className="flex items-center gap-3">
               <JobControls job={job} token={accessToken} onChanged={refreshJobs} />
               {job.can_reprocess && <button type="button" disabled={busyJob?.id === job.job_id} onClick={() => handleReprocess(job)} className="inline-flex items-center gap-1 text-xs font-semibold text-blue-800 disabled:cursor-not-allowed disabled:opacity-50">{busyJob?.id === job.job_id && busyJob.action === "reprocess" && <Loader2 size={12} className="animate-spin" />}{busyJob?.id === job.job_id && busyJob.action === "reprocess" ? "Reprocessing…" : "Reprocess"}</button>}

@@ -8,7 +8,7 @@ import LocalDateTime, { useUserTimeZone } from "@/components/local-date-time";
 import { formatEventTime, parseInstant } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
 import RecentMeetings from "@/components/recent-meetings";
-import { JobControls } from "@/components/recording-jobs";
+import { JobControls, recordingStatusMessage } from "@/components/recording-jobs";
 import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecordingJobs, getSyncStatus, getUpcomingMeetings, requestHistoricalAccess, requestMeetingEditAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
 import type { AvailableRecording, MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
 
@@ -104,7 +104,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     const requests = [
       load(getAllMeetings(accessToken), "Meeting records could not be loaded", setMeetings, "meetings"),
       load(getSyncStatus(accessToken), "Sync status could not be loaded", setSyncStates, "sync"),
-      load(getRecordingJobs(accessToken, undefined, 20), "Recording processing status could not be loaded", setRecordingJobs, "recordingJobs"),
+      load(getRecordingJobs(accessToken, undefined, 20), "Recording status could not be loaded. Refresh to try again.", setRecordingJobs, "recordingJobs"),
     ];
     if (isSubscribed) {
       requests.push(load(getUpcomingMeetings(accessToken), "Calendar sync failed", setUpcoming, "calendar"));
@@ -141,7 +141,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   useEffect(() => {
     if (!hasActiveProcessing || showImport) return;
     const timer = setInterval(() => {
-      void refreshProcessing().catch(() => setPollingError("Meeting and recording status could not be refreshed."));
+      void refreshProcessing().catch(() => setPollingError("Meeting and recording status could not be refreshed. Showing the last available information. Refresh to try again."));
     }, 10000);
     return () => clearInterval(timer);
   }, [hasActiveProcessing, refreshProcessing, showImport]);
@@ -556,12 +556,7 @@ function RecordingJobCard({ job, token, onChanged }: { job: RecordingJobOut; tok
       </div>
       <div className="px-4 py-3.5">
         <StateBadge state={job.processing_status} />
-        {job.processing_status === "queued" && !job.processing_enabled && (
-          <p className="mt-2 text-xs text-amber-800">Queued — processing is paused in staging.</p>
-        )}
-        {job.processing_status === "cancel_requested" && (
-          <p className="mt-2 text-xs text-amber-800">Cancellation requested; waiting for the current operation to stop.</p>
-        )}
+        <p className="mt-2 text-xs leading-5 text-[#6b7280]">{recordingStatusMessage(job)}</p>
         <div className="mt-3 flex items-center justify-between border-t border-[#dde1e8] pt-2.5">
           <JobControls job={job} token={token} onChanged={onChanged} />
           {job.meeting_id && <Link href={`/meetings/${job.meeting_id}`} className="text-[12.5px] font-semibold text-[#003366] hover:underline">View Progress</Link>}

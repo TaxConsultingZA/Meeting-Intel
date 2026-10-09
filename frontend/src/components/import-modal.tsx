@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
 import LocalDateTime from "./local-date-time";
 import StateBadge from "./state-badge";
-import { JobControls } from "./recording-jobs";
+import { JobControls, recordingStatusMessage } from "./recording-jobs";
 import type { AvailableRecording, ProcessingState, RecordingJobOut } from "@/lib/types";
 
 function formatBytes(bytes: number | null): string {
@@ -65,8 +65,8 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
       const [data, jobs] = await Promise.all([getAvailableRecordings(upn), loadJobs()]);
       setRecordings(data.map(rec => ({ ...rec, job: jobs.find(job => job.drive_item_id === rec.drive_item_id) })));
       setHasLoaded(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load recordings");
+    } catch {
+      setError("We could not load recordings from OneDrive. Try again. If this continues, check your access with an administrator.");
     } finally {
       refreshInFlight.current = false;
       setRefreshing(false);
@@ -94,7 +94,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
     if (!hasActiveJobs) return;
     const timer = setInterval(() => {
       if (document.visibilityState === "hidden") return;
-      void refreshJobs().catch(() => setError("Recording status could not be refreshed."));
+      void refreshJobs().catch(() => setError("The latest recording status could not be loaded. Refresh to try again."));
     }, 5000);
     return () => clearInterval(timer);
   }, [hasActiveJobs, refreshJobs]);
@@ -124,8 +124,8 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
       await reprocessRecording(rec.drive_item_id, rec.drive_id, upn);
       toast.success(`"${rec.name.replace(/\.mp4$/i, "")}" requeued for processing`);
       await load();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Reprocess failed");
+    } catch {
+      toast.error("We could not confirm the reprocess request. Refresh recordings to check the status before trying again.");
     } finally {
       actionInFlight.current.delete(rec.drive_item_id);
       setBusy((prev) => { const s = new Set(prev); s.delete(rec.drive_item_id); return s; });
@@ -139,7 +139,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
     if (isBusy) {
       return (
         <span role="status" className="inline-flex items-center gap-1.5 text-[#6b7280] text-[12.5px]">
-          <Loader2 size={13} className="animate-spin" /> Processing…
+          <Loader2 size={13} aria-hidden="true" className="animate-spin" /> Queuing recording…
         </span>
       );
     }
@@ -254,11 +254,11 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
             </div>
           )}
 
-          {hasLoaded && recordings.length === 0 && (
+          {hasLoaded && !error && recordings.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16 text-[#6b7280]">
               <FolderOpen size={36} className="mb-3 text-[#dde1e8]" />
               <p className="text-[13.5px] font-semibold text-[#1a1a2e] mb-1">No recordings found</p>
-              <p className="text-[12.5px]">Your OneDrive Recordings folder appears to be empty.</p>
+              <p className="text-[12.5px]">No MP4 recordings were found in your OneDrive Recordings folder. After a recording is saved there, refresh this list.</p>
             </div>
           )}
 
@@ -285,8 +285,8 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
                         {rec.name.replace(/\.mp4$/i, "")}
                       </span>
                       {rec.meeting_error && (
-                        <span className="block text-[11px] text-red-500 truncate mt-0.5" title={rec.meeting_error}>
-                          {rec.meeting_error}
+                        <span className="block text-[11px] text-red-500 truncate mt-0.5" title="Processing could not finish. Open the meeting for recovery options.">
+                          Processing could not finish. Open the meeting for recovery options.
                         </span>
                       )}
                     </td>
@@ -297,11 +297,11 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
                       {formatBytes(rec.size)}
                     </td>
                     <td className="px-4 py-3 border-b border-[#dde1e8] text-[12.5px]">
-                      {rec.job ? <StateBadge state={rec.job.processing_status} /> : rec.meeting_state ? (
+                      {rec.job ? <span title={recordingStatusMessage(rec.job)}><StateBadge state={rec.job.processing_status} /></span> : rec.meeting_state ? (
                         <span className={`font-medium ${rec.meeting_state === "failed" ? "text-red-600" : rec.meeting_state === "awaiting_review" ? "text-amber-600" : "text-[#6b7280]"}`}>
                           {(["awaiting_review", "approved", "sent"] as ProcessingState[]).includes(rec.meeting_state) ? "Completed" : STATE_LABEL[rec.meeting_state]}
                         </span>
-                      ) : "—"}
+                      ) : "Not started"}
                     </td>
                     <td className="px-4 py-3 border-b border-[#dde1e8] text-[12.5px]">
                       {rec.job?.review_status ? <StateBadge state={rec.job.review_status} />

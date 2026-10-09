@@ -340,16 +340,10 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
         </div>
       ) : null}
 
-      <RecordingJobs
-        token={accessToken}
-        meetingId={meeting.id}
-        onChanged={refreshMeetingStatus}
-        onTerminalTransition={refreshMeetingStatus}
-      />
-
       <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 items-start">
         {/* Sidebar */}
-        <div className="lg:sticky lg:top-[76px] bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
+        <aside aria-label="Meeting details and recording processing" className="min-w-0 space-y-4 lg:sticky lg:top-[76px]">
+        <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
           <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-4 py-4">
             <h2 className="text-white text-[14px] font-semibold leading-snug">
               {meeting.title ?? "Untitled Meeting"}
@@ -432,13 +426,20 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </button>
           </div>
         </div>
+        <RecordingJobs
+          token={accessToken}
+          meetingId={meeting.id}
+          onChanged={refreshMeetingStatus}
+          onTerminalTransition={refreshMeetingStatus}
+        />
+        </aside>
 
         {/* Main content */}
         <div className="flex flex-col gap-4">
           {isProcessing ? (
             <PipelineView state={meeting.state} />
           ) : meeting.state === "cancelled" ? (
-            <div className="rounded-lg border border-[#dde1e8] bg-white p-5"><h2 className="font-semibold text-[#003366]">Recording cancelled</h2><p className="mt-2 text-sm leading-6 text-[#6b7280]">Saved meeting information and transcript have been kept. Check the recording processing panel above for any recovery actions available to you.</p>{meeting.transcript && <pre className="mt-4 whitespace-pre-wrap rounded-md bg-[#fafbfc] p-4 text-sm leading-6">{meeting.transcript}</pre>}</div>
+            <div className="rounded-lg border border-[#dde1e8] bg-white p-5"><h2 className="font-semibold text-[#003366]">Recording cancelled</h2><p className="mt-2 text-sm leading-6 text-[#6b7280]">Saved meeting information and transcript have been kept. Check the recording processing panel in the meeting sidebar for any recovery actions available to you.</p>{meeting.transcript && <pre className="mt-4 whitespace-pre-wrap rounded-md bg-[#fafbfc] p-4 text-sm leading-6">{meeting.transcript}</pre>}</div>
           ) : meeting.state === "failed" ? (
             <div className="bg-white rounded-lg border border-red-200 shadow-sm overflow-hidden">
               <div className="bg-red-600 border-b-[3px] border-[#C9A52C] px-5 py-4">
@@ -448,11 +449,11 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               <div className="px-5 py-5">
                 {meeting.error && (
                   <p className="text-[13.5px] text-red-700 bg-red-50 border border-red-200 rounded-md px-4 py-3 font-medium">
-                    {meeting.error}
+                    Processing stopped before this attempt could finish. Check the recording processing panel in the meeting sidebar for available recovery actions.
                   </p>
                 )}
                 <p className="text-[13px] text-[#6b7280] mt-3">
-                  Check the recording processing panel above for the latest status and any recovery actions available to you.
+                  Check the recording processing panel in the meeting sidebar for the latest status and any recovery actions available to you.
                 </p>
               </div>
             </div>

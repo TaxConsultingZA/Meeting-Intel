@@ -10,7 +10,7 @@ vi.mock("@/lib/api", () => ({
   getRecordingJobs: vi.fn(), getRegisteredUsers: vi.fn(), registerUser: vi.fn(), removeUser: vi.fn(),
   reprocessRecordingJob: vi.fn(), revokeAdminMeetingAccess: vi.fn(), updateUser: vi.fn(),
 }));
-vi.mock("@/components/recording-jobs", () => ({ JobControls: () => <span>Existing controls</span> }));
+vi.mock("@/components/recording-jobs", () => ({ JobControls: () => <span>Existing controls</span>, recordingStatusMessage: () => "Recording processing status" }));
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.restoreAllMocks(); });
 

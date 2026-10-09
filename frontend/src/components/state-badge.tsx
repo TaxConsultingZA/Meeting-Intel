@@ -17,7 +17,7 @@ const CONFIG: Record<ProcessingState, { label: string; cls: string; dot: string 
 };
 
 export default function StateBadge({ state }: { state: ProcessingState }) {
-  const c = CONFIG[state] ?? CONFIG.queued;
+  const c = CONFIG[state] ?? { label: "Status unavailable", cls: "bg-gray-100 text-gray-700", dot: "bg-gray-400" };
   return (
     <span className={cn("inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11.5px] font-semibold", c.cls)}>
       <span className={cn("w-1.5 h-1.5 rounded-full", c.dot)} />

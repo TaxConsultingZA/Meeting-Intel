@@ -145,7 +145,7 @@ class TestPipelineAttendeeFiltering:
             patch("app.pipeline.steps.graph.send_mail", new_callable=AsyncMock),
             patch("app.pipeline.steps.graph.download_drive_item", new_callable=AsyncMock),
             patch("app.pipeline.steps.get_transcriber") as mock_tc,
-            patch("app.pipeline.steps.get_extractor") as mock_ex,
+            patch("app.pipeline.steps.extract_with_foundation", new_callable=AsyncMock) as mock_ex,
         ):
             mock_meta.return_value = {
                 "name": "meeting.mp4",
@@ -157,13 +157,11 @@ class TestPipelineAttendeeFiltering:
             transcriber.transcribe = AsyncMock(return_value=[])
             mock_tc.return_value = transcriber
 
-            extractor = MagicMock()
             result = MagicMock()
             result.summary = "Summary"
             result.action_items = []
             result.model_dump.return_value = {}
-            extractor.extract = AsyncMock(return_value=result)
-            mock_ex.return_value = extractor
+            mock_ex.return_value = result
 
             # Mock scalars for registered user lookup and existing participants
             scalars_calls = 0

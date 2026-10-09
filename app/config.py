@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -78,9 +79,11 @@ class Settings(BaseSettings):
     # --- AI layer ---
     graph_impl: str = "microsoft"          # microsoft | mock
     transcriber_impl: str = "assemblyai"    # mock | assemblyai
-    extractor_impl: str = "transcript_only"  # transcript_only | mock | azure_openai | gemini
+    # Current runtime is local-only. Reject unsupported routes at settings load,
+    # before a worker can claim jobs; never substitute another provider.
+    extractor_impl: Literal["transcript_only", "mock"] = "transcript_only"
 
-    # Disabled unless an administrator explicitly authorises external AI use.
+    # Legacy external-adapter settings; cannot enable the current runtime bridge.
     gemini_enabled: bool = False
     gemini_api_key: str = ""
     gemini_model: str = ""
@@ -95,7 +98,7 @@ class Settings(BaseSettings):
 
     assemblyai_api_key: str = ""
 
-    # Azure OpenAI (optional fallback)
+    # Legacy Azure settings; no runtime route or automatic fallback is enabled.
     azure_openai_endpoint: str = ""
     azure_openai_key: str = ""
     azure_openai_deployment: str = "gpt-4o"

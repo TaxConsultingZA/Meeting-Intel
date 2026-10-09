@@ -155,7 +155,17 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     }
   }, [accessToken]);
 
-  useEffect(() => { void refreshProcessingRequests(); }, [refreshProcessingRequests]);
+  useEffect(() => {
+    let active = true;
+    void getProcessingRequests(accessToken).then((requests) => {
+      if (!active) return;
+      setProcessingRequests(requests);
+      setProcessingRequestsError("");
+    }).catch(() => {
+      if (active) setProcessingRequestsError("Recording processing requests are temporarily unavailable.");
+    });
+    return () => { active = false; };
+  }, [accessToken]);
 
   async function refreshRecordingJobs() {
     await refreshProcessing();
@@ -194,6 +204,8 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     }
   }
 
+  // Preserve the existing wall-clock filter on every render without adding a timer.
+  // eslint-disable-next-line react-hooks/purity
   const now = Date.now();
   const upcomingEvents  = upcoming.filter((e) => {
     if (e.status !== "upcoming") return false;

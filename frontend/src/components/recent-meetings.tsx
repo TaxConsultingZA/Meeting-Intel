@@ -85,7 +85,9 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
   const [choosingAccessFor, setChoosingAccessFor] = useState<string | null>(null);
   const controlledRequests = processingRequests !== undefined;
   const processingRequestsRef = useRef(processingRequests);
-  processingRequestsRef.current = processingRequests;
+  useEffect(() => {
+    processingRequestsRef.current = processingRequests;
+  }, [processingRequests]);
   const load = useCallback(() => Promise.allSettled([
       isSubscribed ? getRecentMeetings(token) : Promise.resolve([]),
       controlledRequests ? Promise.resolve(processingRequestsRef.current ?? []) : getProcessingRequests(token, null),
@@ -107,6 +109,8 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     let active = true;
     const cached = isSubscribed ? readCache(cacheIdentity) : null;
     if (cached) {
+      // Restore browser storage before background revalidation, preserving instant remounts.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setEvents(cached.events);
       setLoading(false);
       setError("");
@@ -121,9 +125,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     return () => { active = false; };
   }, [load, applyResults, cacheIdentity, isSubscribed]);
 
-  useEffect(() => {
-    if (processingRequests !== undefined) setRequests(processingRequests);
-  }, [processingRequests]);
+  const displayedRequests = processingRequests ?? requests;
 
   async function refresh() {
     setRefreshing(true);
@@ -157,6 +159,8 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
   ].filter((row) => {
     const timestamp = row.date ? Date.parse(row.date) : NaN;
     const cutoffDays = timeFilter === "7" ? 7 : timeFilter === "30" ? 30 : null;
+    // Preserve the existing wall-clock cutoff whenever the list renders.
+    // eslint-disable-next-line react-hooks/purity
     if (cutoffDays !== null && (Number.isNaN(timestamp) || timestamp < Date.now() - cutoffDays * 24 * 60 * 60 * 1000)) return false;
     if (recordingFilter === "with" && !row.hasRecording) return false;
     if (recordingFilter === "without" && row.hasRecording) return false;
@@ -237,9 +241,9 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
       </div>
       <h3 className="mb-3 mt-8 font-semibold text-[#003366]">Recording processing requests</h3>
       <p className="mb-3 text-sm text-[#6b7280]">The recording owner approves processing only. Editing and final notes approval stay separate.</p>
-      {!loading && !requests.length && <p className="text-sm">No processing requests.</p>}
+      {!loading && !displayedRequests.length && <p className="text-sm">No processing requests.</p>}
       <ul className="space-y-3">
-        {requests.map((request) => (
+        {displayedRequests.map((request) => (
           <li key={request.id} className="rounded-lg border border-[#dde1e8] bg-white p-4">
             <p className="font-medium">{request.subject || "Meeting"}</p>
             <p className="my-1 text-sm"><LocalDateTime value={request.start} /> · {request.requester_name || "Requester"}</p>

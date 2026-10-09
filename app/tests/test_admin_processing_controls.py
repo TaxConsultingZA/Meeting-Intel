@@ -76,7 +76,7 @@ async def test_processing_request_scope_is_all_users_only_for_admin(admin, has_u
     result = MagicMock()
     result.__iter__.return_value = iter([])
     db.execute.return_value = result
-    await recording_processing_requests.listing(db, actor(admin=admin))
+    await recording_processing_requests.listing(status=None, db=db, user=actor(admin=admin))
     sql = str(db.execute.await_args.args[0].compile(dialect=postgresql.dialect()))
     assert ("requester_user_id =" in sql) is has_user_filter
 

@@ -348,7 +348,7 @@ curl -X POST https://$API_URL/subscriptions/ensure
 | `DATABASE_URL` | Yes | asyncpg connection string |
 | `ASSEMBLYAI_API_KEY` | Yes | AssemblyAI key |
 | `TRANSCRIBER_IMPL` | No | `assemblyai` or `mock` |
-| `EXTRACTOR_IMPL` | No | `transcript_only` now; `azure_openai` after a provider is approved; `mock` in tests |
+| `EXTRACTOR_IMPL` | No | `transcript_only` (default) or `mock` for isolated tests; other values fail settings validation. External provider integration is pending. |
 | `MAIL_SENDER_UPN` | Yes | Mailbox emails send from |
 | `AUTO_SEND_EMAIL` | No | Deprecated; explicit organiser approval is the send gate |
 | `POPIA_NOTICE_ENABLED` | No | `true` to send POPIA notice before processing |

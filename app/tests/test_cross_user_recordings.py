@@ -504,7 +504,7 @@ async def test_request_route_loads_contract_in_one_query(ctx):
         return await original_execute(*args, **kwargs)
 
     ctx.db.execute = counted_execute
-    rows = await recording_processing_requests.listing(ctx.db, ctx.owner)
+    rows = await recording_processing_requests.listing(status=None, db=ctx.db, user=ctx.owner)
     assert rows[0]["requester_name"] == ctx.requester.upn
     assert rows[0]["can_decide"] is True
     assert "drive_id" not in rows[0]

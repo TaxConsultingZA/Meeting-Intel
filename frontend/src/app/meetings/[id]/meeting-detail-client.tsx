@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ChevronLeft, Pencil, Check, X, CheckCircle2, Loader2, Pause, Play } from "lucide-react";
+import { ChevronLeft, CheckCircle2, Loader2, Pause, Play } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -14,9 +14,10 @@ import StateBadge from "@/components/state-badge";
 import RecordingJobs from "@/components/recording-jobs";
 import LocalDateTime from "@/components/local-date-time";
 import PipelineView from "./pipeline-view";
+import ActionItemReview from "./action-item-review";
 import {
+  ApiError,
   getMeeting,
-  editActionItem,
   approveMeeting,
   previewMeetingEmail,
   editMeetingTranscript,
@@ -29,7 +30,6 @@ import {
 import type {
   MeetingOut,
   ActionItemOut,
-  Confidence,
   ProcessingState,
   SpeakerHighlight,
 } from "@/lib/types";
@@ -58,6 +58,23 @@ function mappingForLabel(mappings: Record<string, string | null>, label: string)
   return matching ? matching[1] : null;
 }
 
+function approvalStatusMessage(state: string, recipientCount: number): string {
+  return state === "sent"
+    ? `Meeting notes approved. Email submission accepted for ${recipientCount} selected recipient(s). Delivery to inboxes is not confirmed here. If the email does not arrive, ask an administrator to check mail delivery before resending.`
+    : "Meeting notes approved. No email was submitted. No further approval action is needed.";
+}
+
+function approvalFailureMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 401) return "Your session expired before approval could be confirmed. Sign in again and check the meeting status before trying again.";
+    if (error.status === 403) return "You do not have permission to approve this meeting. Ask the meeting organiser or an administrator for help.";
+    if (error.status === 409) return "Approval could not proceed with the current preview or meeting status. Refresh the meeting and review a fresh preview. If an earlier send is unconfirmed, ask an administrator to check before submitting again.";
+    if (error.status === 422) return "The selected recipients could not be accepted. Refresh the meeting, check the recipient list, and review a fresh preview before approving.";
+    if (error.status === 502) return "Email submission could not be confirmed, and approval is not confirmed. Ask an administrator to check the email audit and mail delivery before trying again; the email may already have been accepted.";
+  }
+  return "Approval could not be confirmed. Refresh the meeting status before trying again. If you already submitted an email, ask an administrator to check delivery before resending.";
+}
+
 interface Props {
   meeting: MeetingOut;
   upn: string;
@@ -83,6 +100,10 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [sendingSelfCopy, setSendingSelfCopy] = useState(false);
   const [pollingError, setPollingError] = useState<string | null>(null);
   const [approvalVerificationError, setApprovalVerificationError] = useState<string | null>(null);
+  const [approvalFeedback, setApprovalFeedback] = useState<string | null>(null);
+  const approvalInFlight = useRef(false);
+  const previewInFlight = useRef(false);
+  const cancelApprovalButton = useRef<HTMLButtonElement>(null);
   const pollingInFlight = useRef(false);
 
   const data = meeting.extracted_json ?? {};
@@ -140,8 +161,10 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   }, [isProcessing, refreshMeetingStatus]);
 
   async function handleApprove() {
-    if (!emailPreview || !previewMatchesRecipients) return;
+    if (approvalInFlight.current || !emailPreview || !previewMatchesRecipients) return;
+    approvalInFlight.current = true;
     setApproving(true);
+    setApprovalFeedback(null);
     setApprovalVerificationError(null);
     try {
       const res = await approveMeeting(meeting.id, accessToken, recipients, emailPreview.fingerprint);
@@ -154,15 +177,11 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
       } catch {
         // Keep the successful response state visible if reconciliation itself fails,
         // but make the unverifiable fields explicit to the user.
-        setMeeting((m) => ({ ...m, state: res.state as never }));
-        setApprovalVerificationError("Unable to verify meeting approval status. Please refresh and try again.");
+        setMeeting((m) => ({ ...m, state: res.state as never, approved_recipients: recipients }));
+        setApprovalVerificationError("The latest approval status could not be verified. Refresh the status before taking another action. If email submission is unconfirmed, ask an administrator to check delivery before resending.");
       }
       setShowModal(false);
-      toast.success(
-        confirmedState === "sent"
-          ? `Meeting notes approved and emailed to ${recipients.length} selected recipient(s).`
-          : "Meeting notes approved. No email was sent.",
-      );
+      toast.success(approvalStatusMessage(confirmedState, recipients.length));
     } catch (e: unknown) {
       setEmailPreview(null);
       try {
@@ -171,15 +190,20 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
         setSpeakerMappings(latest.speaker_mappings ?? {});
         if (latest.state === "approved" || latest.state === "sent") {
           setShowModal(false);
-          toast.success("Approval may have completed. The latest meeting status has been loaded.");
+          toast.success(approvalStatusMessage(latest.state, latest.approved_recipients.length));
         } else {
-          toast.error(`Approval failed: ${e instanceof Error ? e.message : String(e)}`);
+          const message = approvalFailureMessage(e);
+          setApprovalFeedback(message);
+          toast.error(message);
         }
       } catch {
-        setApprovalVerificationError("Unable to verify meeting approval status. Please refresh and try again.");
-        toast.error(`Approval failed: ${e instanceof Error ? e.message : String(e)}`);
+        setApprovalVerificationError("The latest approval status could not be verified. Refresh the status before taking another action. If email submission is unconfirmed, ask an administrator to check delivery before resending.");
+        const message = "We could not confirm approval or load the latest meeting status. Refresh the status before trying again. Ask an administrator to check any email submission before resending.";
+        setApprovalFeedback(message);
+        toast.error(message);
       }
     } finally {
+      approvalInFlight.current = false;
       setApproving(false);
     }
   }
@@ -192,14 +216,20 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   }
 
   async function handlePreviewEmail() {
+    if (previewInFlight.current || approvalInFlight.current) return;
+    previewInFlight.current = true;
     setPreviewingEmail(true);
     try {
       const preview = await previewMeetingEmail(meeting.id, accessToken, recipients);
       setEmailPreview(preview);
+      setApprovalFeedback(null);
       setShowEmailPreview(true);
-    } catch (e) {
-      toast.error(`Preview failed: ${e instanceof Error ? e.message : String(e)}`);
+    } catch {
+      const message = "The email preview could not be prepared. No approval was submitted. Try preparing the preview again; if this continues, refresh the meeting or contact an administrator.";
+      setApprovalFeedback(message);
+      toast.error(message);
     } finally {
+      previewInFlight.current = false;
       setPreviewingEmail(false);
     }
   }
@@ -304,11 +334,9 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
       )}
 
       {meeting.state === "approved" || meeting.state === "sent" ? (
-        <div className="flex items-center gap-2.5 bg-green-50 border border-green-200 rounded-lg px-4 py-3 mb-5 text-green-800 text-[13.5px] font-medium">
+        <div role="status" aria-label="Meeting approval status" className="flex items-start gap-2.5 bg-green-50 border border-green-200 rounded-lg px-4 py-3 mb-5 text-green-800 text-[13.5px] font-medium">
           <CheckCircle2 size={16} className="text-green-600" />
-          {meeting.state === "sent"
-            ? `Meeting notes approved and emailed to ${meeting.approved_recipients.length} selected recipient(s).`
-            : "Meeting notes approved. No email was sent."}
+          {approvalStatusMessage(meeting.state, meeting.approved_recipients.length)}
         </div>
       ) : null}
 
@@ -397,7 +425,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             <button
               type="button"
               onClick={handlePreviewEmail}
-              disabled={previewingEmail || isProcessing}
+              disabled={previewingEmail || approving || isProcessing}
               className="w-full border border-[#dde1e8] hover:border-[#003366] text-[#003366] font-semibold py-2 rounded-md text-[12.5px] transition-colors disabled:opacity-50"
             >
               {previewingEmail ? "Preparing preview…" : "Preview Email"}
@@ -468,11 +496,12 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           {!isTranscriptOnly && (
             <Section
               title="Action Items"
-              hint={canEdit ? "Hover a row to edit" : "Attendees can request edit access from the organiser"}
+              hint={canEdit ? "Review evidence and edit action details" : "Read-only · existing edit access applies"}
             >
-              <ActionItemsTable
+              <ActionItemReview
                 items={meeting.action_items}
-                upn={accessToken}
+                accessToken={accessToken}
+                transcript={meeting.transcript}
                 canEdit={canEdit}
                 onUpdate={handleEditItem}
               />
@@ -606,13 +635,13 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
       </div>
 
       {/* Approve Modal */}
-      {canApprove && <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent>
+      {canApprove && <Dialog open={showModal} onOpenChange={(open) => { if (!approvalInFlight.current) setShowModal(open); }}>
+        <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto" showCloseButton={!approving} initialFocus={cancelApprovalButton} aria-busy={approving}>
           <DialogHeader>
             <DialogTitle>Approve Meeting Notes</DialogTitle>
           </DialogHeader>
           <p className="text-[13.5px] text-[#1a1a2e] leading-6">
-            Confirm you have reviewed <strong>{meeting.title}</strong>, then choose
+            Confirm you have reviewed <strong>{meeting.title ?? "Untitled meeting"}</strong>, then choose
             exactly who should receive the approved notes.
           </p>
           <div className="border border-[#dde1e8] rounded-md max-h-56 overflow-y-auto">
@@ -626,6 +655,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                 >
                   <input
                     type="checkbox"
+                    disabled={approving || previewingEmail}
                     checked={recipients.includes(email)}
                     onChange={(e) =>
                       setRecipients((current) =>
@@ -649,9 +679,21 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               ? "Approval will be recorded without sending an email."
               : `${recipients.length} recipient(s) selected.`}
           </p>
+          <div className="rounded-md border border-blue-200 bg-blue-50/50 p-3 text-sm text-[#003366]">
+            <p className="font-semibold">What approval does</p>
+            <p className="mt-1 text-xs leading-5">Approval records these notes and action items as approved and ends this review. {recipients.length ? "It also requests an email to the selected recipients when email sending is enabled. Submitted email cannot be recalled from this screen." : "With no recipients selected, no email will be sent."}</p>
+          </div>
+          {previewMatchesRecipients && emailPreview && <div className="rounded-md border border-[#dde1e8] bg-[#fafbfc] p-3 text-xs text-[#374151]">
+            <p className="font-semibold">Reviewed email subject</p>
+            <p className="mt-1 break-words">{emailPreview.subject}</p>
+            <p className="mt-2 font-semibold">Selected recipients ({emailPreview.recipients.length})</p>
+            {emailPreview.recipients.length ? <ul className="mt-1 max-h-24 overflow-y-auto space-y-1">{emailPreview.recipients.map(email => <li key={email} className="break-all">{email}</li>)}</ul> : <p className="mt-1">None — approval only.</p>}
+          </div>}
           {!previewMatchesRecipients && (
-            <p className="text-xs text-[#6b7280]">Review an email preview for these recipients before approving.</p>
+            <p className="text-xs text-[#6b7280]">Review an email preview for these recipients before approving. If you change recipients, review the preview again.</p>
           )}
+          {approvalFeedback && <p role="alert" className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">{approvalFeedback}</p>}
+          {approving && <p role="status" aria-live="polite" className="flex items-center gap-2 text-sm text-[#003366]"><Loader2 size={16} aria-hidden="true" className="animate-spin" />Submitting approval{recipients.length ? " and requesting email submission" : ""}… Keep this page open while we check the result.</p>}
           <DialogFooter>
             <button type="button" onClick={handlePreviewEmail} disabled={previewingEmail || approving}
               className="border border-[#dde1e8] text-[#003366] px-4 py-2 rounded-md text-sm font-semibold">
@@ -659,6 +701,8 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </button>
             <button
               type="button"
+              ref={cancelApprovalButton}
+              disabled={approving}
               onClick={() => setShowModal(false)}
               className="border border-[#dde1e8] text-[#003366] px-4 py-2 rounded-md text-sm font-semibold hover:border-[#003366] transition-colors"
             >
@@ -668,21 +712,26 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               type="button"
               onClick={handleApprove}
               disabled={approving || previewingEmail || !previewMatchesRecipients}
-              className="bg-[#C9A52C] hover:bg-[#e8c84a] text-[#003366] px-5 py-2 rounded-md text-sm font-bold transition-colors disabled:opacity-60"
+              className="inline-flex items-center justify-center gap-2 bg-[#C9A52C] hover:bg-[#e8c84a] text-[#003366] px-5 py-2 rounded-md text-sm font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#003366]"
             >
-              {approving ? "Approving…" : recipients.length ? "Approve & Send Email" : "Approve Without Sending"}
+              {approving && <Loader2 size={16} aria-hidden="true" className="animate-spin" />}{approving ? "Submitting approval…" : recipients.length ? "Approve & Send Email" : "Approve Without Sending"}
             </button>
           </DialogFooter>
         </DialogContent>
       </Dialog>}
 
       <Dialog open={showEmailPreview} onOpenChange={setShowEmailPreview}>
-        <DialogContent className="max-w-5xl">
+        <DialogContent className="sm:max-w-5xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Email Preview</DialogTitle>
+            <p className="text-xs leading-5 text-[#6b7280]">Review the recipients, subject, and content below. This preview does not send email. Close it to return to the approval confirmation.</p>
           </DialogHeader>
           <div className="rounded-md border border-[#dde1e8] bg-[#fafbfc] px-4 py-3">
-            <span className="text-xs font-semibold uppercase tracking-wide text-[#6b7280]">Subject</span>
+            <p className="text-xs font-semibold uppercase tracking-wide text-[#6b7280]">Meeting</p>
+            <p className="mt-1 text-sm font-medium text-[#1a1a2e]">{meeting.title ?? "Untitled meeting"}</p>
+            <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-[#6b7280]">Recipients ({emailPreview?.recipients.length ?? 0})</p>
+            {emailPreview?.recipients.length ? <ul className="mt-1 max-h-28 overflow-y-auto space-y-1 text-sm text-[#374151]">{emailPreview.recipients.map(email => <li key={email} className="break-all">{email}</li>)}</ul> : <p className="mt-1 text-sm text-[#6b7280]">No recipients selected. Approval will not send email.</p>}
+            <span className="mt-3 block text-xs font-semibold uppercase tracking-wide text-[#6b7280]">Subject</span>
             <p className="mt-1 text-sm font-medium text-[#1a1a2e]">{emailPreview?.subject}</p>
           </div>
           {emailPreview && (
@@ -690,7 +739,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               title="Meeting notes email preview"
               srcDoc={emailPreview.html}
               sandbox=""
-              className="h-[60vh] w-full rounded-md border border-[#dde1e8] bg-white"
+              className="h-[45vh] min-h-48 w-full rounded-md border border-[#dde1e8] bg-white"
             />
           )}
           <DialogFooter>
@@ -868,143 +917,5 @@ function DataTable({
         </tbody>
       </table>
     </div>
-  );
-}
-
-function ActionItemsTable({
-  items,
-  upn,
-  canEdit,
-  onUpdate,
-}: {
-  items: ActionItemOut[];
-  upn: string;
-  canEdit: boolean;
-  onUpdate: (updated: ActionItemOut) => void;
-}) {
-  if (items.length === 0) {
-    return <p className="text-[13px] text-[#9ca3af] italic">No action items extracted.</p>;
-  }
-
-  return (
-    <div className="overflow-x-auto -mx-5">
-      <table className="w-full text-[13px] border-collapse">
-        <thead>
-          <tr>
-            {["Action", "Assigned To", "Due Date", "Confidence", "Source Quote"].map((h) => (
-              <th key={h} className="bg-[#003366] text-white text-[12px] font-semibold px-4 py-2.5 text-left border border-white/10">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item, i) => (
-            <EditableRow key={item.id} item={item} alt={i % 2 === 1} upn={upn} canEdit={canEdit} onUpdate={onUpdate} />
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function EditableRow({
-  item,
-  alt,
-  upn,
-  canEdit,
-  onUpdate,
-}: {
-  item: ActionItemOut;
-  alt: boolean;
-  upn: string;
-  canEdit: boolean;
-  onUpdate: (updated: ActionItemOut) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(item.task);
-  const [saving, setSaving] = useState(false);
-  const bg = alt ? "bg-[#f8fafc]" : "bg-white";
-
-  async function save() {
-    if (draft === item.task) { setEditing(false); return; }
-    setSaving(true);
-    try {
-      await editActionItem(item.id, { task: draft }, upn);
-      onUpdate({ ...item, task: draft });
-      setEditing(false);
-      toast.success("Action item updated.");
-    } catch {
-      toast.error("Failed to save — please try again.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const confidenceColour: Record<Confidence, string> = {
-    high:   "bg-green-50 text-green-800",
-    medium: "bg-amber-50 text-amber-800",
-    low:    "bg-red-50 text-red-800",
-  };
-
-  return (
-    <tr className={`group ${bg} hover:bg-blue-50/40 transition-colors`}>
-      <td className="px-4 py-2.5 border border-[#dde1e8] align-top w-[28%]">
-        {editing ? (
-          <div className="flex flex-col gap-1.5">
-            <input
-              autoFocus
-              aria-label="Edit action item"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              className="w-full border-2 border-[#C9A52C] rounded px-2 py-1 text-[13px] bg-[#fffbea] outline-none"
-            />
-            <div className="flex gap-1.5">
-              <button
-                type="button"
-                onClick={save}
-                disabled={saving}
-                className="bg-[#C9A52C] text-[#003366] text-[12px] font-bold px-2.5 py-1 rounded flex items-center gap-1 disabled:opacity-60"
-              >
-                <Check size={11} /> {saving ? "Saving…" : "Save"}
-              </button>
-              <button
-                type="button"
-                onClick={() => { setDraft(item.task); setEditing(false); }}
-                className="bg-[#dde1e8] text-[#6b7280] text-[12px] px-2.5 py-1 rounded flex items-center gap-1"
-              >
-                <X size={11} /> Cancel
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-start gap-1.5">
-            <span className="font-medium">{item.task}</span>
-            {canEdit && (
-              <button
-                type="button"
-                onClick={() => setEditing(true)}
-                className="opacity-0 group-hover:opacity-100 transition-opacity text-[#6b7280] hover:text-[#003366] mt-0.5 shrink-0"
-                title="Edit"
-              >
-                <Pencil size={12} />
-              </button>
-            )}
-          </div>
-        )}
-      </td>
-      <td className="px-4 py-2.5 border border-[#dde1e8] align-top">{item.owner ?? "—"}</td>
-      <td className="px-4 py-2.5 border border-[#dde1e8] align-top whitespace-nowrap">
-        {item.deadline_text ?? item.deadline_iso ?? "—"}
-      </td>
-      <td className="px-4 py-2.5 border border-[#dde1e8] align-top">
-        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11.5px] font-semibold ${confidenceColour[item.confidence]}`}>
-          {item.confidence.charAt(0).toUpperCase() + item.confidence.slice(1)}
-        </span>
-      </td>
-      <td className="px-4 py-2.5 border border-[#dde1e8] align-top text-[#6b7280] italic">
-        {item.source_quote ? `"${item.source_quote}"` : "—"}
-      </td>
-    </tr>
   );
 }

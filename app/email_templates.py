@@ -200,8 +200,11 @@ def build_welcome_email(upn: str, display_name: str | None, business_unit: str |
 
 
 def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
-    """Returns (subject, html_body). Reads from extracted_json when available,
-    falls back to legacy summary + action_items for older records."""
+    """Return (subject, html_body), using reviewed rows for action items.
+
+    extracted_json and each action's raw data remain extraction snapshots;
+    only raw fields without a reviewable column supply supplemental context.
+    """
 
     title      = (meeting.title or "Meeting Recording").replace(".mp4", "").strip()
     organizer  = meeting.organizer_upn or ""
@@ -216,7 +219,7 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
     platform           = data.get("platform") or "Microsoft Teams"
     speaker_highlights = data.get("speaker_highlights") or []
     discussion_points  = data.get("discussion_points") or []
-    action_items       = data.get("action_items") or []
+    action_items       = meeting.action_items
     deliverables       = data.get("deliverables") or []
     risks              = data.get("risks") or []
     next_steps         = data.get("next_steps") or []
@@ -327,14 +330,15 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
     if action_items:
         for i, ai in enumerate(action_items):
             alt = i % 2 == 1
+            context = ai.raw or {}
             ai_rows += (
                 f"<tr>"
-                f"{_td(ai.get('action') or ai.get('task',''), alt, bold=True)}"
-                f"{_td(ai.get('assigned_to') or ai.get('owner',''), alt)}"
-                f"{_td(ai.get('department',''), alt)}"
-                f"{_td(ai.get('reason',''), alt)}"
-                f"{_td(ai.get('expected_outcome',''), alt)}"
-                f"{_td(ai.get('due_date') or ai.get('deadline_text',''), alt)}"
+                f"{_td(ai.task, alt, bold=True)}"
+                f"{_td(ai.owner, alt)}"
+                f"{_td(context.get('department',''), alt)}"
+                f"{_td(context.get('reason',''), alt)}"
+                f"{_td(context.get('expected_outcome',''), alt)}"
+                f"{_td(ai.deadline_iso or ai.deadline_text, alt)}"
                 f"</tr>"
             )
     else:

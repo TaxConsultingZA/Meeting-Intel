@@ -1,5 +1,6 @@
 """Tests for app/email_templates.py — HTML helper functions and full email build."""
 import pytest
+from types import SimpleNamespace
 from app.email_templates import _th, _td, _empty_row, _section_heading, _detail_table, build_meeting_email
 
 
@@ -97,7 +98,10 @@ class TestBuildMeetingEmail:
             "next_meeting": {"proposed_date": "2026-07-01", "proposed_time": "10:00", "agenda_focus": "Q3"},
             "summary": "Q2 review done.",
         }
-        m.action_items = []
+        m.action_items = [SimpleNamespace(
+            task="Submit VAT return", owner="Stanley", deadline_text="30 June",
+            deadline_iso=None, raw=m.extracted_json["action_items"][0],
+        )]
         return m
 
     def test_returns_tuple_of_subject_and_html(self):
@@ -116,6 +120,46 @@ class TestBuildMeetingEmail:
     def test_html_contains_action_items(self):
         _, html = build_meeting_email(self._mock_meeting())
         assert "Submit VAT return" in html
+
+    def test_reviewed_fields_override_both_extraction_snapshots(self):
+        meeting = self._mock_meeting()
+        item = meeting.action_items[0]
+        item.task = "Reviewed filing task"
+        item.owner = "Reviewed owner"
+        item.deadline_iso = "2026-07-15"
+        _, html = build_meeting_email(meeting)
+        assert "Reviewed filing task" in html
+        assert "Reviewed owner" in html
+        assert "2026-07-15" in html
+        assert "Submit VAT return" not in html
+        assert "30 June" not in html
+        assert "Deadline" in html and "Filed" in html
+        assert item.raw["action"] == "Submit VAT return"
+
+    def test_cleared_fields_do_not_fall_back_to_extraction(self):
+        meeting = self._mock_meeting()
+        item = meeting.action_items[0]
+        item.owner = None
+        item.deadline_text = None
+        item.deadline_iso = None
+        _, html = build_meeting_email(meeting)
+        action_table = html.split("<!-- ACTION ITEMS -->")[1].split("<!-- DELIVERABLES -->")[0]
+        assert "Stanley" not in action_table
+        assert "30 June" not in action_table
+
+    def test_empty_reviewed_collection_does_not_resurrect_snapshot_actions(self):
+        meeting = self._mock_meeting()
+        meeting.action_items = []
+        _, html = build_meeting_email(meeting)
+        assert "Submit VAT return" not in html
+
+    def test_legacy_rows_render_without_extraction_json_or_raw(self):
+        meeting = self._mock_meeting()
+        meeting.extracted_json = None
+        meeting.action_items[0].raw = None
+        _, html = build_meeting_email(meeting)
+        assert "Submit VAT return" in html
+        assert "Stanley" in html and "30 June" in html
 
     def test_html_contains_discussion_points(self):
         _, html = build_meeting_email(self._mock_meeting())

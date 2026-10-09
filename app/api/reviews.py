@@ -598,9 +598,12 @@ async def edit_item(item_id: str, edit: ActionItemEdit,
     if not item:
         raise HTTPException(404)
     is_admin = await _is_admin(db, upn)
-    meeting = await _authorize(db, item.meeting_id, upn, allow_admin=is_admin)
+    # Use the approval lock so an edit cannot race the rendered send payload.
+    meeting = await _authorize(db, item.meeting_id, upn, for_update=True, allow_admin=is_admin)
     _require_editor(meeting, upn, is_admin=is_admin)
     _require_awaiting_review(meeting)
+    if meeting.email_delivery_status in {"sending", "sent"}:
+        raise HTTPException(409, "Action items cannot be changed after email delivery has been claimed")
     for field, val in edit.model_dump(exclude_unset=True).items():
         setattr(item, field, val)
     item.edited_by = upn

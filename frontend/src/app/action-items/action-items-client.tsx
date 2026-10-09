@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { ApiError, getApprovedActionItems } from "@/lib/api";
 import type { ActionItemFilters, ApprovedActionItemsPage } from "@/lib/types";
 
-const initial: ActionItemFilters = { view: "mine", meeting: "", owner: "", deadline: "", offset: 0 };
+const initial: ActionItemFilters = { view: "all", meeting: "", owner: "", deadline: "", offset: 0 };
 const controlBase = "rounded-md border px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-[#003366]";
 const control = `${controlBase} border-gray-300 bg-white`;
 
@@ -45,35 +45,27 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
     ? "No actions on this page"
     : hasAppliedFilters
     ? "No matching action items"
-    : filters.view === "mine" ? "No actions found for you" : "No action items available";
+    : "No approved action items yet";
   const emptyDescription = filters.offset > 0
     ? "This page has no results. Return to the first page to reload this view."
     : hasAppliedFilters
-    ? "No approved actions in this view match your applied filters. Try changing or clearing the filters above."
-    : filters.view === "mine"
-      ? "No approved actions list your account email as the owner. Actions with name-only owners may still appear in All Accessible."
-      : "There are no approved action items in meetings you can access yet. They will appear here after meeting notes containing extracted actions are approved.";
+    ? "No approved action items from meetings you can access match your applied filters. Try changing or clearing the filters above."
+    : "There are no approved action items from meetings you can access yet. Action items appear here after meeting notes containing extracted action items are approved.";
 
   return <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div><h1 className="text-2xl font-bold text-[#003366]">Action Items</h1>
-        <p className="mt-2 text-sm text-gray-600">Approved actions from meetings you can access. Read-only.</p>
-        <p className="mt-2 max-w-2xl text-sm text-gray-600">Actions appear after meeting notes containing extracted action items are approved. Transcript-only meetings do not create action items.</p></div>
+        <p className="mt-2 max-w-2xl text-sm text-gray-600">Approved action items from meetings you can access. Review and edit extracted action items in Meeting Detail before approval.</p></div>
       <button className={control} disabled={loading} onClick={() => { setResult(null); setLoading(true); setRefresh(value => value + 1); }}>Refresh</button>
     </div>
-    <div className="mt-6 flex gap-2" role="group" aria-label="Action item views">
-      {([ ["mine", "My Actions"], ["all", "All Accessible"] ] as const).map(([view, label]) =>
-        <button key={view} aria-pressed={filters.view === view} className={filters.view === view ? `${controlBase} border-[#003366] bg-[#003366] font-semibold text-white` : control} onClick={() => change({ ...filters, view, offset: 0 })}>{label}</button>)}
-    </div>
-    <p className="mt-3 text-sm text-gray-600">My Actions matches the owner&apos;s exact email address to your account{result ? ` (${result.viewer_upn})` : ""}. Name-only owners appear in All Accessible.</p>
     <form aria-label="Filter action items" className="mt-5 grid gap-3 rounded-lg border bg-gray-50 p-4 sm:grid-cols-3" onSubmit={event => { event.preventDefault(); change({ ...filters, ...draft, offset: 0 }); }}>
-      {([ ["meeting", "Meeting", "Search meeting title"], ["owner", "Owner", "Search owner name or email"], ["deadline", "Deadline", "Date or spoken deadline"] ] as const).map(([key, label, placeholder]) =>
+      {([ ["meeting", "Meeting", "Search meeting title"], ["owner", "Person mentioned in meeting", "Search name or email mentioned"], ["deadline", "Deadline mentioned", "Date or spoken deadline"] ] as const).map(([key, label, placeholder]) =>
         <label key={key} className="flex flex-col gap-1 text-sm font-medium text-gray-700">{label}
           <input className={control} maxLength={255} placeholder={placeholder} value={draft[key]} onChange={event => setDraft({ ...draft, [key]: event.target.value })} />
         </label>)}
       <p className="text-xs text-gray-600 sm:col-span-3">Filters match text, ignoring case. Deadline searches both the date and original spoken deadline.</p>
       <div className="flex gap-2 sm:col-span-3"><button type="submit" className={`${control} font-semibold text-[#003366]`}>Apply filters</button>
-        <button type="button" className={control} onClick={() => { setDraft({ meeting: "", owner: "", deadline: "" }); change({ ...initial, view: filters.view }); }}>Clear filters</button></div>
+        <button type="button" className={control} onClick={() => { setDraft({ meeting: "", owner: "", deadline: "" }); change({ ...initial }); }}>Clear filters</button></div>
     </form>
     <section className="mt-6" aria-label="Approved action items" aria-busy={loading}>
       {loading && <p role="status" className="p-6 text-gray-600">Loading action items…</p>}
@@ -89,15 +81,13 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
         </div>
         {filters.offset > 0
           ? <button className={`${control} mt-4`} onClick={() => change({ ...filters, offset: 0 })}>Return to first page</button>
-          : !hasAppliedFilters && (filters.view === "mine"
-            ? <button className={`${control} mt-4 font-semibold text-[#003366]`} onClick={() => change({ ...filters, view: "all", offset: 0 })}>View All Accessible</button>
-            : <Link className="mt-4 inline-block text-sm font-semibold text-[#003366] underline" href="/">View meetings on Dashboard</Link>)}
+          : !hasAppliedFilters && <Link className="mt-4 inline-block text-sm font-semibold text-[#003366] underline" href="/">View meetings on Dashboard</Link>}
       </div>}
       {result && result.items.length > 0 && <>
         <p role="status" className="mb-3 text-sm text-gray-600">Showing {filters.offset + 1}–{filters.offset + result.items.length}</p>
         <div className="overflow-x-auto rounded-lg border"><table className="w-full min-w-[760px] text-left text-sm">
           <caption className="sr-only">Approved action items and source evidence</caption>
-          <thead className="bg-[#003366] text-white"><tr>{["Task", "Meeting", "Owner", "Deadline", "Source evidence"].map(label => <th scope="col" key={label} className="px-4 py-3">{label}</th>)}</tr></thead>
+          <thead className="bg-[#003366] text-white"><tr>{["Task", "Meeting", "Person mentioned in meeting", "Deadline mentioned", "Source evidence"].map(label => <th scope="col" key={label} className="px-4 py-3">{label}</th>)}</tr></thead>
           <tbody>{result.items.map(item => <tr key={item.id} className="border-t even:bg-gray-50">
             <td className="max-w-sm whitespace-pre-wrap break-words px-4 py-4 align-top font-medium">{item.task}</td>
             <td className="px-4 py-4 align-top"><Link className="text-[#003366] underline" href={`/meetings/${encodeURIComponent(item.meeting_id)}`}>{item.meeting_title?.trim() || "Untitled meeting"}</Link></td>

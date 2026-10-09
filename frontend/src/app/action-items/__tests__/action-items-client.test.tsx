@@ -19,32 +19,37 @@ it("shows approved source fields, evidence and meeting link without write contro
   expect(screen.getByText("2026-10-12")).toBeInTheDocument();
   expect(screen.getByText("Please send the report.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /^(save|edit|assign|start tracking)/i })).not.toBeInTheDocument();
-  expect(getApprovedActionItems).toHaveBeenCalledWith("token", expect.objectContaining({ view: "mine" }), expect.any(AbortSignal));
+  expect(getApprovedActionItems).toHaveBeenCalledWith("token", expect.objectContaining({ view: "all" }), expect.any(AbortSignal));
 });
 
-it("switches views and applies all three filters", async () => {
+it("applies and clears all three filters within accessible meetings", async () => {
   render(<ActionItemsClient accessToken="token" />);
   await screen.findByText("Send report");
-  fireEvent.click(screen.getByRole("button", { name: "All Accessible" }));
-  await waitFor(() => expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", expect.objectContaining({ view: "all" }), expect.anything()));
   fireEvent.change(screen.getByLabelText("Meeting"), { target: { value: "Budget" } });
-  fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "Alice" } });
-  fireEvent.change(screen.getByLabelText("Deadline"), { target: { value: "Monday" } });
+  fireEvent.change(screen.getByLabelText("Person mentioned in meeting"), { target: { value: "Alice" } });
+  fireEvent.change(screen.getByLabelText("Deadline mentioned"), { target: { value: "Monday" } });
   fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
   await waitFor(() => expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", { view: "all", meeting: "Budget", owner: "Alice", deadline: "Monday", offset: 0 }, expect.anything()));
   fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
   await waitFor(() => expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", { view: "all", meeting: "", owner: "", deadline: "", offset: 0 }, expect.anything()));
 });
 
-it("paginates and resets the offset when views change", async () => {
+it("paginates and resets the offset when filters change", async () => {
   vi.mocked(getApprovedActionItems).mockResolvedValue({ ...page, has_more: true });
   render(<ActionItemsClient accessToken="token" />);
   await screen.findByText("Send report");
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
   await waitFor(() => expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", expect.objectContaining({ offset: 50 }), expect.anything()));
   await screen.findByText("Send report");
-  fireEvent.click(screen.getByRole("button", { name: "All Accessible" }));
+  fireEvent.click(screen.getByRole("button", { name: "Previous" }));
   await waitFor(() => expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", expect.objectContaining({ offset: 0, view: "all" }), expect.anything()));
+  await screen.findByText("Send report");
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  await waitFor(() => expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", expect.objectContaining({ offset: 50 }), expect.anything()));
+  await screen.findByText("Send report");
+  fireEvent.change(screen.getByLabelText("Meeting"), { target: { value: "Budget" } });
+  fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+  await waitFor(() => expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", expect.objectContaining({ offset: 0, view: "all", meeting: "Budget" }), expect.anything()));
 });
 
 it("clears restricted data on a failed refresh and allows retry", async () => {
@@ -61,7 +66,7 @@ it("clears restricted data on a failed refresh and allows retry", async () => {
 it("shows empty and missing-value states", async () => {
   vi.mocked(getApprovedActionItems).mockResolvedValueOnce({ ...page, items: [] });
   render(<ActionItemsClient accessToken="token" />);
-  expect(await screen.findByRole("heading", { name: "No actions found for you" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "No approved action items yet" })).toBeInTheDocument();
   vi.mocked(getApprovedActionItems).mockResolvedValueOnce({ ...page, items: [{ ...page.items[0], meeting_title: null, owner: null, deadline_iso: null, deadline_text: null, source_quote: null }] } as unknown as typeof page);
   fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
   expect(await screen.findByRole("link", { name: "Untitled meeting" })).toBeInTheDocument();
@@ -69,68 +74,67 @@ it("shows empty and missing-value states", async () => {
   expect(screen.getByText("No source evidence provided.")).toBeInTheDocument();
 });
 
-it("ignores an obsolete response after a view change", async () => {
+it("ignores an obsolete response after a filter change", async () => {
   let resolveOld!: (value: typeof page) => void;
   vi.mocked(getApprovedActionItems).mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve; }));
   render(<ActionItemsClient accessToken="token" />);
-  fireEvent.click(screen.getByRole("button", { name: "All Accessible" }));
+  fireEvent.change(screen.getByLabelText("Meeting"), { target: { value: "Budget" } });
+  fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
   await screen.findByText("Send report");
   resolveOld({ ...page, items: [{ ...page.items[0], task: "Obsolete task" }] });
   await waitFor(() => expect(screen.queryByText("Obsolete task")).not.toBeInTheDocument());
 });
 
-it("distinguishes my email matches from all-accessible empty results without extra requests", async () => {
+it("explains approval availability and links to meetings without extra requests", async () => {
   vi.mocked(getApprovedActionItems).mockResolvedValue({ ...page, items: [] });
   render(<ActionItemsClient accessToken="token" />);
-  expect(await screen.findByRole("heading", { name: "No actions found for you" })).toBeInTheDocument();
-  expect(screen.getByText(/No approved actions list your account email/)).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "No approved action items yet" })).toBeInTheDocument();
+  expect(screen.getByText(/Action items appear here after meeting notes containing extracted action items are approved/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Previous" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Next" })).not.toBeInTheDocument();
   expect(getApprovedActionItems).toHaveBeenCalledTimes(1);
-  fireEvent.click(screen.getByRole("button", { name: "View All Accessible" }));
-  expect(await screen.findByRole("heading", { name: "No action items available" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "View meetings on Dashboard" })).toHaveAttribute("href", "/");
-  expect(getApprovedActionItems).toHaveBeenCalledTimes(2);
   expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", { view: "all", meeting: "", owner: "", deadline: "", offset: 0 }, expect.anything());
 });
 
 it("uses only applied filters to select the no-matches message", async () => {
   vi.mocked(getApprovedActionItems).mockResolvedValue({ ...page, items: [] });
   render(<ActionItemsClient accessToken="token" />);
-  await screen.findByRole("heading", { name: "No actions found for you" });
-  fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "Alice" } });
+  await screen.findByRole("heading", { name: "No approved action items yet" });
+  fireEvent.change(screen.getByLabelText("Person mentioned in meeting"), { target: { value: "Alice" } });
   expect(screen.queryByRole("heading", { name: "No matching action items" })).not.toBeInTheDocument();
   expect(getApprovedActionItems).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
   expect(await screen.findByRole("heading", { name: "No matching action items" })).toBeInTheDocument();
   expect(screen.getByText(/Try changing or clearing the filters above/)).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "View All Accessible" })).not.toBeInTheDocument();
+  expect(screen.getByText(/No approved action items from meetings you can access match your applied filters/)).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "View meetings on Dashboard" })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
-  expect(await screen.findByRole("heading", { name: "No actions found for you" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "No approved action items yet" })).toBeInTheDocument();
 });
 
 it("does not treat whitespace-only filters as applied restrictions", async () => {
   vi.mocked(getApprovedActionItems).mockResolvedValue({ ...page, items: [] });
   render(<ActionItemsClient accessToken="token" />);
-  await screen.findByRole("heading", { name: "No actions found for you" });
+  await screen.findByRole("heading", { name: "No approved action items yet" });
   fireEvent.change(screen.getByLabelText("Meeting"), { target: { value: "   " } });
   fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
   await waitFor(() => expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", expect.objectContaining({ meeting: "   " }), expect.anything()));
-  expect(await screen.findByRole("heading", { name: "No actions found for you" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "No approved action items yet" })).toBeInTheDocument();
 });
 
-it("gives the selected view a clear highlight and explains action availability", async () => {
+it("explains meeting outputs with neutral labels and no personal action views", async () => {
   render(<ActionItemsClient accessToken="token" />);
   await screen.findByText("Send report");
-  const mine = screen.getByRole("button", { name: "My Actions" });
-  const all = screen.getByRole("button", { name: "All Accessible" });
-  expect(mine).toHaveAttribute("aria-pressed", "true");
-  expect(all).toHaveAttribute("aria-pressed", "false");
-  expect(screen.getByText(/Transcript-only meetings do not create action items/)).toBeInTheDocument();
-  fireEvent.click(all);
-  await screen.findByText("Send report");
-  expect(all).toHaveAttribute("aria-pressed", "true");
-  expect(mine).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByText("Approved action items from meetings you can access. Review and edit extracted action items in Meeting Detail before approval.")).toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: "Action item views" })).not.toBeInTheDocument();
+  expect(screen.queryByText(/My Actions|All Accessible|account email/)).not.toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Person mentioned in meeting" })).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Deadline mentioned" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Person mentioned in meeting")).toBeInTheDocument();
+  expect(screen.getByLabelText("Deadline mentioned")).toBeInTheDocument();
+  expect(screen.queryByRole("columnheader", { name: "Owner" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("columnheader", { name: "Deadline" })).not.toBeInTheDocument();
 });
 
 it("allows returning from an empty later page without displaying pagination", async () => {

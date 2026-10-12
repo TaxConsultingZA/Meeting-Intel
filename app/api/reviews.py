@@ -27,7 +27,7 @@ from ..schemas import (
 from ..graph import client as graph
 from ..email_templates import build_meeting_email
 from ..utils.identity import normalize_upn, normalize_upns
-from ..services.job_control import public_job_error
+from ..services.job_control import public_job_error, processing_failure_info
 from ..services.access import NO_VIEW_ACCESS_TYPES, has_view_access
 from ..services.email_audit import add_email_event, submission_failure
 from .deps import current_user, require_registered  # noqa: F401 — re-exported; tests may import from here
@@ -227,6 +227,8 @@ def _to_out(m: Meeting, upn: str | None = None, *, is_admin: bool = False) -> Me
         id=str(m.id), title=m.title, state=m.state, summary=m.summary,
         transcript=m.transcript,
         organizer_upn=m.organizer_upn, extracted_json=m.extracted_json, error=public_job_error(m.error),
+        failure=processing_failure_info(m.error, cancelled=m.state == ProcessingState.cancelled)
+        if m.state in {ProcessingState.failed, ProcessingState.cancelled} else None,
         calendar_participants=_calendar_participants(m),
         recorded_at=m.recorded_at,
         email_recipients=sorted(known_recipients),

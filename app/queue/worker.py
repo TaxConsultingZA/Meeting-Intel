@@ -19,7 +19,9 @@ from ..db import SessionLocal, engine
 from ..models import Meeting, ProcessingState, RecordingJob
 from ..pipeline.steps import process_recording
 from ..services.job_control import public_job_error
-from ..services.recording_audit import add_processing_outcome
+from ..services.recording_audit import (
+    add_processing_outcome, add_processing_started, add_cancellation_completed,
+)
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -83,6 +85,7 @@ async def _recover_interrupted_jobs() -> None:
                                {"key": _lock_key(job.drive_item_id)}):
                 if job.cancel_requested_at:
                     _cancel(job)
+                    add_cancellation_completed(db, job)
                 else:
                     _retry_or_fail(job, RuntimeError("Worker lease expired; interrupted attempt"))
                     add_processing_outcome(db, job, "failed", error_category="interrupted",
@@ -125,6 +128,7 @@ async def _claim_next() -> RecordingJob | None:
             job.locked_at = _now()
             job.lease_token = uuid.uuid4()
             job.last_error = None
+            add_processing_started(db, job)
         await db.commit()
         if job is not None:
             db.expunge(job)
@@ -153,6 +157,7 @@ async def _finish(job_id, lease_token, error: Exception | None = None) -> None:
             return  # Superseded workers must not finish another worker's lease.
         if job.cancel_requested_at:
             _cancel(job)
+            add_cancellation_completed(db, job)
             await _mark_meeting_interrupted(db, job)
         elif error is None:
             job.status = "completed"

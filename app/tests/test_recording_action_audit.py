@@ -20,7 +20,7 @@ def job(status="processing"):
     return SimpleNamespace(id=uuid4(), status=status, owner_upn="owner@example.test",
                            drive_id="drive", drive_item_id="item", source="manual",
                            cancel_requested_at=None, lease_token=uuid4(), locked_at=None,
-                           last_error=None)
+                           last_error=None, attempts=1)
 
 
 def session(*rows):
@@ -99,7 +99,7 @@ async def test_cancel_logs_first_request_only(status):
     db = session(row, None, row) if status == "pending" else session(row, row)
 
     async def commit():
-        event, = events(db)
+        event, = [e for e in events(db) if e.event_type == "recording.cancel"]
         assert event.event_type == "recording.cancel" and event.outcome == "requested"
         assert event.actor_id == str(user.id)
         assert row.cancel_requested_at is not None
@@ -107,7 +107,13 @@ async def test_cancel_logs_first_request_only(status):
     db.commit.side_effect = commit
     await recording_jobs.cancel_job(row.id, db, user)
     await recording_jobs.cancel_job(row.id, db, user)
-    assert len(events(db)) == 1
+    assert len(events(db)) == (2 if status == "pending" else 1)
+    completed = [e for e in events(db) if e.event_type == "recording.cancelled"]
+    if status == "pending":
+        assert completed[0].outcome == "succeeded"
+        assert completed[0].actor_id == str(user.id)
+    else:
+        assert not completed
 
 
 async def test_reprocess_commit_failure_does_not_return_success(monkeypatch):

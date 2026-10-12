@@ -115,6 +115,11 @@ async def test_reprocess_failure_or_cancel_keeps_old_result(monkeypatch, failure
 
     assert (meeting.state, meeting.transcript, meeting.summary, meeting.extracted_json) == before
     commit_result.assert_not_awaited()
+    from app.services.job_control import processing_failure_info
+    assert processing_failure_info(failure) == (
+        None if isinstance(failure, steps.JobCancelled) else
+        {"stage": "transcription", "category": "unknown"}
+    )
 
 
 @pytest.mark.parametrize("failure", ["failed", "invalid", "cancelled"])
@@ -124,6 +129,7 @@ async def test_foundation_reprocess_failure_preserves_previous_success(monkeypat
     meeting.action_items = [previous_action]
     before = (meeting.state, meeting.transcript, meeting.summary, deepcopy(meeting.extracted_json))
     db = fake_db()
+    db.scalar = AsyncMock(return_value=SimpleNamespace(status="processing"))
     monkeypatch.setattr(steps.graph, "download_drive_item", AsyncMock())
     monkeypatch.setattr(steps, "get_transcriber", lambda: SimpleNamespace(
         transcribe=AsyncMock(return_value=[TranscriptSegment("Speaker A", "Fresh words", 0, 1)])))
@@ -142,6 +148,12 @@ async def test_foundation_reprocess_failure_preserves_previous_success(monkeypat
             db, meeting, "item", "drive", job_id=uuid4(), lease_token=uuid4())
     assert (meeting.state, meeting.transcript, meeting.summary, meeting.extracted_json) == before
     assert meeting.action_items == [previous_action]
+    audit_events = [call.args[0] for call in db.add.call_args_list
+                    if isinstance(call.args[0], AuditEvent)]
+    assert [e.event_type for e in audit_events] == (
+        ["ai.extraction_requested"] if failure == "cancelled" else
+        ["ai.extraction_requested", "ai.extraction_failed"]
+    )
     install.assert_not_awaited()
     db.execute.assert_not_awaited()
     notify.assert_not_awaited()
@@ -150,6 +162,7 @@ async def test_foundation_reprocess_failure_preserves_previous_success(monkeypat
 async def test_reprocess_uses_fresh_transcription_instead_of_old_transcript(monkeypatch):
     meeting = clean_meeting()
     db = fake_db()
+    db.scalar = AsyncMock(return_value=SimpleNamespace(status="processing"))
     segments = [TranscriptSegment("Speaker A", "fresh words", 0, 1)]
     transcribe = AsyncMock(return_value=segments)
     commit_result = AsyncMock(return_value=meeting)
@@ -165,6 +178,10 @@ async def test_reprocess_uses_fresh_transcription_instead_of_old_transcript(monk
     transcribe.assert_awaited_once()
     assert commit_result.await_args.kwargs["transcript"] == "[Speaker A] fresh words"
     assert commit_result.await_args.kwargs["transcript"] != "old transcript"
+    assert [call.args[0].event_type for call in db.add.call_args_list
+            if isinstance(call.args[0], AuditEvent)] == [
+        "ai.extraction_requested", "ai.extraction_completed",
+    ]
 
 
 async def test_manual_reprocess_job_dispatches_to_safe_pipeline_branch(monkeypatch):

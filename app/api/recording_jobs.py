@@ -13,6 +13,8 @@ from ..services.job_control import RETRYABLE_JOB_STATES, public_job_error
 from ..services.access import NO_VIEW_ACCESS_TYPES
 from ..services.jobs import enqueue_retry_job
 from ..services.audit import add_audit_event
+from ..services.recording_audit import add_cancellation_completed
+from ..services.job_control import processing_failure_info
 from ..services.status_diagnostics import RecordingStatusRoute, response_ready
 from ..services.reprocessing import (
     MANUAL_REPROCESS_SOURCE,
@@ -62,6 +64,8 @@ def job_out(job, meeting, upn, is_admin=False, *, clean_candidate=None, organize
                 phase=processing_status,
                 attempts=job.attempts, max_attempts=job.max_attempts,
                 error=public_job_error(job.last_error),
+                failure=processing_failure_info(job.last_error, cancelled=job.status == "cancelled")
+                if job.status in {"failed", "cancelled", "pending"} else None,
                 can_retry=can_control and job.status in ("failed", "cancelled") and (
                     not meeting or meeting.state not in (
                         ProcessingState.awaiting_review, ProcessingState.approved, ProcessingState.sent,
@@ -233,5 +237,8 @@ async def cancel_job(job_id: UUID, db=Depends(get_db), user: RegisteredUser = De
             event_key=f"recording.cancel:{job.id}",
             metadata={"previous_state": previous_state, "new_state": job.status},
         )
+    if job.status == "cancelled":
+        add_cancellation_completed(db, job, actor=user,
+                                   meeting_id=meeting.id if meeting else None)
     await db.commit()
     return {"ok": True, "status": "cancelled" if job.status == "cancelled" else "cancel_requested"}

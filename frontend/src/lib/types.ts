@@ -93,6 +93,12 @@ export interface SpeakerCandidate {
   id?: string | null;
 }
 
+export interface ProcessingFailure {
+  stage: "download" | "transcription" | "extraction" | "processing";
+  category: "timeout" | "rate_limited" | "unavailable" | "access_unavailable" |
+    "configuration" | "invalid_output" | "unknown" | "cancelled";
+}
+
 export interface MeetingOut {
   id: string;
   recorded_at?: string | null;
@@ -106,6 +112,7 @@ export interface MeetingOut {
   calendar_participants: CalendarParticipant[];
   organizer_upn?: string | null;
   error?: string | null;
+  failure?: ProcessingFailure | null;
   email_recipients: string[];
   approved_recipients: string[];
   is_organizer: boolean;
@@ -284,6 +291,7 @@ export interface AvailableRecording {
 }
 
 export interface RecordingJobOut {
+  failure?: ProcessingFailure | null;
   job_id: string;
   drive_item_id: string;
   meeting_id: string | null;

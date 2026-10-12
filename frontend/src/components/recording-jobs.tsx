@@ -4,12 +4,34 @@ import { Loader2 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { cancelRecordingJob, getRecordingJobs, reprocessRecordingJob, retryRecordingJob } from "@/lib/api";
-import type { RecordingJobOut, RecordingProcessingStatus } from "@/lib/types";
+import type { ProcessingFailure, RecordingJobOut, RecordingProcessingStatus } from "@/lib/types";
 import StateBadge from "./state-badge";
 
 function lifecycleStatus(status: RecordingProcessingStatus): RecordingProcessingStatus {
   return status === "downloading" || status === "extracting" || status === "cancel_requested"
     ? "processing" : status;
+}
+
+export function processingFailureTitle(failure?: ProcessingFailure | null): string {
+  switch (failure?.stage) {
+    case "download": return "Recording download failed";
+    case "transcription": return "Transcription failed";
+    case "extraction": return "AI extraction failed";
+    default: return "Processing failed";
+  }
+}
+
+export function processingFailureMessage(failure?: ProcessingFailure | null): string {
+  let category = "Failure reason unavailable";
+  switch (failure?.category) {
+    case "timeout": category = "Service timed out"; break;
+    case "rate_limited": category = "Service rate limited"; break;
+    case "unavailable": category = "Service unavailable"; break;
+    case "access_unavailable": category = "Access unavailable"; break;
+    case "configuration": category = "Service configuration incomplete"; break;
+    case "invalid_output": category = "Unusable processing output"; break;
+  }
+  return `${processingFailureTitle(failure)}. Category: ${category}.`;
 }
 
 export function recordingStatusMessage(job: RecordingJobOut): string {
@@ -19,8 +41,8 @@ export function recordingStatusMessage(job: RecordingJobOut): string {
       if (job.review_status === "approved") return "Processing is complete. Meeting notes have been approved.";
       if (job.review_status === "awaiting_review") return "Processing is complete. Meeting notes are ready for review. Open the meeting to review them.";
       return "Recording processing is complete. Open the meeting to see available results.";
-    case "failed": return "Processing stopped before this attempt could finish. Previously saved results have been kept.";
-    case "cancelled": return "Processing was cancelled. Previously saved meeting data has been kept.";
+    case "failed": return `${processingFailureMessage(job.failure)} Any previously saved results have been kept.`;
+    case "cancelled": return "Processing cancelled. Category: Cancelled. Any previously saved meeting data has been kept.";
     case "cancel_requested": return "Cancellation is pending. Waiting for the current operation to stop; saved data will be kept.";
     case "queued": return job.processing_enabled
       ? "Waiting for processing to start. Status updates automatically."
@@ -150,8 +172,8 @@ export default function RecordingJobs({ token, meetingId, onChanged, onTerminalT
         </div>
       </div>
       {job.is_stuck && job.status === "processing" && <p role="status" className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">Processing may be delayed. Refresh to check the latest status{job.can_cancel ? ", or use Cancel below to request that this job stops." : ". If this continues, contact an administrator."}</p>}
-      {job.error && <div className="mt-3 rounded-md border border-red-100 bg-red-50 p-3 text-xs leading-5 text-red-800"><p className="font-semibold">{job.status === "cancelled" ? "Cancellation details" : "What happened"}</p><p className="mt-1 break-words">{job.status === "cancelled" ? "This attempt was cancelled. Saved meeting data remains available." : job.status === "pending" ? "An earlier attempt could not finish. This recording is queued for another attempt." : "This attempt could not finish processing the recording. Check the recovery actions below."}</p></div>}
-      {job.status === "failed" && <p role="alert" className="mt-3 text-xs leading-5 text-red-800">{job.can_retry ? "Use Retry below to queue another attempt." : "Retry is not available for this job. Contact an administrator for help."}</p>}
+      {job.error && <div className="mt-3 rounded-md border border-red-100 bg-red-50 p-3 text-xs leading-5 text-red-800"><p className="font-semibold">{job.status === "cancelled" ? "Cancellation details" : "What happened"}</p><p className="mt-1 break-words">{job.status === "cancelled" ? "This attempt was cancelled. Saved meeting data remains available." : job.status === "pending" ? `An earlier attempt could not finish. This recording is queued for another attempt.${job.failure ? ` Previous attempt: ${processingFailureMessage(job.failure)}` : ""}` : "This attempt could not finish processing the recording. Check the recovery actions below."}</p></div>}
+      {job.status === "failed" && <p role="alert" className="mt-3 text-xs leading-5 text-red-800">{job.can_retry ? `Use Retry below to queue another attempt.${job.processing_enabled ? "" : " Processing is paused in this environment; the retry will remain queued until processing is enabled."}` : job.can_reprocess ? "Use Reprocess below to queue another attempt." : "Retry is not available for this job. Contact an administrator for help."}</p>}
       {job.status === "cancelled" && job.can_retry && <p className="mt-3 text-xs text-[#6b7280]">Use Retry to queue another attempt when you are ready.</p>}
       <div className="mt-2 border-t border-[#dde1e8] pt-2">
         <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[#6b7280]">Available actions</p>

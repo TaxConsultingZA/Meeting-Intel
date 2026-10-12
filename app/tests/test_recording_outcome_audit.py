@@ -96,24 +96,57 @@ async def test_intermediate_commit_has_no_outcome(monkeypatch):
 
 
 @pytest.mark.parametrize("cancelled,lock_free", [(False, True), (True, True), (False, False)])
-async def test_recovery_logs_only_durable_non_cancel_failure(monkeypatch, cancelled, lock_free):
+async def test_recovery_logs_only_durable_failure_or_cancellation(monkeypatch, cancelled, lock_free):
     row = job(locked_at=worker._now() - timedelta(hours=1),
               cancel_requested_at=worker._now() if cancelled else None)
     db = session(monkeypatch, lock_free)
     db.scalars.return_value = [row]
     await worker._recover_interrupted_jobs()
-    assert len(events(db)) == (1 if lock_free and not cancelled else 0)
+    assert len(events(db)) == (1 if lock_free else 0)
     if events(db):
-        assert events(db)[0].event_metadata["error_category"] == "interrupted"
-        assert events(db)[0].event_metadata["reason"] == "lease_expired"
+        if cancelled:
+            assert events(db)[0].event_type == "recording.cancelled"
+            assert events(db)[0].outcome == "succeeded"
+        else:
+            assert events(db)[0].event_metadata["error_category"] == "interrupted"
+            assert events(db)[0].event_metadata["reason"] == "lease_expired"
     db.commit.assert_awaited_once()
 
 
-async def test_cancelled_finish_has_no_processing_outcome(monkeypatch):
+async def test_cancelled_finish_has_completion_without_processing_outcome(monkeypatch):
     row = job(cancel_requested_at=worker._now())
     db = session(monkeypatch, row)
     await worker._finish(row.id, row.lease_token, RuntimeError("cancelled"))
-    assert row.status == "cancelled" and not events(db)
+    assert row.status == "cancelled"
+    event, = events(db)
+    assert event.event_type == "recording.cancelled" and event.outcome == "succeeded"
+    db.scalar.return_value = None
+    await worker._finish(row.id, uuid4())
+    assert len(events(db)) == 1
+    db.commit.assert_awaited_once()
+
+
+async def test_started_commit_failure_propagates(monkeypatch):
+    row = job(status="pending", attempts=0)
+    db = session(monkeypatch, row)
+    db.commit.side_effect = RuntimeError("commit failed")
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await worker._claim_next()
+    event, = events(db)
+    assert event.event_type == "recording.started"
+    assert event.event_metadata["attempt"] == 1
+    db.expunge.assert_not_called()
+
+
+async def test_new_claim_attempt_has_distinct_start_key(monkeypatch):
+    row = job(status="pending", attempts=0)
+    db = session(monkeypatch, row)
+    await worker._claim_next()
+    row.status = "pending"
+    await worker._claim_next()
+    first, second = events(db)
+    assert first.event_key != second.event_key
+    assert first.correlation_id == second.correlation_id == row.id
 
 
 async def test_exhaustion_audits_only_updated_rows(monkeypatch):

@@ -112,7 +112,7 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
           </label>
           <label className="flex flex-col gap-1.5 text-[12.5px] font-medium text-[#374151]">Event type
             <select className={inputStyle} value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })}>
-              <option value="">All events</option>{["recording", "email"].map((group) => <optgroup key={group} label={group === "recording" ? "Recording activity" : "Email approval & sending"}>{Object.entries(actionLabels).filter(([value]) => value.startsWith(`${group}.`)).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</optgroup>)}
+              <option value="">All events</option>{["recording", "ai", "email"].map((group) => <optgroup key={group} label={group === "recording" ? "Recording activity" : group === "ai" ? "AI processing" : "Email approval & sending"}>{Object.entries(actionLabels).filter(([value]) => value.startsWith(`${group}.`)).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</optgroup>)}
             </select>
           </label>
           <label className="flex flex-col gap-1.5 text-[12.5px] font-medium text-[#374151]">Outcome

@@ -19,8 +19,13 @@ export const actionLabels: Record<string, string> = {
   "recording.cancel": "Recording cancellation",
   "recording.reprocess": "Recording reprocess",
   "recording.processing": "Recording processing",
+  "recording.started": "Recording processing started",
+  "recording.cancelled": "Recording cancellation completed",
+  "ai.extraction_requested": "AI extraction requested",
+  "ai.extraction_completed": "AI extraction completed",
+  "ai.extraction_failed": "AI extraction failed",
   "email.approval_requested": "Email approval requested",
-  "email.approved": "Email approved",
+  "email.approved": "Review approved",
   "email.send": "Email submission",
 };
 
@@ -32,7 +37,7 @@ const tokens: Record<string, readonly string[]> = {
   source: ["manual", "manual_retry", "manual_reprocess", "webhook", "calendar_processing", "reconcile"],
   previous_state: ["pending", "processing", "failed", "cancelled", "completed"],
   new_state: ["pending", "processing", "failed", "cancelled", "completed"],
-  error_category: ["processing_error", "interrupted", "attempts_exhausted", "reprocess_conflict"],
+  error_category: ["processing_error", "interrupted", "attempts_exhausted", "reprocess_conflict", "timeout", "rate_limited", "unavailable", "configuration", "invalid_output", "unknown"],
   reason: ["lease_expired", "existing_result_preserved"],
 };
 

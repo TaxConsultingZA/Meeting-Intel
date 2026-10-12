@@ -12,8 +12,9 @@ from ..utils.identity import normalize_upn, normalize_upns
 from .transcribe import get_transcriber, normalize_single_person_diarization, TranscriptSegment
 from .extract import require_transcript
 from ..ai.runtime_bridge import extract_with_foundation
-from ..services.job_control import guarded_commit, JobCancelled, public_job_error
+from ..services.job_control import guarded_commit, JobCancelled, public_job_error, processing_stage
 from ..services.recording_audit import add_processing_outcome
+from ..services.ai_audit import audited_extraction
 from ..services.reprocessing import (
     MANUAL_REPROCESS_SOURCE,
     is_clean_reprocess_candidate,
@@ -128,14 +129,22 @@ async def _reprocess_completed_recording(
 
     with tempfile.TemporaryDirectory() as tmp:
         video_path = os.path.join(tmp, "rec.mp4")
-        await graph.download_drive_item(drive_id, drive_item_id, video_path)
-        segments = await get_transcriber().transcribe(video_path)
+        with processing_stage("download"):
+            await graph.download_drive_item(drive_id, drive_item_id, video_path)
+        with processing_stage("transcription"):
+            segments = await get_transcriber().transcribe(video_path)
         if known_people is not None:
             segments = normalize_single_person_diarization(segments, known_people)
-        require_transcript(segments)
+        with processing_stage("transcription"):
+            require_transcript(segments)
         transcript = "\n".join(f"[{segment.speaker}] {segment.text}" for segment in segments)
-        result = await extract_with_foundation(
-            meeting_id, segments,
+        async def audit_commit():
+            await guarded_commit(db, job_id, lease_token)
+
+        result = await audited_extraction(
+            db, meeting_id=meeting_id, segments=segments,
+            job_id=job_id, lease_token=lease_token, commit=audit_commit,
+            extract=extract_with_foundation,
             implementation=settings.extractor_impl,
             known_participants=set(known_people or []),
         )
@@ -424,13 +433,15 @@ async def process_recording(
                 meeting.state = ProcessingState.downloading
                 await commit()
                 video_path = os.path.join(tmp, "rec.mp4")
-                await graph.download_drive_item(drive_id, drive_item_id, video_path)
+                with processing_stage("download"):
+                    await graph.download_drive_item(drive_id, drive_item_id, video_path)
                 meeting.state = ProcessingState.transcribing
                 await commit()
                 all_upns = normalize_upns([*extra, meeting.organizer_upn, owner_upn])
                 if not (meeting.extracted_json or {}).get("t5_calendar_event"):
                     await _send_processing_started(meeting, all_upns)
-                segments = await get_transcriber().transcribe(video_path)
+                with processing_stage("transcription"):
+                    segments = await get_transcriber().transcribe(video_path)
                 segments = normalize_single_person_diarization(segments, all_attendee_upns)
                 meeting.transcript = "\n".join(f"[{s.speaker}] {s.text}" for s in segments)
                 transcript_segments = [
@@ -438,7 +449,8 @@ async def process_recording(
                     for s in segments
                 ]
 
-            require_transcript(segments)
+            with processing_stage("transcription"):
+                require_transcript(segments)
             # Commit raw text AND diarization before any provider call, including
             # failures. Preserve the original text independently of review edits.
             extracted_json = dict(meeting.extracted_json or {})
@@ -446,14 +458,14 @@ async def process_recording(
             extracted_json["transcript_segments"] = transcript_segments
             meeting.extracted_json = extracted_json
             meeting.state = ProcessingState.extracting
-            await commit()
-            result = await extract_with_foundation(
-                meeting.id, segments,
+            result = await audited_extraction(
+                db, meeting_id=meeting.id, segments=segments,
+                job_id=job_id, lease_token=lease_token, commit=commit,
+                extract=extract_with_foundation,
                 implementation=settings.extractor_impl,
                 known_participants=set(all_attendee_upns or []),
                 timestamps_available=bool(transcript_segments),
             )
-            await commit()  # Stop here if cancellation arrived during extraction.
             meeting.summary = result.summary
             # An owner can approve a request while an existing job is running.
             # Re-read the verified binding; don't let a stale worker object erase it.

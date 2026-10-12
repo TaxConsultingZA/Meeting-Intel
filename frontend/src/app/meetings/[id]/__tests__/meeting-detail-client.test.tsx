@@ -4,7 +4,7 @@ import MeetingDetailClient from "../meeting-detail-client";
 import type { MeetingOut } from "@/lib/types";
 
 import { toast } from "sonner";
-import { ApiError, approveMeeting, getMeeting, previewMeetingEmail, saveSpeakerMappings } from "@/lib/api";
+import { ApiError, approveMeeting, getMeeting, getRecordingJobs, previewMeetingEmail, saveSpeakerMappings } from "@/lib/api";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -15,6 +15,29 @@ vi.mock("@/lib/api", async () => {
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
+
+it("shows safe extraction failure details with the existing sidebar recovery action", async () => {
+  const meeting: MeetingOut = {
+    id: "failed-meeting", title: "Failure", state: "failed", summary: null, transcript: "Saved transcript",
+    action_items: [], extracted_json: {}, calendar_participants: [], organizer_upn: "owner@example.com",
+    error: "SECRET stack, credentials, raw AI response", failure: { stage: "extraction", category: "invalid_output" },
+    email_recipients: [], approved_recipients: [], is_organizer: true, can_edit: true,
+    can_request_edit_access: false, edit_access_status: "organizer", edit_access_requests: [],
+    speaker_candidates: [], speaker_mappings: {}, speaker_sample_labels: [],
+  };
+  vi.mocked(getRecordingJobs).mockResolvedValueOnce([{
+    job_id: "failed-job", drive_item_id: "item", meeting_id: meeting.id, title: meeting.title,
+    status: "failed", processing_status: "failed", review_status: null, phase: "failed",
+    attempts: 1, max_attempts: 3, error: "SECRET", failure: meeting.failure,
+    can_retry: true, can_cancel: false, can_reprocess: false, processing_enabled: true,
+  }]);
+  render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="token" />);
+  expect(screen.getByRole("heading", { name: "AI extraction failed" })).toBeVisible();
+  expect(screen.getByText(/Category: Unusable processing output/)).toBeVisible();
+  expect(await screen.findByRole("button", { name: "Retry" })).toBeEnabled();
+  expect(screen.queryByText(/SECRET/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Approve Meeting Notes/ })).not.toBeInTheDocument();
+});
 
 it("requires a matching recipient preview, sends its fingerprint, and clears it after rejection", async () => {
   const meeting: MeetingOut = {

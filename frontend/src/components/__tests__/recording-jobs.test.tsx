@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import StateBadge from "../state-badge";
 import RecordingJobs, { JobControls } from "../recording-jobs";
-import type { ProcessingState, RecordingJobOut } from "@/lib/types";
+import type { ProcessingFailure, ProcessingState, RecordingJobOut } from "@/lib/types";
 import { toast } from "sonner";
 import { cancelRecordingJob, getRecordingJobs, retryRecordingJob, reprocessRecordingJob } from "@/lib/api";
 
@@ -10,6 +10,40 @@ vi.mock("@/lib/api", () => ({ cancelRecordingJob: vi.fn(), retryRecordingJob: vi
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const job: RecordingJobOut = { job_id: "job", drive_item_id: "item", meeting_id: "meeting", title: "Meeting", status: "failed", processing_status: "failed", review_status: null, phase: "failed", attempts: 3, max_attempts: 3, error: null, can_retry: true, can_cancel: false, can_reprocess: false, processing_enabled: false };
+
+describe("safe processing failure transparency", () => {
+  it.each<[ProcessingFailure["stage"], string]>([
+    ["download", "Recording download failed"], ["transcription", "Transcription failed"], ["extraction", "AI extraction failed"],
+  ])("shows %s failure and preserves the existing retry request", async (stage, label) => {
+    vi.mocked(getRecordingJobs).mockResolvedValue([{ ...job, error: "SECRET prompt response stack", failure: { stage, category: "timeout" } }]);
+    vi.mocked(retryRecordingJob).mockResolvedValue({ ok: true, status: "queued" });
+    render(<RecordingJobs token="token" />);
+    expect(await screen.findByText(new RegExp(`${label}.*Category: Service timed out`))).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("retry will remain queued");
+    expect(screen.queryByText(/SECRET/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(retryRecordingJob).toHaveBeenCalledWith("job", "token"));
+  });
+
+  it("uses generic safe wording for malformed or legacy failures and keeps retry denied", async () => {
+    vi.mocked(getRecordingJobs).mockResolvedValue([{ ...job, can_retry: false,
+      error: "SECRET internal error", failure: { stage: "SECRET", category: "SECRET" } as unknown as ProcessingFailure }]);
+    render(<RecordingJobs token="token" />);
+    expect(await screen.findByText(/Processing failed. Category: Failure reason unavailable/)).toBeVisible();
+    expect(screen.queryByText(/SECRET/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Contact an administrator");
+  });
+
+  it("labels an automatic retry failure as a previous attempt", async () => {
+    vi.mocked(getRecordingJobs).mockResolvedValue([{ ...job, status: "pending", processing_status: "queued",
+      can_retry: false, error: "safe", failure: { stage: "extraction", category: "invalid_output" } }]);
+    render(<RecordingJobs token="token" />);
+    expect(await screen.findByText(/Previous attempt: AI extraction failed/)).toHaveTextContent("Unusable processing output");
+    expect(screen.getByText("Queued")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+});
 
 describe("recording job controls", () => {
   it.each<[ProcessingState, string]>([["queued", "Queued"], ["downloading", "Downloading"], ["transcribing", "Transcribing"], ["extracting", "Extracting"], ["awaiting_review", "Awaiting Review"], ["completed", "Completed"], ["failed", "Failed"], ["cancelled", "Cancelled"], ["cancel_requested", "Cancel requested"]])("renders %s truthfully", (state, label) => {

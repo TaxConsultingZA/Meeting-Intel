@@ -11,7 +11,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import StateBadge from "@/components/state-badge";
-import RecordingJobs from "@/components/recording-jobs";
+import RecordingJobs, { processingFailureMessage, processingFailureTitle } from "@/components/recording-jobs";
 import LocalDateTime from "@/components/local-date-time";
 import PipelineView from "./pipeline-view";
 import ActionItemReview from "./action-item-review";
@@ -439,19 +439,17 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           {isProcessing ? (
             <PipelineView state={meeting.state} />
           ) : meeting.state === "cancelled" ? (
-            <div className="rounded-lg border border-[#dde1e8] bg-white p-5"><h2 className="font-semibold text-[#003366]">Recording cancelled</h2><p className="mt-2 text-sm leading-6 text-[#6b7280]">Saved meeting information and transcript have been kept. Check the recording processing panel in the meeting sidebar for any recovery actions available to you.</p>{meeting.transcript && <pre className="mt-4 whitespace-pre-wrap rounded-md bg-[#fafbfc] p-4 text-sm leading-6">{meeting.transcript}</pre>}</div>
+            <div className="rounded-lg border border-[#dde1e8] bg-white p-5"><h2 className="font-semibold text-[#003366]">Processing cancelled</h2><p className="mt-2 text-sm leading-6 text-[#6b7280]">Category: Cancelled. Any saved meeting information and transcript have been kept. Check the recording processing panel in the meeting sidebar for any recovery actions available to you.</p>{meeting.transcript && <pre className="mt-4 whitespace-pre-wrap rounded-md bg-[#fafbfc] p-4 text-sm leading-6">{meeting.transcript}</pre>}</div>
           ) : meeting.state === "failed" ? (
             <div className="bg-white rounded-lg border border-red-200 shadow-sm overflow-hidden">
               <div className="bg-red-600 border-b-[3px] border-[#C9A52C] px-5 py-4">
-                <h2 className="text-white font-semibold text-[15px]">Processing Failed</h2>
+                <h2 className="text-white font-semibold text-[15px]">{processingFailureTitle(meeting.failure)}</h2>
                 <p className="text-white/70 text-[13px] mt-0.5">This recording could not be processed.</p>
               </div>
               <div className="px-5 py-5">
-                {meeting.error && (
                   <p className="text-[13.5px] text-red-700 bg-red-50 border border-red-200 rounded-md px-4 py-3 font-medium">
-                    Processing stopped before this attempt could finish. Check the recording processing panel in the meeting sidebar for available recovery actions.
+                    {processingFailureMessage(meeting.failure)} Check the recording processing panel in the meeting sidebar for available recovery actions.
                   </p>
-                )}
                 <p className="text-[13px] text-[#6b7280] mt-3">
                   Check the recording processing panel in the meeting sidebar for the latest status and any recovery actions available to you.
                 </p>

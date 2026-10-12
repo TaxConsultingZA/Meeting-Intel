@@ -126,6 +126,8 @@ async def test_empty_transcription_fails_before_ai(monkeypatch, pipeline):
         await run(p)
     assert p.meeting.state == ProcessingState.failed
     provider.process.assert_not_awaited()
+    from app.services.job_control import processing_failure_info
+    assert processing_failure_info(p.meeting.error) == {"stage": "transcription", "category": "invalid_output"}
 
 
 async def test_cancel_during_extraction_preserves_raw_without_final_writes(monkeypatch, pipeline):
@@ -228,4 +230,23 @@ async def test_provider_exception_reaches_job_retry_or_failure(monkeypatch, pipe
     await worker._execute(row)
     assert p.meeting.state == ProcessingState.failed and p.meeting.transcript
     assert row.status == expected and "failed" in row.last_error
+    from app.services.job_control import processing_failure_info
+    assert processing_failure_info(row.last_error) == {"stage": "extraction", "category": "unknown"}
+    p.mail.assert_not_awaited()
+
+
+@pytest.mark.parametrize("stage", ["download", "transcription"])
+async def test_pipeline_failure_stage_reaches_review_api(monkeypatch, pipeline, stage):
+    from app.api.reviews import _to_out
+    p = pipeline
+    target = p.download if stage == "download" else p.transcriber.transcribe
+    target.side_effect = TimeoutError("SECRET response, prompt, credentials")
+    with pytest.raises(TimeoutError):
+        await run(p)
+    p.meeting.participants = []
+    p.meeting.action_items = []
+    result = _to_out(p.meeting, p.meeting.organizer_upn)
+    assert result.failure.stage == stage and result.failure.category == "timeout"
+    assert "SECRET" not in result.error
+    assert p.meeting.state == ProcessingState.failed
     p.mail.assert_not_awaited()

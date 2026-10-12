@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex
 
-from app.models import RecordingJob
+from app.models import RecordingJob, AuditEvent
 from app.queue import worker
 from app.services import jobs
 from app.services.job_control import public_job_error
@@ -63,6 +63,10 @@ async def test_claim_marks_processing_increments_attempt_and_commits(monkeypatch
     assert "recording_jobs.id =" not in statement
     db.commit.assert_awaited_once()
     db.expunge.assert_called_once_with(row)
+    event, = [c.args[0] for c in db.add.call_args_list if isinstance(c.args[0], AuditEvent)]
+    assert event.event_type == "recording.started" and event.outcome == "succeeded"
+    assert event.event_key == f"recording.started:{row.id}:1"
+    assert event.job_id == event.correlation_id == row.id
 
 
 async def test_claim_allowlist_selects_target_even_with_older_pending_job(monkeypatch):

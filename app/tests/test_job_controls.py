@@ -10,8 +10,62 @@ from sqlalchemy.dialects import postgresql
 
 from app.api import recording_jobs as api
 from app.models import ProcessingState
-from app.services.job_control import guarded_commit, JobCancelled, public_job_error
+from app.services.job_control import (
+    guarded_commit, JobCancelled, public_job_error, processing_stage, processing_failure_info,
+)
 from app.queue import worker
+
+
+@pytest.mark.parametrize("stage", ["download", "transcription", "extraction"])
+def test_failure_context_is_safe_and_roundtrips_without_changing_exception(stage):
+    original = TimeoutError("SECRET stack, credentials, prompt, response, recipients")
+    with pytest.raises(TimeoutError) as raised:
+        with processing_stage(stage):
+            raise original
+    assert raised.value is original
+    message = public_job_error(original)
+    assert "SECRET" not in message
+    expected = {"stage": stage, "category": "timeout"}
+    assert processing_failure_info(original) == expected
+    assert processing_failure_info(message) == expected
+    job = row(status="processing", attempts=1)
+    worker._retry_or_fail(job, original)
+    assert job.status == "pending"
+    assert processing_failure_info(job.last_error) == expected
+    job.attempts = job.max_attempts
+    worker._retry_or_fail(job, original)
+    assert job.status == "failed"
+    assert processing_failure_info(api.job_out(job, None, job.owner_upn)["error"]) == expected
+    assert api.job_out(job, None, job.owner_upn)["failure"] == expected
+    job.status = "processing"
+    assert api.job_out(job, None, job.owner_upn)["failure"] is None
+
+
+def test_legacy_and_untrusted_errors_never_infer_a_failure_stage():
+    for error in [None, "transcript exists", "https://private/?api_key=SECRET",
+                  '{"stage":"extraction","category":"SECRET"}']:
+        assert processing_failure_info(error) is None
+    assert processing_failure_info(None, cancelled=True) == {"stage": "processing", "category": "cancelled"}
+
+
+@pytest.mark.parametrize("error", [JobCancelled("cancel"), asyncio.CancelledError()])
+def test_failure_capture_preserves_cancellation(error):
+    with pytest.raises(type(error)) as raised:
+        with processing_stage("extraction"):
+            raise error
+    assert raised.value is error
+    assert not hasattr(error, "_safe_processing_failure")
+
+
+@pytest.mark.parametrize("status,category", [(403, "access_unavailable"), (429, "rate_limited"), (503, "unavailable")])
+def test_http_failures_expose_only_safe_categories(status, category):
+    import httpx
+    response = httpx.Response(status, request=httpx.Request("GET", "https://private/?secret=SECRET"))
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        with processing_stage("download"):
+            response.raise_for_status()
+    assert processing_failure_info(raised.value) == {"stage": "download", "category": category}
+    assert "SECRET" not in public_job_error(raised.value)
 
 
 def row(**overrides):

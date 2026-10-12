@@ -180,6 +180,12 @@ class SpeakerCandidateOut(BaseModel):
     id: str | None = None
 
 
+class ProcessingFailureOut(BaseModel):
+    stage: Literal["download", "transcription", "extraction", "processing"]
+    category: Literal["timeout", "rate_limited", "unavailable", "access_unavailable",
+                      "configuration", "invalid_output", "unknown", "cancelled"]
+
+
 class MeetingOut(BaseModel):
     """Full meeting representation returned by GET /reviews and GET /reviews/{id}."""
     id: str
@@ -192,6 +198,7 @@ class MeetingOut(BaseModel):
     extracted_json: dict | None = None
     calendar_participants: list[CalendarParticipantOut] = Field(default_factory=list)
     error: str | None = None
+    failure: ProcessingFailureOut | None = None
     email_recipients: list[str] = Field(default_factory=list)
     approved_recipients: list[str] = Field(default_factory=list)
     is_organizer: bool = False

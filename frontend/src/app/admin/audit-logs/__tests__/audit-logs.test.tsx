@@ -5,6 +5,21 @@ import type { AuditEvent, AuditEventsPage } from "@/lib/types";
 import AuditLogsClient, { parseAuditDate } from "../audit-logs-client";
 import { OutcomeBadge, safeMetadata } from "../audit-display";
 
+it("exposes AI audit filters and completed recording cancellation", async () => {
+  render(<AuditLogsClient accessToken="token" />);
+  expect(await screen.findByRole("group", { name: "AI processing" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "Recording processing started" })).toHaveValue("recording.started");
+  expect(screen.getByRole("option", { name: "Recording cancellation completed" })).toHaveValue("recording.cancelled");
+  for (const action of ["requested", "completed", "failed"]) {
+    expect(screen.getByRole("option", { name: `AI extraction ${action}` })).toHaveValue(`ai.extraction_${action}`);
+  }
+  fireEvent.change(screen.getByLabelText("Event type"), { target: { value: "ai.extraction_failed" } });
+  fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+  await waitFor(() => expect(getAuditEvents).toHaveBeenLastCalledWith("token", {
+    event_type: "ai.extraction_failed",
+  }, undefined, expect.any(AbortSignal)));
+});
+
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), getAuditEvents: vi.fn() }));
 
 const event: AuditEvent = {
@@ -169,7 +184,7 @@ it("groups email filters and applies the existing email event and actor filters"
   expect(screen.getByText("Email submission", { selector: "td" })).toBeVisible();
   expect(screen.getByRole("group", { name: "Email approval & sending" })).toBeInTheDocument();
   expect(screen.getByRole("option", { name: "Email approval requested" })).toHaveValue("email.approval_requested");
-  expect(screen.getByRole("option", { name: "Email approved" })).toHaveValue("email.approved");
+  expect(screen.getByRole("option", { name: "Review approved" })).toHaveValue("email.approved");
   fireEvent.change(screen.getByLabelText("Event type"), { target: { value: "email.send" } });
   fireEvent.change(screen.getByLabelText("Actor"), { target: { value: "email_sender" } });
   fireEvent.click(screen.getByRole("button", { name: "Apply" }));
@@ -200,7 +215,7 @@ it("summarizes applied filters rather than unsaved edits and clears them on rese
   expect(summary).toHaveTextContent("Actor: All actors");
   fireEvent.click(screen.getByRole("button", { name: "Apply" }));
   await waitFor(() => expect(summary).toHaveTextContent("Actor: admin@example.test"));
-  expect(summary).toHaveTextContent("Event: Email approved");
+  expect(summary).toHaveTextContent("Event: Review approved");
   expect(summary).toHaveTextContent("Outcome: Succeeded");
   fireEvent.change(screen.getByLabelText("Actor"), { target: { value: "unsaved@example.test" } });
   expect(summary).not.toHaveTextContent("unsaved");

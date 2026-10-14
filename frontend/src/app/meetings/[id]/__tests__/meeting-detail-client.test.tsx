@@ -55,20 +55,22 @@ it("requires a matching recipient preview, sends its fingerprint, and clears it 
     recipients: ["owner@example.com"], fingerprint: "reviewed-fingerprint" });
   render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="token" />);
   fireEvent.click(screen.getByRole("button", { name: /Approve Meeting Notes/ }));
-  expect(await screen.findByRole("button", { name: "Approve & Send Email" })).toBeDisabled();
+  expect(await screen.findByRole("button", { name: "Approve Meeting Notes" })).toBeDisabled();
   fireEvent.click(screen.getByRole("button", { name: "Review Email Preview" }));
   expect(await within(await screen.findByRole("dialog", { name: "Email Preview" })).findByText("Reviewed subject")).toBeInTheDocument();
   expect(previewMeetingEmail).toHaveBeenCalledWith("safe-meeting", "token", ["owner@example.com"]);
   fireEvent.click(screen.getByRole("button", { name: "Close Preview" }));
-  const send = await screen.findByRole("button", { name: "Approve & Send Email" });
+  expect(screen.getByText("Email submission")).toBeVisible();
+  expect(screen.getByText(/Submission does not confirm delivery/)).toBeVisible();
+  const send = await screen.findByRole("button", { name: "Approve Meeting Notes" });
   expect(send).toBeEnabled();
   fireEvent.click(screen.getByRole("checkbox"));
-  expect(screen.getByRole("button", { name: "Approve Without Sending" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Approve Meeting Notes" })).toBeDisabled();
   fireEvent.click(screen.getByRole("checkbox"));
-  fireEvent.click(screen.getByRole("button", { name: "Approve & Send Email" }));
+  fireEvent.click(screen.getByRole("button", { name: "Approve Meeting Notes" }));
   await waitFor(() => expect(approveMeeting).toHaveBeenCalledWith(
     "safe-meeting", "token", ["owner@example.com"], "reviewed-fingerprint"));
-  await waitFor(() => expect(screen.getByRole("button", { name: "Approve & Send Email" })).toBeDisabled());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Approve Meeting Notes" })).toBeDisabled());
 });
 
 it("displays Calendar participants when extracted attendees are empty", () => {
@@ -237,7 +239,7 @@ it("prevents duplicate approval and freezes confirmation while submitting", asyn
   vi.mocked(getMeeting).mockResolvedValue({ ...approvalMeeting, state: "sent", approved_recipients: ["owner@example.com"] });
   const preview = await openReviewedApproval();
   fireEvent.click(within(preview).getByRole("button", { name: "Close Preview" }));
-  const submit = screen.getByRole("button", { name: "Approve & Send Email" });
+  const submit = screen.getByRole("button", { name: "Approve Meeting Notes" });
   fireEvent.click(submit);
   fireEvent.click(submit);
   expect(approveMeeting).toHaveBeenCalledOnce();
@@ -262,11 +264,11 @@ it.each([
   vi.mocked(getMeeting).mockResolvedValue(approvalMeeting);
   const preview = await openReviewedApproval();
   fireEvent.click(within(preview).getByRole("button", { name: "Close Preview" }));
-  fireEvent.click(screen.getByRole("button", { name: "Approve & Send Email" }));
+  fireEvent.click(screen.getByRole("button", { name: "Approve Meeting Notes" }));
   const alert = await screen.findByRole("alert");
   expect(alert).toHaveTextContent(String(guidance));
   expect(alert).not.toHaveTextContent("secret technical details");
-  expect(screen.getByRole("button", { name: "Approve & Send Email" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Approve Meeting Notes" })).toBeDisabled();
 });
 
 it("records approval without claiming an email was sent when no recipients are selected", async () => {
@@ -276,7 +278,7 @@ it("records approval without claiming an email was sent when no recipients are s
   const preview = await openReviewedApproval(meeting);
   expect(within(preview).getByText(/No recipients selected/)).toBeInTheDocument();
   fireEvent.click(within(preview).getByRole("button", { name: "Close Preview" }));
-  fireEvent.click(screen.getByRole("button", { name: "Approve Without Sending" }));
+  fireEvent.click(screen.getByRole("button", { name: "Approve Meeting Notes" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Approve Meeting Notes" })).not.toBeInTheDocument());
   expect(screen.getByRole("status", { name: "Meeting approval status" })).toHaveTextContent("No email was submitted");
   expect(approveMeeting).toHaveBeenCalledWith("email-meeting", "token", [], "fingerprint");
@@ -287,7 +289,7 @@ it("does not encourage resending when approval and refresh both fail", async () 
   vi.mocked(getMeeting).mockRejectedValue(new Error("technical"));
   const preview = await openReviewedApproval();
   fireEvent.click(within(preview).getByRole("button", { name: "Close Preview" }));
-  fireEvent.click(screen.getByRole("button", { name: "Approve & Send Email" }));
+  fireEvent.click(screen.getByRole("button", { name: "Approve Meeting Notes" }));
   await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("check any email submission before resending")));
 });
 
@@ -307,7 +309,7 @@ it("reports accepted submission accurately if the status refresh fails", async (
   vi.mocked(getMeeting).mockRejectedValue(new Error("network"));
   const preview = await openReviewedApproval();
   fireEvent.click(within(preview).getByRole("button", { name: "Close Preview" }));
-  fireEvent.click(screen.getByRole("button", { name: "Approve & Send Email" }));
+  fireEvent.click(screen.getByRole("button", { name: "Approve Meeting Notes" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Approve Meeting Notes" })).not.toBeInTheDocument());
   expect(screen.getByRole("status", { name: "Meeting approval status" })).toHaveTextContent("accepted for 1 selected recipient");
   expect(screen.getByRole("alert")).toHaveTextContent("before resending");
@@ -318,7 +320,7 @@ it("shows reconciled approval after a lost approval response without inviting a 
   vi.mocked(getMeeting).mockResolvedValue({ ...approvalMeeting, state: "sent", approved_recipients: ["owner@example.com"] });
   const preview = await openReviewedApproval();
   fireEvent.click(within(preview).getByRole("button", { name: "Close Preview" }));
-  fireEvent.click(screen.getByRole("button", { name: "Approve & Send Email" }));
+  fireEvent.click(screen.getByRole("button", { name: "Approve Meeting Notes" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Approve Meeting Notes" })).not.toBeInTheDocument());
   expect(screen.getByRole("status", { name: "Meeting approval status" })).toHaveTextContent("Email submission accepted");
   expect(toast.error).not.toHaveBeenCalled();

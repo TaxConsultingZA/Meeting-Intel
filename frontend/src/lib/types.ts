@@ -54,6 +54,7 @@ export interface ApprovedActionItem {
   deadline_iso: string | null;
   deadline_text: string | null;
   source_quote: string | null;
+  confidence?: Confidence | null;
 }
 
 export interface ApprovedActionItemsPage {

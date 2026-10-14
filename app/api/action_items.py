@@ -35,7 +35,7 @@ async def list_action_items(
     ).exists()
     query = select(
         ActionItem.id, ActionItem.task, ActionItem.owner,
-        ActionItem.deadline_iso, ActionItem.deadline_text, ActionItem.source_quote,
+        ActionItem.deadline_iso, ActionItem.deadline_text, ActionItem.source_quote, ActionItem.confidence,
         Meeting.id.label("meeting_id"), Meeting.title.label("meeting_title"),
     ).join(Meeting, Meeting.id == ActionItem.meeting_id).where(
         ActionItem.approved.is_(True),

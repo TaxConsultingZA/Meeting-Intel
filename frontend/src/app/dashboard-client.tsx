@@ -78,6 +78,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const [syncLoadErrors, setSyncLoadErrors] = useState<string[]>([]);
   const [calendarLoadErrors, setCalendarLoadErrors] = useState<string[]>([]);
   const [pollingError, setPollingError] = useState("");
+  const [refreshingProcessing, setRefreshingProcessing] = useState(false);
   const [dashboardLoading, setDashboardLoading] = useState(deferInitialLoad);
   const [shareModal, setShareModal] = useState<{ meetingId: string; title: string } | null>(null);
   const [unsubscribing, setUnsubscribing] = useState(false);
@@ -125,6 +126,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const refreshProcessing = useCallback(async () => {
     if (pollingInFlight.current || document.visibilityState === "hidden") return;
     pollingInFlight.current = true;
+    setRefreshingProcessing(true);
     try {
       const [nextJobs, nextMeetings] = await Promise.all([
         getRecordingJobs(accessToken),
@@ -133,15 +135,19 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       setRecordingJobs(nextJobs);
       setMeetings(nextMeetings);
       setPollingError("");
+    } catch (error) {
+      setPollingError("Live updates are temporarily unavailable. Your last loaded meeting and recording information is still shown.");
+      throw error;
     } finally {
       pollingInFlight.current = false;
+      setRefreshingProcessing(false);
     }
   }, [accessToken]);
 
   useEffect(() => {
     if (!hasActiveProcessing || showImport) return;
     const timer = setInterval(() => {
-      void refreshProcessing().catch(() => setPollingError("Meeting and recording status could not be refreshed. Showing the last available information. Refresh to try again."));
+      void refreshProcessing().catch(() => {});
     }, 10000);
     return () => clearInterval(timer);
   }, [hasActiveProcessing, refreshProcessing, showImport]);
@@ -290,15 +296,21 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           <ul className="mt-1 list-disc space-y-1 pl-5 text-xs">{syncErrors.map((error) => <li key={error}>{error}</li>)}</ul>
         </div>
       )}
-      {pollingError && <p role="alert" className="mb-5 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{pollingError}</p>}
-      <div className="mb-6 flex items-start justify-between gap-4">
+      {pollingError && <div role="status" aria-live="polite" aria-label="Dashboard refresh status" className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+        <p className="min-w-0 flex-1">{pollingError}</p>
+        <button type="button" disabled={refreshingProcessing} onClick={() => { void refreshProcessing().catch(() => {}); }}
+          className="rounded-md border border-amber-300 bg-white px-3 py-2 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#003366] disabled:cursor-wait disabled:opacity-60">
+          {refreshingProcessing ? "Retrying…" : "Retry refresh"}
+        </button>
+      </div>}
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-[22px] font-bold text-[#003366]">Meeting Intelligence</h1>
           <p className="text-[#6b7280] text-[13.5px] mt-0.5">
             Review and approve AI-extracted meeting notes before they are emailed to participants.
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {isSubscribed && (
             <button
               type="button"

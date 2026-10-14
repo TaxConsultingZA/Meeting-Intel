@@ -286,6 +286,69 @@ it("does not overlap active dashboard polling requests", () => {
   expect(getAllMeetings).toHaveBeenCalledOnce();
 });
 
+it.each(["jobs", "meetings"] as const)("preserves loaded data when refreshing %s fails and allows retry", async (failureSource) => {
+  vi.useFakeTimers();
+  const previous = processedMeeting({ title: "Previously loaded meeting" });
+  const updated = processedMeeting({ title: "Updated meeting" });
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  vi.mocked(getRecordingJobs).mockResolvedValue([]);
+  vi.mocked(getAllMeetings).mockResolvedValue([updated]);
+  if (failureSource === "jobs") {
+    vi.mocked(getRecordingJobs).mockRejectedValueOnce(new Error("SECRET network failure"));
+  } else {
+    vi.mocked(getAllMeetings).mockRejectedValueOnce(new Error("SECRET network failure"));
+  }
+  render(<DashboardClient meetings={[previous]} recordingJobs={[recordingJob()]} upcoming={[]} historical={[]}
+    upn="reviewer@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} />);
+  fireEvent.click(screen.getByRole("button", { name: /^Awaiting Review/ }));
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+  expect(screen.getByText("Previously loaded meeting")).toBeVisible();
+  expect(screen.queryByText("Updated meeting")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^In Progress/ })).toHaveTextContent("1");
+  const warning = screen.getByRole("status", { name: "Dashboard refresh status" });
+  expect(warning).toHaveTextContent("Your last loaded meeting and recording information is still shown.");
+  expect(warning).not.toHaveTextContent("SECRET");
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+  let rejectRetry!: (error: Error) => void;
+  vi.mocked(getRecordingJobs).mockReturnValueOnce(new Promise((_, reject) => { rejectRetry = reject; }));
+  fireEvent.click(screen.getByRole("button", { name: "Retry refresh" }));
+  const busy = screen.getByRole("button", { name: "Retrying…" });
+  expect(busy).toBeDisabled();
+  fireEvent.click(busy);
+  expect(getRecordingJobs).toHaveBeenCalledTimes(2);
+  expect(getAllMeetings).toHaveBeenCalledTimes(2);
+  expect(screen.getByText("Previously loaded meeting")).toBeVisible();
+  await act(async () => { rejectRetry(new Error("SECRET retry failure")); });
+  expect(screen.getByRole("button", { name: "Retry refresh" })).toBeEnabled();
+  expect(screen.getByText("Previously loaded meeting")).toBeVisible();
+
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Retry refresh" })); });
+  expect(screen.getByText("Updated meeting")).toBeVisible();
+  expect(screen.queryByText("Previously loaded meeting")).not.toBeInTheDocument();
+  expect(screen.queryByRole("status", { name: "Dashboard refresh status" })).not.toBeInTheDocument();
+  expect(getRecordingJobs).toHaveBeenCalledTimes(3);
+  expect(getAllMeetings).toHaveBeenCalledTimes(3);
+});
+
+it("clears the refresh warning after the next successful automatic refresh", async () => {
+  vi.useFakeTimers();
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  vi.mocked(getRecordingJobs).mockRejectedValueOnce(new Error("Temporary failure")).mockResolvedValue([recordingJob()]);
+  vi.mocked(getAllMeetings).mockResolvedValue([processedMeeting({ title: "Refreshed meeting" })]);
+  render(<DashboardClient meetings={[]} recordingJobs={[recordingJob()]} upcoming={[]} historical={[]}
+    upn="reviewer@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} />);
+  fireEvent.click(screen.getByRole("button", { name: /^Awaiting Review/ }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+  expect(screen.getByRole("status", { name: "Dashboard refresh status" })).toBeVisible();
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+  expect(screen.queryByRole("status", { name: "Dashboard refresh status" })).not.toBeInTheDocument();
+  expect(screen.getByText("Refreshed meeting")).toBeVisible();
+});
+
 it("keeps Meetings mounted after its first visit", async () => {
   vi.mocked(getRecentMeetings).mockResolvedValue([]);
   vi.mocked(getProcessingRequests).mockResolvedValue([]);

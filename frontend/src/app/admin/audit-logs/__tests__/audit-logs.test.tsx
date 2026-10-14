@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ApiError, getAuditEvents } from "@/lib/api";
 import type { AuditEvent, AuditEventsPage } from "@/lib/types";
 import AuditLogsClient, { parseAuditDate } from "../audit-logs-client";
-import { OutcomeBadge, safeMetadata } from "../audit-display";
+import { OutcomeBadge, safeMetadata, eventTitle, resourceLabel, outcomeDescription, failureDescription, failureStage, recoveryDescription, metadataValue } from "../audit-display";
 
 it("exposes AI audit filters and completed recording cancellation", async () => {
   render(<AuditLogsClient accessToken="token" />);
@@ -40,7 +40,7 @@ it("renders native admin layout and system outcomes", async () => {
   render(<AuditLogsClient accessToken="token" />);
   expect(screen.getByRole("status")).toHaveTextContent("Loading audit events");
   expect(await screen.findByText("Recording worker")).toBeVisible();
-  expect(screen.getByText("Retry scheduled")).toBeVisible();
+  expect(screen.getByText(/Retry scheduled\./)).toBeVisible();
   expect(screen.getByText("Failed", { selector: "span" })).toHaveClass("bg-red-50");
   expect(screen.getByRole("main")).toHaveClass("max-w-5xl", "px-6", "py-7");
   expect(screen.getByRole("link", { name: "Back to Administration" })).toHaveAttribute("href", "/admin");
@@ -145,8 +145,62 @@ it("supports all audit outcome badges without borrowing processing states", () =
 it("displays future event names and absent actor snapshots safely", async () => {
   vi.mocked(getAuditEvents).mockResolvedValue(page([{ ...event, event_type: "future.action", actor_type: "user", actor_upn: null, actor_id: "former-user" }]));
   render(<AuditLogsClient accessToken="token" />);
-  expect(await screen.findByText("future.action")).toBeVisible();
+  expect(await screen.findByText("Other audit event")).toBeVisible();
   expect(screen.getByText("former-user")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: `View details for ${event.id}` }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByText("Technical details"));
+  expect(within(dialog).getByText("future.action")).toBeVisible();
+});
+
+it.each([
+  ["recording.import", "requested", "Request recorded. Completion is not confirmed by this event."],
+  ["recording.started", "succeeded", "Recording processing started. Completion is recorded separately."],
+  ["recording.cancelled", "succeeded", "Recording processing was cancelled."],
+  ["email.approved", "succeeded", "Meeting notes were approved. This event does not confirm email delivery."],
+  ["email.send", "succeeded", "Microsoft Graph accepted the email request. Delivery is not confirmed."],
+  ["email.send", "unknown", "Email submission could not be confirmed. Check delivery before resending."],
+  ["recording.processing", "failed", "This action failed. Review the available failure details."],
+  ["future.action", "unknown", "The outcome could not be confirmed."],
+] as const)("explains %s / %s without overstating completion or delivery", (event_type, outcome, description) => {
+  expect(outcomeDescription({ ...event, event_type, outcome })).toBe(description);
+});
+
+it.each([
+  ["processing_error", "Recording processing could not be completed."],
+  ["attempts_exhausted", "The processing attempt limit was reached."],
+  ["reprocess_conflict", "Meeting results changed during reprocessing. Replacement was blocked."],
+  ["timeout", "The processing service timed out."],
+  ["invalid_output", "The processing output could not be used."],
+  ["provider_rejected", "The email service rejected the request."],
+  ["submission_uncertain", "Email submission could not be confirmed."],
+] as const)("explains the available failure category %s", (error_category, description) => {
+  expect(failureDescription({ ...event, metadata: { error_category } })).toBe(description);
+});
+
+it("uses only the available resource and failure data, preserving IDs for investigation", async () => {
+  vi.mocked(getAuditEvents).mockResolvedValue(page([{ ...event, metadata: { source: "manual_retry", reason: "lease_expired" } }]));
+  render(<AuditLogsClient accessToken="token" />);
+  expect(await screen.findByText("Recording job")).toBeVisible();
+  expect(screen.getByText("No failure category was provided.")).toBeVisible();
+  expect(screen.getByText("Reference: 00000000…")).toHaveAttribute("title", event.resource_id);
+  fireEvent.click(screen.getByRole("button", { name: `View details for ${event.id}` }));
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent("Name not provided in this audit event.");
+  expect(within(dialog).getByText("Manual retry")).toBeVisible();
+  expect(within(dialog).getByText("The worker did not renew its processing lease in time.")).toBeVisible();
+  fireEvent.click(within(dialog).getByText("Technical details"));
+  expect(within(dialog).getByText(event.resource_id)).toBeVisible();
+  expect(within(dialog).getByText(event.correlation_id)).toBeVisible();
+  expect(getAuditEvents).toHaveBeenCalledOnce();
+});
+
+it("does not invent information from unknown codes or expose arbitrary metadata", () => {
+  expect(resourceLabel({ ...event, resource_type: "unrecognised_type" })).toBe("Resource");
+  expect(eventTitle("future.action")).toBe("Other audit event");
+  expect(failureDescription({ ...event, metadata: { error_category: "SECRET", meeting_name: "Invented name" } })).toBe("No failure category was provided.");
+  expect(metadataValue("reason", "existing_result_preserved")).toBe("Previously saved meeting results were preserved.");
+  expect(safeMetadata({ meeting_name: "Invented name", error_category: "SECRET" })).toEqual([]);
 });
 
 it("uses predictable English date fields and rejects impossible calendar dates", async () => {
@@ -191,7 +245,7 @@ it("groups email filters and applies the existing email event and actor filters"
   await waitFor(() => expect(getAuditEvents).toHaveBeenLastCalledWith("token", {
     event_type: "email.send", actor_id: "email_sender",
   }, undefined, expect.any(AbortSignal)));
-  expect(screen.getByText(/delivery is not confirmed/)).toBeVisible();
+  expect(screen.getByText(/Delivery confirmation is not available/)).toBeVisible();
 });
 
 it("provides a clear empty-state action that resets applied filters", async () => {
@@ -234,4 +288,31 @@ it("shows a page-scoped record count and a clear details button with a friendly 
   expect(within(dialog).getByText("Action")).toBeVisible();
   expect(dialog).toHaveTextContent("Recording processing");
   expect(dialog).toHaveTextContent("recording.processing");
+});
+
+it("shows only the recorded failure stage, safe category, and recovery information", async () => {
+  const failed = { ...event, event_type: "ai.extraction_failed", metadata: {
+    error_category: "invalid_output", retry_scheduled: true, reason: "existing_result_preserved",
+    stack: "SECRET stack", prompt: "SECRET prompt", response: "SECRET response", credentials: "SECRET credentials",
+  } };
+  vi.mocked(getAuditEvents).mockResolvedValue(page([failed]));
+  render(<AuditLogsClient accessToken="token" />);
+  await screen.findByText("The processing output could not be used.");
+  expect(screen.getByText("AI extraction")).toBeVisible();
+  expect(screen.getByText(/Retry scheduled.*Previously saved meeting results were preserved/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: `View details for ${event.id}` }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("Failure stage")).toBeVisible();
+  expect(within(dialog).getByText("AI extraction")).toBeVisible();
+  expect(within(dialog).getByText("Failure category")).toBeVisible();
+  expect(within(dialog).getByText("Recovery information")).toBeVisible();
+  expect(dialog).not.toHaveTextContent("SECRET");
+});
+
+it("does not guess missing stages, causes, or recovery information", () => {
+  const missing = { ...event, event_type: "future.action", metadata: { stage: "SECRET", recovery: "SECRET", retry_scheduled: "true" } };
+  expect(failureStage(missing)).toBe("Stage not provided in this audit event.");
+  expect(failureDescription(missing)).toBe("No failure category was provided.");
+  expect(recoveryDescription(missing)).toBe("No recovery information was provided.");
+  expect(recoveryDescription({ ...event, metadata: { retry_scheduled: false } })).toBe("No retry scheduled by this event.");
 });

@@ -150,3 +150,14 @@ it("allows returning from an empty later page without displaying pagination", as
   expect(await screen.findByText("Send report")).toBeInTheDocument();
   expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", expect.objectContaining({ offset: 0 }), expect.anything());
 });
+
+it.each([
+  ["high", "High"], ["medium", "Medium"], ["low", "Low"], [null, "Unavailable"], [undefined, "Unavailable"],
+] as const)("displays stored confidence %s without losing evidence", async (confidence, label) => {
+  vi.mocked(getApprovedActionItems).mockResolvedValueOnce({ ...page, items: [{ ...page.items[0], confidence }] });
+  render(<ActionItemsClient accessToken="token" />);
+  expect(await screen.findByRole("cell", { name: label })).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Confidence" })).toBeInTheDocument();
+  expect(screen.getByText("Please send the report.")).toBeInTheDocument();
+  expect(getApprovedActionItems).toHaveBeenCalledOnce();
+});

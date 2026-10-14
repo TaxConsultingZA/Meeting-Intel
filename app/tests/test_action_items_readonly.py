@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.action_items import router
 from app.db import get_db
-from app.models import ActionItem, Meeting, MeetingParticipant, ProcessingState
+from app.models import ActionItem, Confidence, Meeting, MeetingParticipant, ProcessingState
 
 
 @pytest.fixture
@@ -23,18 +23,18 @@ def api():
     session = Session(engine)
     actor = "alice@taxconsulting.co.za"
 
-    def add(title, state=ProcessingState.approved, access="participant", owner=actor, approved=True, participant=actor):
+    def add(title, state=ProcessingState.approved, access="participant", owner=actor, approved=True, participant=actor, confidence=Confidence.medium):
         meeting = Meeting(title=title, state=state, drive_item_id=title,
                           recorded_at=datetime(2026, 10, 8, tzinfo=timezone.utc))
         session.add(meeting)
         session.flush()
         session.add(MeetingParticipant(meeting_id=meeting.id, user_upn=participant, access_type=access))
         session.add(ActionItem(meeting_id=meeting.id, task=f"Task {title}", owner=owner,
-                              approved=approved, deadline_iso="2026-10-12", deadline_text="Monday",
+                              approved=approved, confidence=confidence, deadline_iso="2026-10-12", deadline_text="Monday",
                               source_quote="Please send the report."))
-    add("Budget", owner="  ALICE@taxconsulting.co.za  ")
+    add("Budget", owner="  ALICE@taxconsulting.co.za  ", confidence=Confidence.high)
     add("Tax 100%", state=ProcessingState.sent, owner="Alice")
-    add("Shared", access="shared", owner="Bob")
+    add("Shared", access="shared", owner="Bob", confidence=Confidence.low)
     add("Draft", state=ProcessingState.awaiting_review)
     add("Unapproved", approved=False)
     add("Failed", state=ProcessingState.failed)
@@ -71,7 +71,8 @@ def test_all_only_approved_and_accessible_without_admin_bypass(api):
     assert titles(response) == {"Budget", "Tax 100%", "Shared"}
     assert response.headers["cache-control"] == "no-store"
     item = response.json()["items"][0]
-    assert set(item) == {"id", "task", "meeting_id", "meeting_title", "owner", "deadline_iso", "deadline_text", "source_quote"}
+    assert set(item) == {"id", "task", "meeting_id", "meeting_title", "owner", "deadline_iso", "deadline_text", "source_quote", "confidence"}
+    assert {row["meeting_title"]: row["confidence"] for row in response.json()["items"]} == {"Budget": "high", "Tax 100%": "medium", "Shared": "low"}
     db.commit.assert_not_awaited()
     db.add.assert_not_called()
 

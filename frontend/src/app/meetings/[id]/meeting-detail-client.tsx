@@ -340,7 +340,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-5 items-start">
         {/* Sidebar */}
         <aside aria-label="Meeting details and recording processing" className="min-w-0 space-y-4 lg:sticky lg:top-[76px]">
         <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
@@ -435,7 +435,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
         </aside>
 
         {/* Main content */}
-        <div className="flex flex-col gap-4">
+        <div className="min-w-0 flex flex-col gap-4">
           {isProcessing ? (
             <PipelineView state={meeting.state} />
           ) : meeting.state === "cancelled" ? (
@@ -552,7 +552,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             <Section title="Speaker Names" hint={canEdit ? "Match each detected voice to an Outlook attendee" : "Speaker names can be changed by approved editors"}>
               <div className="space-y-3.5">
                 {speakerLabels.map((label) => (
-                  <div key={label} className="grid items-center gap-2.5 rounded-md border border-[#edf0f4] bg-[#fafbfc] px-3 py-2.5 sm:grid-cols-[minmax(120px,180px)_120px_minmax(220px,1fr)]">
+                  <div key={label} className="grid items-center gap-2.5 rounded-md border border-[#edf0f4] bg-[#fafbfc] px-3 py-2.5 xl:grid-cols-[minmax(120px,180px)_120px_minmax(0,1fr)]">
                     <span className="truncate text-[13px] font-semibold text-[#003366]" title={label}>{label}</span>
                     <div className="flex min-h-9 items-center">
                       {canApprove && (meeting.speaker_sample_labels ?? []).includes(label) && (
@@ -680,7 +680,9 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           </p>
           <div className="rounded-md border border-blue-200 bg-blue-50/50 p-3 text-sm text-[#003366]">
             <p className="font-semibold">What approval does</p>
-            <p className="mt-1 text-xs leading-5">Approval records these notes and action items as approved and ends this review. {recipients.length ? "It also requests an email to the selected recipients when email sending is enabled. Submitted email cannot be recalled from this screen." : "With no recipients selected, no email will be sent."}</p>
+            <p className="mt-1 text-xs leading-5">Approval records these notes and action items as approved and ends this review.</p>
+            <p className="mt-2 font-semibold">Email submission</p>
+            <p className="mt-1 text-xs leading-5">{recipients.length ? "Email submission is requested for the selected recipients when email sending is enabled. Submission does not confirm delivery. Submitted email cannot be recalled from this screen." : "With no recipients selected, no email will be submitted."}</p>
           </div>
           {previewMatchesRecipients && emailPreview && <div className="rounded-md border border-[#dde1e8] bg-[#fafbfc] p-3 text-xs text-[#374151]">
             <p className="font-semibold">Reviewed email subject</p>
@@ -713,7 +715,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               disabled={approving || previewingEmail || !previewMatchesRecipients}
               className="inline-flex items-center justify-center gap-2 bg-[#C9A52C] hover:bg-[#e8c84a] text-[#003366] px-5 py-2 rounded-md text-sm font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#003366]"
             >
-              {approving && <Loader2 size={16} aria-hidden="true" className="animate-spin" />}{approving ? "Submitting approval…" : recipients.length ? "Approve & Send Email" : "Approve Without Sending"}
+              {approving && <Loader2 size={16} aria-hidden="true" className="animate-spin" />}{approving ? "Submitting approval…" : "Approve Meeting Notes"}
             </button>
           </DialogFooter>
         </DialogContent>

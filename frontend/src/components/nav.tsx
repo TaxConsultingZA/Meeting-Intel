@@ -25,7 +25,7 @@ export default function Nav({ userEmail, accessToken, isAdmin }: NavProps) {
     .join("");
 
   return (
-    <nav className="bg-[#003366] h-14 flex items-center px-6 gap-8 sticky top-0 z-50 shadow-md">
+    <nav className="bg-[#003366] min-h-14 flex flex-wrap items-center px-4 py-2 gap-x-4 gap-y-2 lg:px-6 lg:gap-x-8 sticky top-0 z-50 shadow-md">
       <Link href="/" className="flex items-center gap-2.5 shrink-0">
         <div className="w-8 h-8 bg-[#C9A52C] rounded-md flex items-center justify-center font-extrabold text-[#003366] text-sm">
           MI
@@ -35,7 +35,7 @@ export default function Nav({ userEmail, accessToken, isAdmin }: NavProps) {
         </span>
       </Link>
 
-      <div className="flex gap-1 ml-2">
+      <div className="order-last flex w-full flex-wrap gap-1 lg:order-none lg:w-auto lg:ml-2">
         {[
           { href: "/", label: "Dashboard" },
           { href: "/action-items", label: "Action Items" },
@@ -45,7 +45,7 @@ export default function Nav({ userEmail, accessToken, isAdmin }: NavProps) {
             key={href}
             href={href}
             className={cn(
-              "px-3.5 py-1.5 rounded-md text-[13.5px] transition-colors",
+              "px-3.5 py-1.5 whitespace-nowrap rounded-md text-[13.5px] transition-colors",
               (path === href || (href === "/admin" && path.startsWith("/admin/")))
                 ? "text-[#C9A52C] bg-white/10"
                 : "text-white/70 hover:text-white hover:bg-white/10",
@@ -56,8 +56,8 @@ export default function Nav({ userEmail, accessToken, isAdmin }: NavProps) {
         ))}
       </div>
 
-      <div className="ml-auto flex items-center gap-3">
-        <span className="text-white/60 text-[13px] hidden sm:block">
+      <div className="ml-auto flex min-w-0 items-center gap-3">
+        <span className="text-white/60 text-[13px] hidden max-w-48 truncate xl:block">
           {userEmail}
         </span>
         <NotificationBell upn={accessToken} />

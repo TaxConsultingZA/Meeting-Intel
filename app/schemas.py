@@ -125,6 +125,7 @@ class ApprovedActionItemOut(BaseModel):
     deadline_iso: str | None
     deadline_text: str | None
     source_quote: str | None
+    confidence: Confidence | None
 
 
 class ApprovedActionItemsPageOut(BaseModel):

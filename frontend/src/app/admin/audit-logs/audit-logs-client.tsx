@@ -8,12 +8,12 @@ import LocalDateTime, { useUserTimeZone } from "@/components/local-date-time";
 import { Button } from "@/components/ui/button";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import AuditEventDialog from "./audit-event-dialog";
-import { actionLabels, actorLabel, OutcomeBadge } from "./audit-display";
+import { actionLabels, eventTitle, actorLabel, resourceLabel, outcomeDescription, failureDescription, failureStage, recoveryDescription, OutcomeBadge } from "./audit-display";
 
 type Draft = { from: string; to: string; event_type: string; outcome: AuditOutcome | ""; actor: string };
 type Request = { filters: AuditFilters; window?: { from: string; to: string }; cursors: (string | undefined)[]; index: number; refresh: boolean };
 const emptyDraft: Draft = { from: "", to: "", event_type: "", outcome: "", actor: "" };
-const inputStyle = "w-full border border-[#dde1e8] rounded-md px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#003366]";
+const inputStyle = "min-w-0 w-full border border-[#dde1e8] rounded-md px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#003366]";
 const secondaryStyle = "rounded-md border-[#dde1e8] text-[#003366] text-[13px]";
 const cellStyle = "px-4 py-2.5 border border-[#dde1e8] text-[12px]";
 
@@ -136,7 +136,7 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
       <div aria-label="Active filters" className="mt-4 border-t border-[#dde1e8] pt-3 text-xs text-[#6b7280]">
         <p className="mb-2 font-semibold text-[#003366]">Active filters</p>
         <ul className="flex flex-wrap gap-2">
-          <li className="rounded-md border border-[#dde1e8] bg-[#f8fafc] px-2 py-1">Event: {request.filters.event_type ? actionLabels[request.filters.event_type] ?? request.filters.event_type : "All events"}</li>
+          <li className="rounded-md border border-[#dde1e8] bg-[#f8fafc] px-2 py-1">Event: {request.filters.event_type ? eventTitle(request.filters.event_type) : "All events"}</li>
           <li className="rounded-md border border-[#dde1e8] bg-[#f8fafc] px-2 py-1">Outcome: {request.filters.outcome ? request.filters.outcome[0].toUpperCase() + request.filters.outcome.slice(1) : "All outcomes"}</li>
           <li className="rounded-md border border-[#dde1e8] bg-[#f8fafc] px-2 py-1 break-all">Actor: {request.filters.actor_upn ?? request.filters.actor_id ?? "All actors"}</li>
           <li className="rounded-md border border-[#dde1e8] bg-[#f8fafc] px-2 py-1">{request.filters.from || request.filters.to ? <>
@@ -152,7 +152,7 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
       </div>
         {page && <p className="mt-1 text-xs text-[#6b7280]">Window: <LocalDateTime value={page.window_start} /> – <LocalDateTime value={page.window_end} /></p>}
       </div>
-      <p className="px-4 pb-3 text-xs text-[#6b7280]">Newest first. Email submission succeeded means Graph accepted the request; delivery is not confirmed.</p>
+      <p className="px-4 pb-3 text-xs text-[#6b7280]">Newest first. For email submission events, Succeeded means Microsoft Graph accepted the request. Delivery confirmation is not available.</p>
       <Table className="text-xs min-w-[720px]" aria-label="Audit events">
         <TableHeader><TableRow className="hover:bg-transparent">{["Time", "Actor", "Action", "Resource", "Outcome", "Details"].map((label) => <TableHead key={label} scope="col" className="bg-[#003366] text-white text-xs font-semibold px-4 py-2.5 border border-white/10">{label}</TableHead>)}</TableRow></TableHeader>
         <TableBody>
@@ -161,9 +161,9 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
           {page?.items.map((event, index) => <TableRow key={event.id} className={`${index % 2 ? "bg-[#f8fafc]" : ""} hover:bg-blue-50/30`}>
             <TableCell className={`${cellStyle} text-[#6b7280]`}><LocalDateTime value={event.occurred_at} /></TableCell>
             <TableCell className={`${cellStyle} whitespace-normal break-words max-w-48`}>{actorLabel(event)}</TableCell>
-            <TableCell className={`${cellStyle} whitespace-normal`}>{actionLabels[event.event_type] ?? event.event_type}</TableCell>
-            <TableCell className={cellStyle}><span className="block">{event.resource_type.replaceAll("_", " ")}</span><span className="text-[#6b7280]" title={event.resource_id}>{event.resource_id.slice(0, 8)}…</span></TableCell>
-            <TableCell className={cellStyle}><OutcomeBadge outcome={event.outcome} />{event.outcome === "failed" && event.metadata.retry_scheduled === true && <span className="block mt-1 text-[#6b7280]">Retry scheduled</span>}{event.metadata.reason === "existing_result_preserved" && <span className="block mt-1 text-[#6b7280]">Existing result preserved</span>}</TableCell>
+            <TableCell className={`${cellStyle} whitespace-normal`}>{eventTitle(event.event_type)}</TableCell>
+            <TableCell className={cellStyle}><span className="block font-medium">{resourceLabel(event)}</span><span className="mt-1 block text-[#6b7280]" title={event.resource_id}>Reference: {event.resource_id.slice(0, 8)}{event.resource_id.length > 8 ? "…" : ""}</span></TableCell>
+            <TableCell className={`${cellStyle} whitespace-normal min-w-52`}><OutcomeBadge outcome={event.outcome} /><p className="mt-2 leading-5 text-[#374151]">{outcomeDescription(event)}</p>{failureDescription(event) && <p className="mt-1 leading-5 text-[#6b7280]">{failureDescription(event)}</p>}{event.outcome === "failed" && <><p className="mt-1 leading-5 text-[#6b7280]"><span className="font-medium">Failure stage: </span>{failureStage(event)}</p><p className="mt-1 leading-5 text-[#6b7280]"><span className="font-medium">Recovery: </span>{recoveryDescription(event)}</p></>}</TableCell>
             <TableCell className={cellStyle}><AuditEventDialog event={event} /></TableCell>
           </TableRow>)}
           {!loading && !error && page?.items.length === 0 && <TableRow><TableCell colSpan={6} className="px-4 py-10 text-center text-[#6b7280] text-[13px]"><History size={22} className="mx-auto mb-3 text-[#003366]" aria-hidden="true" /><p className="font-semibold text-[#003366]">No audit events match these filters.</p><p className="mt-1">Try a wider date range or reset the filters to the last 7 days.</p><Button variant="outline" className={`${secondaryStyle} mt-3`} onClick={reset}>Clear filters</Button></TableCell></TableRow>}

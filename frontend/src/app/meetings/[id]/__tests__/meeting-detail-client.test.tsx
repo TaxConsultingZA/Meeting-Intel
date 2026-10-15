@@ -4,11 +4,12 @@ import MeetingDetailClient from "../meeting-detail-client";
 import type { MeetingOut } from "@/lib/types";
 
 import { toast } from "sonner";
-import { ApiError, approveMeeting, getMeeting, getRecordingJobs, previewMeetingEmail, saveSpeakerMappings } from "@/lib/api";
+import { ApiError, approveMeeting, editActionItem, editMeetingTranscript, getMeeting, getRecordingJobs, previewMeetingEmail, saveSpeakerMappings } from "@/lib/api";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
   return { ...actual, saveSpeakerMappings: vi.fn().mockResolvedValue(undefined),
+    editActionItem: vi.fn().mockResolvedValue(undefined), editMeetingTranscript: vi.fn().mockResolvedValue(undefined),
     approveMeeting: vi.fn(), getMeeting: vi.fn(), previewMeetingEmail: vi.fn(), getRecordingJobs: vi.fn().mockResolvedValue([]) };
 });
 
@@ -128,7 +129,7 @@ it("shows existing edit and final approval controls for an Admin projection", as
 
   expect(screen.getByText("Discussed")).toBeInTheDocument();
   expect(screen.getByText("2026-07-15")).toBeInTheDocument();
-  expect(screen.queryByText("Original spoken deadline")).not.toBeInTheDocument();
+  expect(screen.getByText("Original wording: Original spoken deadline")).toBeInTheDocument();
   expect(screen.getByText("Existing transcript", { exact: false })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
@@ -209,6 +210,172 @@ const approvalMeeting: MeetingOut = {
   edit_access_requests: [], speaker_candidates: [], speaker_mappings: {}, speaker_sample_labels: [],
 };
 
+it("shows the stored summary near the top without substituting objective data or interpreting HTML", () => {
+  const summary = "Budget approved.\n<em>Follow up next week.</em>";
+  render(<MeetingDetailClient meeting={{ ...approvalMeeting, summary, extracted_json: { objective: "Separate objective" } }} upn="owner@example.com" accessToken="token" />);
+  const summaryHeading = screen.getByRole("heading", { name: "Meeting Summary" });
+  const objectiveHeading = screen.getByRole("heading", { name: "Meeting Objective" });
+  expect(summaryHeading.compareDocumentPosition(objectiveHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const section = summaryHeading.parentElement!.parentElement!;
+  expect(section).toHaveTextContent("Budget approved.");
+  expect(section).toHaveTextContent("<em>Follow up next week.</em>");
+  expect(section.querySelector("em")).toBeNull();
+  expect(section).not.toHaveTextContent("Separate objective");
+  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled();
+});
+
+it.each([null, "", " \n "])("shows an honest empty state for summary %s", summary => {
+  render(<MeetingDetailClient meeting={{ ...approvalMeeting, summary, extracted_json: { objective: "Existing objective" } }} upn="owner@example.com" accessToken="token" />);
+  expect(screen.getByRole("heading", { name: "Meeting Summary" })).toBeVisible();
+  expect(screen.getByText("No meeting summary is available.")).toBeVisible();
+  expect(screen.getByText("Existing objective")).toBeVisible();
+});
+
+it.each(["queued", "failed", "cancelled"] as const)("preserves the %s screen without presenting incomplete results", state => {
+  render(<MeetingDetailClient meeting={{ ...approvalMeeting, state }} upn="owner@example.com" accessToken="token" />);
+  expect(screen.queryByRole("heading", { name: "Meeting Summary" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Approve Meeting Notes/ })).not.toBeInTheDocument();
+});
+
+const reviewAction = { id: "a1", task: "Send report", owner: "Alex", deadline_iso: null,
+  deadline_text: null, confidence: "high" as const, source_quote: "Send report", approved: false };
+
+it("keeps approval blocked until every action editor has been saved or cancelled", async () => {
+  render(<MeetingDetailClient meeting={{ ...approvalMeeting, action_items: [reviewAction, { ...reviewAction, id: "a2", task: "Book review" }] }} upn="owner@example.com" accessToken="token" />);
+  const approve = screen.getByRole("button", { name: /Approve Meeting Notes/ });
+  fireEvent.click(screen.getByRole("button", { name: "Edit action item: Send report" }));
+  fireEvent.click(screen.getByRole("button", { name: "Edit action item: Book review" }));
+  expect(approve).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Preview Email" })).toBeDisabled();
+  expect(screen.getByText(/Save or discard your changes/)).toBeVisible();
+  fireEvent.click(within(screen.getByRole("form", { name: "Edit action item: Send report" })).getByRole("button", { name: "Cancel" }));
+  expect(approve).toBeDisabled();
+  const remaining = screen.getByRole("form", { name: "Edit action item: Book review" });
+  fireEvent.change(within(remaining).getByLabelText("Task (required)"), { target: { value: "Book final review" } });
+  fireEvent.click(within(remaining).getByRole("button", { name: "Save changes" }));
+  await waitFor(() => expect(approve).toBeEnabled());
+  expect(approveMeeting).not.toHaveBeenCalled();
+});
+
+it("blocks approval during action saves and preserves the block on save failure", async () => {
+  let fail!: (error: Error) => void;
+  vi.mocked(editActionItem).mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
+  render(<MeetingDetailClient meeting={{ ...approvalMeeting, action_items: [reviewAction] }} upn="owner@example.com" accessToken="token" />);
+  fireEvent.click(screen.getByRole("button", { name: "Edit action item: Send report" }));
+  fireEvent.change(screen.getByLabelText("Task (required)"), { target: { value: "Send final report" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeDisabled();
+  fail(new Error("Offline"));
+  expect(await screen.findByText(/Your edits are kept/)).toBeVisible();
+  expect(screen.getByLabelText("Task (required)")).toHaveValue("Send final report");
+  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled();
+});
+
+it("blocks transcript drafts and pending saves, retaining failed drafts for retry", async () => {
+  let fail!: (error: Error) => void;
+  vi.mocked(editMeetingTranscript).mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
+  render(<MeetingDetailClient meeting={{ ...approvalMeeting, transcript: "Original transcript" }} upn="owner@example.com" accessToken="token" />);
+  fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+  const approve = screen.getByRole("button", { name: /Approve Meeting Notes/ });
+  expect(approve).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Meeting transcript"), { target: { value: "Reviewed transcript" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save transcript" }));
+  expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  expect(screen.getByLabelText("Meeting transcript")).toBeDisabled();
+  expect(approve).toBeDisabled();
+  fail(new Error("Offline"));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save transcript" })).toBeEnabled());
+  expect(screen.getByLabelText("Meeting transcript")).toHaveValue("Reviewed transcript");
+  expect(approve).toBeDisabled();
+  vi.mocked(editMeetingTranscript).mockResolvedValueOnce(undefined);
+  fireEvent.click(screen.getByRole("button", { name: "Save transcript" }));
+  await waitFor(() => expect(approve).toBeEnabled());
+  expect(screen.queryByLabelText("Meeting transcript")).not.toBeInTheDocument();
+  expect(editMeetingTranscript).toHaveBeenLastCalledWith(approvalMeeting.id, "Reviewed transcript", "token");
+});
+
+it("allows cancelling a transcript draft without saving it", () => {
+  render(<MeetingDetailClient meeting={{ ...approvalMeeting, transcript: "Original transcript" }} upn="owner@example.com" accessToken="token" />);
+  fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+  fireEvent.change(screen.getByLabelText("Meeting transcript"), { target: { value: "Unsaved" } });
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled();
+  expect(screen.getByText("Original transcript")).toBeVisible();
+  expect(editMeetingTranscript).not.toHaveBeenCalled();
+});
+
+it("blocks unsaved speaker names, pending saves, and failed saves", async () => {
+  let fail!: (error: Error) => void;
+  vi.mocked(saveSpeakerMappings).mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
+  render(<MeetingDetailClient meeting={{ ...approvalMeeting, transcript: "[Speaker A] Hello",
+    speaker_candidates: [{ upn: "owner@example.com", email: "owner@example.com", display_name: "Owner" }] }} upn="owner@example.com" accessToken="token" />);
+  const speaker = screen.getByLabelText("Name for Speaker A");
+  const approve = screen.getByRole("button", { name: /Approve Meeting Notes/ });
+  fireEvent.change(speaker, { target: { value: "owner@example.com" } });
+  expect(approve).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Preview Email" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Save speaker names" }));
+  expect(speaker).toBeDisabled();
+  expect(approve).toBeDisabled();
+  fail(new Error("Offline"));
+  await waitFor(() => expect(speaker).toBeEnabled());
+  expect(speaker).toHaveValue("owner@example.com");
+  expect(approve).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Save speaker names" }));
+  await waitFor(() => expect(approve).toBeEnabled());
+});
+
+it.each(["action", "transcript", "speaker"])("requires a fresh preview after %s edits even if discarded", async kind => {
+  await openReviewedApproval({ ...approvalMeeting, action_items: [reviewAction], transcript: "[Speaker A] Hello",
+    speaker_candidates: [{ upn: "owner@example.com", email: "owner@example.com", display_name: "Owner" }] });
+  fireEvent.click(screen.getByRole("button", { name: "Close Preview" }));
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Approve Meeting Notes" })).getByRole("button", { name: "Cancel" }));
+  if (kind === "action") {
+    fireEvent.click(screen.getByRole("button", { name: "Edit action item: Send report" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  } else if (kind === "transcript") {
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  } else {
+    fireEvent.change(screen.getByLabelText("Name for Speaker A"), { target: { value: "owner@example.com" } });
+    fireEvent.change(screen.getByLabelText("Name for Speaker A"), { target: { value: "" } });
+  }
+  fireEvent.click(screen.getByRole("button", { name: /Approve Meeting Notes/ }));
+  expect(screen.getByRole("button", { name: "Approve Meeting Notes" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Review Email Preview" }));
+  await screen.findByRole("dialog", { name: "Email Preview" });
+  fireEvent.click(screen.getByRole("button", { name: "Close Preview" }));
+  expect(screen.getByRole("button", { name: "Approve Meeting Notes" })).toBeEnabled();
+});
+
+it.each(["approved", "sent"] as const)("keeps %s messaging consistent even when edit permission is present", state => {
+  const meeting: MeetingOut = { ...approvalMeeting, state, transcript: "[Speaker A] Follow up",
+    action_items: [{ id: "flagged", task: "Follow up", owner: null, deadline_iso: null,
+      deadline_text: "Friday", confidence: "low", source_quote: "Follow up", approved: true }] };
+  render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="token" />);
+  expect(screen.getByText("Meeting notes are approved. Editing is locked after approval.")).toBeVisible();
+  expect(screen.getByText("Approved with review flags")).toBeVisible();
+  expect(screen.queryByText("Requires review")).not.toBeInTheDocument();
+  expect(screen.queryByText(/full edit access/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Speaker names can be changed/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Approve Meeting Notes|Edit action item:/ })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Name for Speaker A")).toBeDisabled();
+});
+
+it("keeps editing and approval available while awaiting review", () => {
+  render(<MeetingDetailClient meeting={{ ...approvalMeeting,
+    action_items: [{ id: "flagged", task: "Follow up", owner: null, deadline_iso: null,
+      deadline_text: null, confidence: "low", source_quote: null, approved: false }] }}
+    upn="owner@example.com" accessToken="token" />);
+  expect(screen.getByText("Requires review")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Edit action item: Follow up" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled();
+  expect(screen.queryByText("Approved with review flags")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Editing is locked/)).not.toBeInTheDocument();
+});
+
 async function openReviewedApproval(meeting = approvalMeeting) {
   vi.mocked(previewMeetingEmail).mockResolvedValue({ subject: "Final notes", html: "<p>Exact email content</p>", recipients: meeting.email_recipients, fingerprint: "fingerprint" });
   render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="token" />);
@@ -253,7 +420,7 @@ it("prevents duplicate approval and freezes confirmation while submitting", asyn
   resolve({ ok: true, state: "sent" });
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Approve Meeting Notes" })).not.toBeInTheDocument());
   expect(screen.getByRole("status", { name: "Meeting approval status" })).toHaveTextContent("Email submission accepted");
-  expect(screen.getByRole("status", { name: "Meeting approval status" })).toHaveTextContent("Delivery to inboxes is not confirmed");
+  expect(screen.getByRole("status", { name: "Meeting approval status" })).toHaveTextContent("Delivery confirmation is not available");
 });
 
 it.each([

@@ -14,12 +14,21 @@ function setup(action = item, canEdit = true, transcript: string | null = "[Spea
 }
 function edit() { fireEvent.click(screen.getByRole("button", { name: /Edit action item:/ })); }
 
+it("reports open editors and clears their approval block when removed", () => {
+  const onEditingChange = vi.fn();
+  const view = render(<ActionItemReview items={[item]} accessToken="token" canEdit onUpdate={vi.fn()} onEditingChange={onEditingChange} />);
+  edit();
+  expect(onEditingChange).toHaveBeenLastCalledWith(item.id, true);
+  view.rerender(<ActionItemReview items={[]} accessToken="token" canEdit onUpdate={vi.fn()} onEditingChange={onEditingChange} />);
+  expect(onEditingChange).toHaveBeenLastCalledWith(item.id, false);
+});
+
 it("flags missing details and low confidence without changing results", () => {
   setup({ ...item, owner: null, deadline_iso: null, deadline_text: null, confidence: "low" });
   expect(screen.getByText(/1 with review flags/)).toBeInTheDocument();
   expect(screen.getByText("Requires review")).toBeInTheDocument();
   expect(screen.getAllByText("Missing owner")).toHaveLength(2);
-  expect(screen.getAllByText("Missing deadline")).toHaveLength(2);
+  expect(screen.getAllByText("Missing due date")).toHaveLength(2);
   expect(screen.getByText("Low confidence")).toBeInTheDocument();
   expect(editActionItem).not.toHaveBeenCalled();
 });
@@ -29,7 +38,7 @@ it("saves all four fields through the existing partial update contract", async (
   const updated = setup(); edit();
   fireEvent.change(screen.getByLabelText("Task (required)"), { target: { value: "  Send final report  " } });
   fireEvent.change(screen.getByLabelText("Owner"), { target: { value: " Bob " } });
-  fireEvent.change(screen.getByLabelText("Deadline"), { target: { value: "2026-10-15" } });
+  fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2026-10-15" } });
   fireEvent.change(screen.getByLabelText("Confidence"), { target: { value: "medium" } });
   fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
   await waitFor(() => expect(updated).toHaveBeenCalledWith({ ...item, task: "Send final report", owner: "Bob", deadline_iso: "2026-10-15", confidence: "medium" }));
@@ -38,7 +47,7 @@ it("saves all four fields through the existing partial update contract", async (
 
 it("rejects blank tasks and accidental clearing of populated fields", () => {
   setup(); edit();
-  for (const label of ["Task (required)", "Owner", "Deadline"]) fireEvent.change(screen.getByLabelText(label), { target: { value: "" } });
+  for (const label of ["Task (required)", "Owner", "Due date"]) fireEvent.change(screen.getByLabelText(label), { target: { value: "" } });
   fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
   expect(screen.getAllByRole("alert")).toHaveLength(3);
   expect(screen.getByLabelText("Task (required)")).toHaveAttribute("aria-invalid", "true");
@@ -91,4 +100,22 @@ it.each([null, "Changed transcript"])("explains unavailable or unmatched transcr
 it("shows an explicit missing evidence message", () => {
   setup({ ...item, source_quote: null });
   expect(screen.getByText("No source evidence provided.")).toBeInTheDocument();
+});
+
+it("preserves the spoken deadline beside the resolved due date", () => {
+  setup();
+  expect(screen.getByRole("columnheader", { name: "Due date" })).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Owner" })).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Confidence" })).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Source evidence" })).toBeInTheDocument();
+  expect(screen.getByText("2026-10-12")).toBeInTheDocument();
+  expect(screen.getByText("Original wording: Monday")).toBeInTheDocument();
+  expect(screen.queryByText("Due date not resolved")).not.toBeInTheDocument();
+});
+
+it.each(["Friday", "next week"])("does not imply a resolved date for %s", deadline_text => {
+  setup({ ...item, deadline_iso: null, deadline_text });
+  expect(screen.getByText("Due date not resolved")).toBeInTheDocument();
+  expect(screen.getByText(`Original wording: ${deadline_text}`)).toBeInTheDocument();
+  expect(screen.getByText(/original meeting, not today/)).toBeInTheDocument();
 });

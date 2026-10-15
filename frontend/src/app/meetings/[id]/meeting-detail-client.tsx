@@ -60,7 +60,7 @@ function mappingForLabel(mappings: Record<string, string | null>, label: string)
 
 function approvalStatusMessage(state: string, recipientCount: number): string {
   return state === "sent"
-    ? `Meeting notes approved. Email submission accepted for ${recipientCount} selected recipient(s). Delivery to inboxes is not confirmed here. If the email does not arrive, ask an administrator to check mail delivery before resending.`
+    ? `Meeting notes approved. Email submission accepted for ${recipientCount} selected recipient(s). Delivery confirmation is not available. If the email does not arrive, ask an administrator to check mail delivery before resending.`
     : "Meeting notes approved. No email was submitted. No further approval action is needed.";
 }
 
@@ -94,6 +94,9 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
     JSON.stringify(emailPreview.recipients);
   const [transcriptDraft, setTranscriptDraft] = useState(initial.transcript ?? "");
   const [editingTranscript, setEditingTranscript] = useState(false);
+  const [savingTranscript, setSavingTranscript] = useState(false);
+  const transcriptSaveInFlight = useRef(false);
+  const [editingActionItems, setEditingActionItems] = useState<Record<string, boolean>>({});
   const [speakerMappings, setSpeakerMappings] = useState<Record<string, string | null>>(initial.speaker_mappings ?? {});
   const [savingSpeakerMappings, setSavingSpeakerMappings] = useState(false);
   const [savingAccess, setSavingAccess] = useState(false);
@@ -109,11 +112,14 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const data = meeting.extracted_json ?? {};
   const isTranscriptOnly = data.extraction_mode === "transcript_only";
   const isReviewable = meeting.state === "awaiting_review";
+  const isApproved = meeting.state === "approved" || meeting.state === "sent";
   const isOrganizer = meeting.is_organizer ?? meeting.organizer_upn?.toLowerCase() === upn.toLowerCase();
   const canApprove = meeting.can_approve ?? isOrganizer;
   const canEdit = isReviewable && (meeting.can_edit || isOrganizer);
   const editAccessStatus = meeting.edit_access_status as string;
-  const accessStatusMessage = isOrganizer || editAccessStatus === "organizer"
+  const accessStatusMessage = isApproved
+    ? "Meeting notes are approved. Editing is locked after approval."
+    : isOrganizer || editAccessStatus === "organizer"
     ? "You are the meeting organiser and have full edit access."
     : editAccessStatus === "pending"
       ? "Edit access request pending. The meeting organiser will review it."
@@ -128,6 +134,13 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const speakerMappingsChanged = speakerLabels.some(
     (label) => mappingForLabel(speakerMappings, label) !== mappingForLabel(meeting.speaker_mappings, label),
   );
+  const reviewChangesPending = editingTranscript || savingTranscript || speakerMappingsChanged ||
+    savingSpeakerMappings || Object.values(editingActionItems).some(Boolean);
+  const reviewControlsBusy = approving || previewingEmail;
+  const handleActionEditingChange = useCallback((id: string, editing: boolean) => {
+    setEditingActionItems(current => current[id] === editing ? current : { ...current, [id]: editing });
+    if (editing) setEmailPreview(null);
+  }, []);
   const reviewDrafts = useRef({ speakerMappingsChanged, editingTranscript });
   useEffect(() => {
     reviewDrafts.current = { speakerMappingsChanged, editingTranscript };
@@ -161,7 +174,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   }, [isProcessing, refreshMeetingStatus]);
 
   async function handleApprove() {
-    if (approvalInFlight.current || !emailPreview || !previewMatchesRecipients) return;
+    if (approvalInFlight.current || reviewChangesPending || !emailPreview || !previewMatchesRecipients) return;
     approvalInFlight.current = true;
     setApproving(true);
     setApprovalFeedback(null);
@@ -209,6 +222,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   }
 
   async function handleEditItem(updated: ActionItemOut) {
+    setEmailPreview(null);
     setMeeting((m) => ({
       ...m,
       action_items: m.action_items.map((a) => (a.id === updated.id ? updated : a)),
@@ -216,7 +230,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   }
 
   async function handlePreviewEmail() {
-    if (previewInFlight.current || approvalInFlight.current) return;
+    if (previewInFlight.current || approvalInFlight.current || reviewChangesPending) return;
     previewInFlight.current = true;
     setPreviewingEmail(true);
     try {
@@ -251,7 +265,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
     setSendingSelfCopy(true);
     try {
       const result = await sendMeetingCopyToSelf(meeting.id, upn, accessToken);
-      toast.success(result.sent ? `A copy was sent to ${upn}.` : "Email delivery is disabled in this environment.");
+      toast.success(result.sent ? `Email submission accepted for ${upn}. Delivery confirmation is not available.` : "Email sending is disabled in this environment. No email was submitted.");
     } catch (error) {
       toast.error(`Copy failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -275,22 +289,31 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   }
 
   async function handleSaveTranscript() {
+    if (transcriptSaveInFlight.current || reviewControlsBusy) return;
+    transcriptSaveInFlight.current = true;
+    setSavingTranscript(true);
+    const savedTranscript = transcriptDraft;
     try {
-      await editMeetingTranscript(meeting.id, transcriptDraft, accessToken);
-      setMeeting((current) => ({ ...current, transcript: transcriptDraft }));
+      await editMeetingTranscript(meeting.id, savedTranscript, accessToken);
+      setMeeting((current) => ({ ...current, transcript: savedTranscript }));
+      setEmailPreview(null);
       setEditingTranscript(false);
       toast.success("Transcript saved.");
     } catch (e) {
       toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      transcriptSaveInFlight.current = false;
+      setSavingTranscript(false);
     }
   }
 
   async function handleSaveSpeakerMappings() {
-    if (savingSpeakerMappings || !speakerMappingsChanged) return;
+    if (savingSpeakerMappings || !speakerMappingsChanged || reviewControlsBusy) return;
     setSavingSpeakerMappings(true);
     try {
       await saveSpeakerMappings(meeting.id, speakerMappings, accessToken);
       setMeeting((current) => ({ ...current, speaker_mappings: speakerMappings }));
+      setEmailPreview(null);
       toast.success("Speaker names saved.");
     } catch (e) {
       toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -401,11 +424,14 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               <button
                 type="button"
                 onClick={() => setShowModal(true)}
-                className="w-full bg-[#C9A52C] hover:bg-[#e8c84a] text-[#003366] font-bold py-2.5 rounded-md text-[13.5px] transition-colors"
+                disabled={reviewChangesPending || reviewControlsBusy}
+                aria-describedby={reviewChangesPending ? "review-changes-help" : undefined}
+                className="w-full bg-[#C9A52C] hover:bg-[#e8c84a] text-[#003366] font-bold py-2.5 rounded-md text-[13.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-60"
               >
                 ✓ Approve Meeting Notes
               </button>
             )}
+            {isReviewable && reviewChangesPending && <p id="review-changes-help" role="status" className="text-xs text-amber-900">Save or discard your changes before previewing or approving meeting notes. Wait for any saves to finish.</p>}
             {canSendSelfCopy && (
               <button
                 type="button"
@@ -419,7 +445,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             <button
               type="button"
               onClick={handlePreviewEmail}
-              disabled={previewingEmail || approving || isProcessing}
+              disabled={previewingEmail || approving || isProcessing || reviewChangesPending}
               className="w-full border border-[#dde1e8] hover:border-[#003366] text-[#003366] font-semibold py-2 rounded-md text-[12.5px] transition-colors disabled:opacity-50"
             >
               {previewingEmail ? "Preparing preview…" : "Preview Email"}
@@ -463,6 +489,11 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               extraction are currently disabled while the company selects an AI provider.
             </div>
           )}
+          <Section title="Meeting Summary">
+            {meeting.summary?.trim()
+              ? <p className="whitespace-pre-wrap break-words text-[13.5px] leading-7 text-[#1a1a2e]">{meeting.summary}</p>
+              : <p className="text-sm text-[#6b7280]">No meeting summary is available.</p>}
+          </Section>
           {data.objective && (
             <Section title="Meeting Objective">
               <p className="text-[13.5px] text-[#1a1a2e] leading-7">{data.objective}</p>
@@ -495,14 +526,16 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           {!isTranscriptOnly && (
             <Section
               title="Action Items"
-              hint={canEdit ? "Review evidence and edit action details" : "Read-only · existing edit access applies"}
+              hint={isApproved ? "Read-only · editing is locked after approval" : canEdit ? "Review evidence and edit action details" : "Read-only · edit access is required"}
             >
               <ActionItemReview
                 items={meeting.action_items}
                 accessToken={accessToken}
                 transcript={meeting.transcript}
-                canEdit={canEdit}
+                canEdit={canEdit && !reviewControlsBusy}
+                isApproved={isApproved}
                 onUpdate={handleEditItem}
+                onEditingChange={handleActionEditingChange}
               />
             </Section>
           )}
@@ -549,7 +582,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           )}
 
           {speakerLabels.length > 0 && (
-            <Section title="Speaker Names" hint={canEdit ? "Match each detected voice to an Outlook attendee" : "Speaker names can be changed by approved editors"}>
+            <Section title="Speaker Names" hint={isApproved ? "Read-only · editing is locked after approval" : canEdit ? "Match each detected voice to an Outlook attendee" : "Speaker names can be changed by approved editors"}>
               <div className="space-y-3.5">
                 {speakerLabels.map((label) => (
                   <div key={label} className="grid items-center gap-2.5 rounded-md border border-[#edf0f4] bg-[#fafbfc] px-3 py-2.5 xl:grid-cols-[minmax(120px,180px)_120px_minmax(0,1fr)]">
@@ -565,9 +598,9 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                     </div>
                     <select
                       aria-label={`Name for ${label}`}
-                      disabled={!canEdit}
+                      disabled={!canEdit || savingSpeakerMappings || reviewControlsBusy}
                       value={mappingForLabel(speakerMappings, label) ?? ""}
-                      onChange={(event) => setSpeakerMappings((current) => ({ ...current, [label]: event.target.value || null }))}
+                      onChange={(event) => { setEmailPreview(null); setSpeakerMappings((current) => ({ ...current, [label]: event.target.value || null })); }}
                       className="h-9 min-w-0 rounded-md border border-[#cfd6df] bg-white px-3 text-sm text-[#1a1a2e] disabled:bg-[#f3f4f6] disabled:text-[#6b7280]"
                     >
                       <option value="">Unknown / Guest</option>
@@ -586,7 +619,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                   <button
                     type="button"
                     onClick={handleSaveSpeakerMappings}
-                    disabled={!speakerMappingsChanged || savingSpeakerMappings}
+                    disabled={!speakerMappingsChanged || savingSpeakerMappings || reviewControlsBusy}
                     className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[#003366] px-4 text-sm font-semibold text-white transition-colors hover:bg-[#0a4a8c] disabled:cursor-not-allowed disabled:bg-[#aeb9c5]"
                   >
                     {savingSpeakerMappings && <Loader2 size={14} className="animate-spin" />}
@@ -601,15 +634,15 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             <Section title="Transcript">
               {editingTranscript ? (
                 <div className="space-y-2">
-                  <textarea value={transcriptDraft} onChange={(event) => setTranscriptDraft(event.target.value)} className="min-h-80 w-full rounded-md border border-[#dde1e8] p-4 text-[13px] leading-6" />
+                  <textarea aria-label="Meeting transcript" disabled={savingTranscript || reviewControlsBusy} value={transcriptDraft} onChange={(event) => setTranscriptDraft(event.target.value)} className="min-h-80 w-full rounded-md border border-[#dde1e8] p-4 text-[13px] leading-6" />
                   <div className="flex gap-2">
-                    <button onClick={handleSaveTranscript} className="rounded-md bg-[#003366] px-4 py-2 text-sm font-semibold text-white">Save transcript</button>
-                    <button onClick={() => { setTranscriptDraft(meeting.transcript ?? ""); setEditingTranscript(false); }} className="rounded-md border px-4 py-2 text-sm">Cancel</button>
+                    <button disabled={savingTranscript || reviewControlsBusy} onClick={handleSaveTranscript} className="rounded-md bg-[#003366] px-4 py-2 text-sm font-semibold text-white">{savingTranscript ? "Saving transcript…" : "Save transcript"}</button>
+                    <button disabled={savingTranscript || reviewControlsBusy} onClick={() => { setTranscriptDraft(meeting.transcript ?? ""); setEditingTranscript(false); }} className="rounded-md border px-4 py-2 text-sm">Cancel</button>
                   </div>
                 </div>
               ) : (
                 <div className="relative max-h-96 overflow-y-auto rounded-md border border-[#dde1e8] bg-[#fafbfc] p-4">
-                  {canEdit && <button onClick={() => setEditingTranscript(true)} className="absolute right-3 top-3 rounded border bg-white px-2 py-1 text-xs font-semibold text-[#003366]">Edit</button>}
+                  {canEdit && <button disabled={reviewControlsBusy} onClick={() => { setEmailPreview(null); setEditingTranscript(true); }} className="absolute right-3 top-3 rounded border bg-white px-2 py-1 text-xs font-semibold text-[#003366]">Edit</button>}
                   <pre className="whitespace-pre-wrap pr-12 font-sans text-[13px] leading-6 text-[#374151]">{meeting.transcript}</pre>
                 </div>
               )}
@@ -696,7 +729,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           {approvalFeedback && <p role="alert" className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">{approvalFeedback}</p>}
           {approving && <p role="status" aria-live="polite" className="flex items-center gap-2 text-sm text-[#003366]"><Loader2 size={16} aria-hidden="true" className="animate-spin" />Submitting approval{recipients.length ? " and requesting email submission" : ""}… Keep this page open while we check the result.</p>}
           <DialogFooter>
-            <button type="button" onClick={handlePreviewEmail} disabled={previewingEmail || approving}
+            <button type="button" onClick={handlePreviewEmail} disabled={previewingEmail || approving || reviewChangesPending}
               className="border border-[#dde1e8] text-[#003366] px-4 py-2 rounded-md text-sm font-semibold">
               {previewingEmail ? "Preparing preview…" : "Review Email Preview"}
             </button>
@@ -712,7 +745,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             <button
               type="button"
               onClick={handleApprove}
-              disabled={approving || previewingEmail || !previewMatchesRecipients}
+              disabled={approving || previewingEmail || reviewChangesPending || !previewMatchesRecipients}
               className="inline-flex items-center justify-center gap-2 bg-[#C9A52C] hover:bg-[#e8c84a] text-[#003366] px-5 py-2 rounded-md text-sm font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#003366]"
             >
               {approving && <Loader2 size={16} aria-hidden="true" className="animate-spin" />}{approving ? "Submitting approval…" : "Approve Meeting Notes"}

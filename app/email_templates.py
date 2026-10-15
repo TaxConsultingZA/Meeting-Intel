@@ -5,6 +5,7 @@ Brand colours: Navy #003366 | Gold #C9A52C | White | Light grey
 """
 from __future__ import annotations
 from datetime import datetime, timezone
+from html import escape
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -23,6 +24,20 @@ _TH_TEXT = "#FFFFFF"
 _ROW_ALT = "#EEF2F7"
 
 
+def _text(value: str | None) -> str:
+    """Escape a plain-text value exactly once at its HTML insertion point."""
+    return escape(value or "", quote=True)
+
+
+def _meeting_date(meeting: "Meeting") -> str:
+    recorded_at = getattr(meeting, "recorded_at", None)
+    if not isinstance(recorded_at, datetime):
+        return "Not available"
+    if recorded_at.tzinfo is None:
+        recorded_at = recorded_at.replace(tzinfo=timezone.utc)
+    return recorded_at.astimezone(timezone.utc).strftime("%d %B %Y")
+
+
 def _section_heading(title: str) -> str:
     """Render a gold-left-bordered section heading row for use inside the email table."""
     return f"""
@@ -33,7 +48,7 @@ def _section_heading(title: str) -> str:
             <td style="border-left:4px solid {_GOLD};padding-left:12px;
                 font-size:15px;font-weight:700;color:{_NAVY};
                 font-family:Arial,sans-serif;letter-spacing:0.3px;">
-              {title}
+              {_text(title)}
             </td>
           </tr>
           <tr>
@@ -46,11 +61,11 @@ def _section_heading(title: str) -> str:
 
 def _th(text: str, width: str = "") -> str:
     """Render a navy-background table header ``<td>`` with optional fixed width."""
-    w = f'width="{width}"' if width else ""
+    w = f'width="{_text(width)}"' if width else ""
     return (
         f'<td {w} style="background:{_TH_BG};color:{_TH_TEXT};font-size:12px;'
         f'font-weight:700;padding:9px 12px;font-family:Arial,sans-serif;'
-        f'border:1px solid {_NAVY};">{text}</td>'
+        f'border:1px solid {_NAVY};">{_text(text)}</td>'
     )
 
 
@@ -61,7 +76,7 @@ def _td(text: str, alt: bool = False, bold: bool = False) -> str:
     """
     bg     = _ROW_ALT if alt else _WHITE
     weight = "600" if bold else "400"
-    val    = text if text else "<span style='color:#AAAAAA;'>—</span>"
+    val    = _text(text) if text else "<span style='color:#AAAAAA;'>—</span>"
     return (
         f'<td style="background:{bg};color:{_TEXT};font-size:13px;'
         f'font-weight:{weight};padding:8px 12px;font-family:Arial,sans-serif;'
@@ -75,12 +90,12 @@ def _detail_table(rows: list[tuple[str, str]]) -> str:
     for i, (label, value) in enumerate(rows):
         alt = i % 2 == 1
         bg  = _ROW_ALT if alt else _WHITE
-        val = value if value else "<span style='color:#AAAAAA;'>—</span>"
+        val = _text(value) if value else "<span style='color:#AAAAAA;'>—</span>"
         html += f"""
         <tr>
           <td width="180" style="background:{bg};font-size:13px;font-weight:700;
               color:{_NAVY};padding:8px 12px;border:1px solid {_BORDER};
-              font-family:Arial,sans-serif;vertical-align:top;">{label}</td>
+              font-family:Arial,sans-serif;vertical-align:top;">{_text(label)}</td>
           <td style="background:{bg};font-size:13px;color:{_TEXT};
               padding:8px 12px;border:1px solid {_BORDER};
               font-family:Arial,sans-serif;vertical-align:top;">{val}</td>
@@ -102,7 +117,7 @@ def build_welcome_email(upn: str, display_name: str | None, business_unit: str |
                         app_url: str) -> tuple[str, str]:
     """Return (subject, html_body) for the registration welcome / invitation email."""
     name = display_name or upn.split("@")[0].replace(".", " ").title()
-    bu_line = f"<strong>{business_unit}</strong>" if business_unit else "your business unit"
+    bu_line = f"<strong>{_text(business_unit)}</strong>" if business_unit else "your business unit"
     subject = "You've been registered on Meeting Intelligence"
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -132,7 +147,7 @@ def build_welcome_email(upn: str, display_name: str | None, business_unit: str |
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr>
           <td style="font-size:15px;color:{_TEXT};font-family:Arial,sans-serif;line-height:1.8;padding-bottom:24px;">
-            Hi <strong>{name}</strong>,<br><br>
+            Hi <strong>{_text(name)}</strong>,<br><br>
             Your account has been registered on the <strong>TaxConsulting SA Meeting Intelligence</strong>
             platform under {bu_line}.<br><br>
             From now on, your recorded Microsoft Teams meetings will be automatically transcribed,
@@ -143,7 +158,7 @@ def build_welcome_email(upn: str, display_name: str | None, business_unit: str |
         <!-- CTA -->
         <tr>
           <td align="center" style="padding:8px 0 28px 0;">
-            <a href="{app_url}"
+            <a href="{_text(app_url)}"
                style="display:inline-block;background:{_GOLD};color:{_NAVY};font-weight:700;
                       font-size:15px;padding:14px 32px;border-radius:6px;
                       text-decoration:none;font-family:Arial,sans-serif;letter-spacing:0.3px;">
@@ -208,7 +223,7 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
 
     title      = (meeting.title or "Meeting Recording").replace(".mp4", "").strip()
     organizer  = meeting.organizer_upn or ""
-    today      = datetime.now(timezone.utc).strftime("%d %B %Y")
+    meeting_date = _meeting_date(meeting)
     data       = meeting.extracted_json or {}
 
     # ── pull structured data ──────────────────────────────────────────────────
@@ -240,7 +255,7 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
                 f'<tr><td style="padding:3px 0 3px 0;font-size:13px;color:#1A1A1A;'
                 f'font-family:Arial,sans-serif;line-height:1.6;">'
                 f'<span style="color:{_GOLD};font-weight:700;padding-right:6px;">&#8226;</span>'
-                f'{pt}</td></tr>'
+                f'{_text(pt)}</td></tr>'
                 for pt in points
             ) or f'<tr><td style="font-size:12px;color:#AAAAAA;font-style:italic;font-family:Arial,sans-serif;">No key points captured</td></tr>'
             cards += f"""
@@ -250,9 +265,9 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
                 <tr>
                   <td style="background:{col};padding:10px 14px;">
                     <p style="margin:0;font-size:13px;font-weight:700;color:{_WHITE};
-                        font-family:Arial,sans-serif;">{speaker}</p>
+                        font-family:Arial,sans-serif;">{_text(speaker)}</p>
                     <p style="margin:2px 0 0 0;font-size:11px;color:rgba(255,255,255,0.7);
-                        font-family:Arial,sans-serif;">{role}</p>
+                        font-family:Arial,sans-serif;">{_text(role)}</p>
                   </td>
                 </tr>
                 <tr>
@@ -282,7 +297,7 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
                     f'<tr><td style="padding:3px 0;font-size:13px;color:#1A1A1A;'
                     f'font-family:Arial,sans-serif;line-height:1.6;">'
                     f'<span style="color:{_GOLD};font-weight:700;padding-right:6px;">&#8226;</span>'
-                    f'{pt}</td></tr>'
+                    f'{_text(pt)}</td></tr>'
                     for pt in points
                 ) or f'<tr><td style="font-size:12px;color:#AAAAAA;font-style:italic;">No key points</td></tr>'
                 row_cells += f"""
@@ -290,8 +305,8 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
                   <table width="100%" cellpadding="0" cellspacing="0" border="0"
                          style="border-top:3px solid {col};background:#F8F9FA;">
                     <tr><td style="background:{col};padding:10px 14px;">
-                      <p style="margin:0;font-size:13px;font-weight:700;color:{_WHITE};font-family:Arial,sans-serif;">{speaker}</p>
-                      <p style="margin:2px 0 0;font-size:11px;color:rgba(255,255,255,0.7);font-family:Arial,sans-serif;">{role}</p>
+                      <p style="margin:0;font-size:13px;font-weight:700;color:{_WHITE};font-family:Arial,sans-serif;">{_text(speaker)}</p>
+                      <p style="margin:2px 0 0;font-size:11px;color:rgba(255,255,255,0.7);font-family:Arial,sans-serif;">{_text(role)}</p>
                     </td></tr>
                     <tr><td style="padding:10px 14px;">
                       <table width="100%" cellpadding="0" cellspacing="2" border="0">{pts_html2}</table>
@@ -408,7 +423,7 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
         ns_items = "".join(
             f'<tr><td style="padding:5px 0;font-size:13px;color:{_TEXT};'
             f'font-family:Arial,sans-serif;">'
-            f'<span style="color:{_GOLD};font-weight:700;padding-right:8px;">&#8226;</span>{step}'
+            f'<span style="color:{_GOLD};font-weight:700;padding-right:8px;">&#8226;</span>{_text(step)}'
             f'</td></tr>'
             for step in next_steps
         )
@@ -444,7 +459,7 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
             </p>
             <h1 style="margin:0;font-size:20px;font-weight:700;color:{_WHITE};
                 line-height:1.35;font-family:Arial,sans-serif;">
-              {title}
+              {_text(title)}
             </h1>
           </td>
         </tr>
@@ -473,7 +488,7 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
           <td style="padding-top:12px;padding-bottom:4px;">
             {_detail_table([
                 ("Meeting Title",    title),
-                ("Date",            today),
+                ("Date (UTC)",      meeting_date),
                 ("Time",            meeting_time),
                 ("Platform / Venue", platform),
                 ("Organiser",       organizer),
@@ -488,7 +503,7 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
         <tr>
           <td style="padding:12px 0 4px 0;font-size:13px;color:{_TEXT};
               line-height:1.75;font-family:Arial,sans-serif;">
-            {objective or '<span style="color:#AAAAAA;font-style:italic;">Not captured</span>'}
+            {_text(objective) if objective else '<span style="color:#AAAAAA;font-style:italic;">Not captured</span>'}
           </td>
         </tr>
 

@@ -86,7 +86,7 @@ export function JobControls({ job, token, onChanged, showReprocess = false }: { 
   </div>;
 }
 
-export default function RecordingJobs({ token, meetingId, refreshKey, onChanged, onTerminalTransition }: { token: string; meetingId?: string; refreshKey?: string; onChanged?: () => void | Promise<void>; onTerminalTransition?: () => void | Promise<void> }) {
+export default function RecordingJobs({ token, meetingId, refreshKey, onChanged, onTerminalTransition, onLatestJob }: { token: string; meetingId?: string; refreshKey?: string; onChanged?: () => void | Promise<void>; onTerminalTransition?: () => void | Promise<void>; onLatestJob?: (job: RecordingJobOut | null) => void }) {
   const [jobs, setJobs] = useState<RecordingJobOut[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -118,6 +118,7 @@ export default function RecordingJobs({ token, meetingId, refreshKey, onChanged,
       }
       previousJobs.current = { token, meetingId, jobs: latestByRecording };
       setJobs(nextJobs);
+      onLatestJob?.(meetingId ? nextJobs.find(job => job.meeting_id === meetingId) ?? null : null);
       setError(null);
       if (terminalTransition) await onTerminalTransition?.();
     }
@@ -127,7 +128,7 @@ export default function RecordingJobs({ token, meetingId, refreshKey, onChanged,
     finally {
       if (version === requestVersion.current) { refreshInFlight.current = false; setRefreshing(false); setLoading(false); }
     }
-  }, [token, meetingId, onTerminalTransition]);
+  }, [token, meetingId, onTerminalTransition, onLatestJob]);
   const hasActiveJobs = jobs.some((job) =>
     job.status === "pending" || job.status === "processing" || job.processing_status === "cancel_requested"
   );

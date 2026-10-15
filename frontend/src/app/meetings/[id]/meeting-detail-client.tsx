@@ -32,6 +32,7 @@ import type {
   ActionItemOut,
   ProcessingState,
   SpeakerHighlight,
+  RecordingJobOut,
 } from "@/lib/types";
 
 const SPEAKER_COLOURS = [
@@ -83,6 +84,12 @@ interface Props {
 
 export default function MeetingDetailClient({ meeting: initial, upn, accessToken }: Props) {
   const [meeting, setMeeting] = useState(initial);
+  const [recordingStatus, setRecordingStatus] = useState<{ meetingId: string; token: string; job: RecordingJobOut | null } | null>(null);
+  const handleLatestJob = useCallback((job: RecordingJobOut | null) => {
+    setRecordingStatus({ meetingId: initial.id, token: accessToken, job });
+  }, [initial.id, accessToken]);
+  const recordingJob = recordingStatus?.meetingId === meeting.id && recordingStatus.token === accessToken
+    ? recordingStatus.job : null;
   const [approving, setApproving] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [showEmailPreview, setShowEmailPreview] = useState(false);
@@ -464,13 +471,14 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           meetingId={meeting.id}
           onChanged={refreshMeetingStatus}
           onTerminalTransition={refreshMeetingStatus}
+          onLatestJob={handleLatestJob}
         />
         </aside>
 
         {/* Main content */}
         <div className="min-w-0 flex flex-col gap-4">
           {isProcessing ? (
-            <PipelineView state={meeting.state} />
+            <PipelineView state={meeting.state} job={recordingJob} />
           ) : meeting.state === "cancelled" ? (
             <div className="rounded-lg border border-[#dde1e8] bg-white p-5"><h2 className="font-semibold text-[#003366]">Processing cancelled</h2><p className="mt-2 text-sm leading-6 text-[#6b7280]">Category: Cancelled. Any saved meeting information and transcript have been kept. Check the recording processing panel in the meeting sidebar for any recovery actions available to you.</p>{meeting.transcript && <pre className="mt-4 whitespace-pre-wrap rounded-md bg-[#fafbfc] p-4 text-sm leading-6">{meeting.transcript}</pre>}</div>
           ) : meeting.state === "failed" ? (

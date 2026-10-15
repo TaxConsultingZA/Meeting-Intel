@@ -17,6 +17,32 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
+it.each(["queued", "cancel_requested"] as const)("shares %s job status between sidebar and main panel", async processingStatus => {
+  const meeting: MeetingOut = {
+    id: "processing-meeting", title: "Processing", state: processingStatus === "queued" ? "queued" : "transcribing",
+    summary: null, transcript: null, action_items: [], extracted_json: {}, calendar_participants: [],
+    organizer_upn: "owner@example.com", email_recipients: [], approved_recipients: [],
+    is_organizer: true, can_edit: true, can_request_edit_access: false, edit_access_status: "organizer",
+    edit_access_requests: [], speaker_candidates: [], speaker_mappings: {}, speaker_sample_labels: [],
+  };
+  vi.mocked(getMeeting).mockResolvedValue(meeting);
+  vi.mocked(getRecordingJobs).mockResolvedValueOnce([{
+    job_id: "active-job", drive_item_id: "recording", meeting_id: meeting.id, title: meeting.title,
+    status: processingStatus === "queued" ? "pending" : "processing", processing_status: processingStatus,
+    phase: processingStatus, review_status: null, attempts: 0, max_attempts: 3, error: null,
+    can_retry: false, can_cancel: processingStatus === "queued", can_reprocess: false, processing_enabled: false,
+  }]);
+  render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="token" />);
+  const message = processingStatus === "queued" ? /Processing is paused for this environment/ : /Cancellation is pending. Waiting/;
+  await waitFor(() => expect(screen.getAllByText(message)).toHaveLength(2));
+  expect(screen.getByRole("heading", { name: processingStatus === "queued" ? "Processing paused" : "Cancellation pending" })).toBeVisible();
+  expect(screen.queryByText(/AssemblyAI|This meeting is being processed/)).not.toBeInTheDocument();
+  vi.mocked(getRecordingJobs).mockRejectedValueOnce(new Error("temporary refresh failure"));
+  fireEvent.click(screen.getByRole("button", { name: "Refresh status" }));
+  expect(await screen.findByText("Unable to refresh recording status")).toBeVisible();
+  expect(screen.getAllByText(message)).toHaveLength(2);
+});
+
 it("shows safe extraction failure details with the existing sidebar recovery action", async () => {
   const meeting: MeetingOut = {
     id: "failed-meeting", title: "Failure", state: "failed", summary: null, transcript: "Saved transcript",

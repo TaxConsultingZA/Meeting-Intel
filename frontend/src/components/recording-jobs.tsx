@@ -86,19 +86,22 @@ export function JobControls({ job, token, onChanged, showReprocess = false }: { 
   </div>;
 }
 
-export default function RecordingJobs({ token, meetingId, onChanged, onTerminalTransition }: { token: string; meetingId?: string; onChanged?: () => void | Promise<void>; onTerminalTransition?: () => void | Promise<void> }) {
+export default function RecordingJobs({ token, meetingId, refreshKey, onChanged, onTerminalTransition }: { token: string; meetingId?: string; refreshKey?: string; onChanged?: () => void | Promise<void>; onTerminalTransition?: () => void | Promise<void> }) {
   const [jobs, setJobs] = useState<RecordingJobOut[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const refreshInFlight = useRef(false);
+  const requestVersion = useRef(0);
   const previousJobs = useRef<{ token: string; meetingId?: string; jobs: Map<string, RecordingJobOut> } | null>(null);
   const refresh = useCallback(async () => {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
+    const version = ++requestVersion.current;
     setRefreshing(true);
     try {
       const nextJobs = await getRecordingJobs(token, meetingId);
+      if (version !== requestVersion.current) return;
       const previous = previousJobs.current;
       const sameScope = previous?.token === token && previous.meetingId === meetingId;
       const latestByRecording = new Map<string, RecordingJobOut>();
@@ -118,16 +121,26 @@ export default function RecordingJobs({ token, meetingId, onChanged, onTerminalT
       setError(null);
       if (terminalTransition) await onTerminalTransition?.();
     }
-    catch { setError("We could not load the latest recording status. Refresh to try again; if this continues, contact an administrator."); }
-    finally { refreshInFlight.current = false; setRefreshing(false); setLoading(false); }
+    catch {
+      if (version === requestVersion.current) setError("We could not load the latest recording status. Refresh to try again; if this continues, contact an administrator.");
+    }
+    finally {
+      if (version === requestVersion.current) { refreshInFlight.current = false; setRefreshing(false); setLoading(false); }
+    }
   }, [token, meetingId, onTerminalTransition]);
   const hasActiveJobs = jobs.some((job) =>
     job.status === "pending" || job.status === "processing" || job.processing_status === "cancel_requested"
   );
   useEffect(() => {
     const first = setTimeout(() => void refresh(), 0);
-    return () => clearTimeout(first);
-  }, [refresh]);
+    return () => {
+      clearTimeout(first);
+      // Supersede requests from the previous meeting/review state, without
+      // discarding the last successfully loaded recording data.
+      requestVersion.current += 1;
+      refreshInFlight.current = false;
+    };
+  }, [refresh, refreshKey]);
   useEffect(() => {
     if (!hasActiveJobs) return;
     const timer = setInterval(() => {

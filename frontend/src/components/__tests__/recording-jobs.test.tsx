@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import StateBadge from "../state-badge";
 import RecordingJobs, { JobControls, recordingStatusMessage } from "../recording-jobs";
 import type { ProcessingFailure, ProcessingState, RecordingJobOut } from "@/lib/types";
@@ -10,6 +10,49 @@ vi.mock("@/lib/api", () => ({ cancelRecordingJob: vi.fn(), retryRecordingJob: vi
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const job: RecordingJobOut = { job_id: "job", drive_item_id: "item", meeting_id: "meeting", title: "Meeting", status: "failed", processing_status: "failed", review_status: null, phase: "failed", attempts: 3, max_attempts: 3, error: null, can_retry: true, can_cancel: false, can_reprocess: false, processing_enabled: false };
+
+describe("review-state refresh", () => {
+  it.each(["success", "failure"])("ignores a superseded %s response after approval", async outcome => {
+    const oldJob: RecordingJobOut = { ...job, status: "completed", processing_status: "completed", review_status: "awaiting_review", can_retry: false, can_reprocess: true };
+    const approvedJob: RecordingJobOut = { ...oldJob, review_status: "approved", can_reprocess: false };
+    let finish!: (jobs: RecordingJobOut[]) => void;
+    let fail!: (error: Error) => void;
+    vi.mocked(getRecordingJobs).mockReset().mockResolvedValueOnce([oldJob])
+      .mockImplementationOnce(() => new Promise((resolve, reject) => { finish = resolve; fail = reject; }))
+      .mockResolvedValue([approvedJob]);
+    const view = render(<RecordingJobs token="token" meetingId="meeting" refreshKey="awaiting_review" />);
+    await screen.findByRole("button", { name: "Reprocess" });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh status" }));
+    await waitFor(() => expect(getRecordingJobs).toHaveBeenCalledTimes(2));
+    view.rerender(<RecordingJobs token="token" meetingId="meeting" refreshKey="approved" />);
+    expect(await screen.findByText("Approved")).toBeVisible();
+    await act(async () => { if (outcome === "success") finish([oldJob]); else fail(new Error("Old request failed")); });
+    expect(screen.getByText("Approved")).toBeVisible();
+    expect(screen.queryByText("Awaiting Review")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reprocess" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps recording data and recovery actions when a review-triggered refresh fails", async () => {
+    vi.mocked(getRecordingJobs).mockReset().mockResolvedValueOnce([job]).mockRejectedValue(new Error("Offline"));
+    const view = render(<RecordingJobs token="token" meetingId="meeting" refreshKey="awaiting_review" />);
+    await screen.findByText("Failed");
+    view.rerender(<RecordingJobs token="token" meetingId="meeting" refreshKey="approved" />);
+    expect(await screen.findByText(/Showing the last available status/)).toBeVisible();
+    expect(screen.getByText("Failed")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(screen.queryByText("Completed")).not.toBeInTheDocument();
+  });
+
+  it("does not infer recording completion from an approved meeting", async () => {
+    vi.mocked(getRecordingJobs).mockReset().mockResolvedValue([{ ...job, review_status: "approved" }]);
+    render(<RecordingJobs token="token" meetingId="meeting" refreshKey="approved" />);
+    expect(await screen.findByText("Approved")).toBeVisible();
+    expect(screen.getByText("Failed")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(screen.queryByText("Completed")).not.toBeInTheDocument();
+  });
+});
 
 it("describes sent status as accepted submission without claiming delivery", () => {
   render(<StateBadge state="sent" />);

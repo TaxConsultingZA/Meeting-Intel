@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import MeetingDetailClient from "../meeting-detail-client";
-import type { MeetingOut } from "@/lib/types";
+import type { MeetingOut, RecordingJobOut } from "@/lib/types";
 
 import { toast } from "sonner";
 import { ApiError, approveMeeting, editActionItem, editMeetingTranscript, getMeeting, getRecordingJobs, previewMeetingEmail, saveSpeakerMappings } from "@/lib/api";
@@ -495,5 +495,59 @@ it("shows reconciled approval after a lost approval response without inviting a 
 
 it("does not offer approval when the existing permission denies it", () => {
   render(<MeetingDetailClient meeting={{ ...approvalMeeting, is_organizer: false, can_approve: false, can_edit: false, edit_access_status: "none" }} upn="attendee@example.com" accessToken="token" />);
+  expect(screen.queryByRole("button", { name: /Approve Meeting Notes/ })).not.toBeInTheDocument();
+});
+
+it.each(["confirmed", "reconciled", "refresh-failed"])("refreshes the terminal sidebar after %s no-send approval without remounting", async outcome => {
+  const meeting = { ...approvalMeeting, email_recipients: [] };
+  const initialJob: RecordingJobOut = { job_id: "completed-job", drive_item_id: "recording", meeting_id: meeting.id,
+    title: meeting.title, status: "completed", processing_status: "completed", review_status: "awaiting_review",
+    phase: "completed", attempts: 1, max_attempts: 3, error: null, can_retry: false, can_cancel: false,
+    can_reprocess: true, processing_enabled: false };
+  vi.mocked(getRecordingJobs).mockReset().mockResolvedValueOnce([initialJob])
+    .mockResolvedValue([{ ...initialJob, review_status: "approved", can_reprocess: false }]);
+  if (outcome === "reconciled") vi.mocked(approveMeeting).mockRejectedValue(new Error("Lost response"));
+  else vi.mocked(approveMeeting).mockResolvedValue({ ok: true, state: "approved" });
+  if (outcome === "refresh-failed") vi.mocked(getMeeting).mockRejectedValue(new Error("Offline"));
+  else vi.mocked(getMeeting).mockResolvedValue({ ...meeting, state: "approved" });
+  const preview = await openReviewedApproval(meeting);
+  const sidebar = within(screen.getByRole("region", { name: "Recording processing" }));
+  await sidebar.findByRole("button", { name: "Reprocess" });
+  fireEvent.click(within(preview).getByRole("button", { name: "Close Preview" }));
+  fireEvent.click(screen.getByRole("button", { name: "Approve Meeting Notes" }));
+  expect(await sidebar.findByText("Approved")).toBeVisible();
+  expect(sidebar.getByText("Completed")).toBeVisible();
+  expect(sidebar.queryByText("Awaiting Review")).not.toBeInTheDocument();
+  expect(sidebar.queryByRole("button", { name: "Reprocess" })).not.toBeInTheDocument();
+  expect(screen.getByRole("status", { name: "Meeting approval status" })).toHaveTextContent("No email was submitted");
+  expect(approveMeeting).toHaveBeenCalledWith(meeting.id, "token", [], "fingerprint");
+});
+
+it("ignores a meeting refresh started before approval", async () => {
+  const meeting = { ...approvalMeeting, email_recipients: [] };
+  const completed: RecordingJobOut = { job_id: "job", drive_item_id: "recording", meeting_id: meeting.id,
+    title: meeting.title, status: "completed", processing_status: "completed", review_status: "awaiting_review",
+    phase: "completed", attempts: 1, max_attempts: 3, error: null, can_retry: false, can_cancel: false,
+    can_reprocess: true, processing_enabled: false };
+  vi.mocked(getRecordingJobs).mockReset()
+    .mockResolvedValueOnce([{ ...completed, status: "processing", processing_status: "transcribing", review_status: null }])
+    .mockResolvedValueOnce([completed]).mockResolvedValue([{ ...completed, review_status: "approved", can_reprocess: false }]);
+  let finishOld!: (meeting: MeetingOut) => void;
+  vi.mocked(getMeeting).mockReset().mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }))
+    .mockResolvedValue({ ...meeting, state: "approved" });
+  vi.mocked(approveMeeting).mockResolvedValue({ ok: true, state: "approved" });
+  const preview = await openReviewedApproval(meeting);
+  fireEvent.click(within(preview).getByRole("button", { name: "Close Preview" }));
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Approve Meeting Notes" })).getByRole("button", { name: "Cancel" }));
+  const sidebar = within(screen.getByRole("region", { name: "Recording processing" }));
+  await sidebar.findByText("Transcribing");
+  fireEvent.click(sidebar.getByRole("button", { name: "Refresh status" }));
+  await waitFor(() => expect(getMeeting).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole("button", { name: /Approve Meeting Notes/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Approve Meeting Notes" }));
+  await sidebar.findByText("Approved");
+  await act(async () => finishOld(meeting));
+  expect(screen.getByRole("status", { name: "Meeting approval status" })).toHaveTextContent("No email was submitted");
+  expect(sidebar.getByText("Approved")).toBeVisible();
   expect(screen.queryByRole("button", { name: /Approve Meeting Notes/ })).not.toBeInTheDocument();
 });

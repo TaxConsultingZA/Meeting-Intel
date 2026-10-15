@@ -108,6 +108,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const previewInFlight = useRef(false);
   const cancelApprovalButton = useRef<HTMLButtonElement>(null);
   const pollingInFlight = useRef(false);
+  const meetingRefreshVersion = useRef(0);
 
   const data = meeting.extracted_json ?? {};
   const isTranscriptOnly = data.extraction_mode === "transcript_only";
@@ -151,10 +152,12 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
     && (meeting.state === "approved" || meeting.state === "sent");
 
   const refreshMeetingStatus = useCallback(async () => {
-    if (document.visibilityState === "hidden" || pollingInFlight.current) return;
+    if (document.visibilityState === "hidden" || pollingInFlight.current || approvalInFlight.current) return;
     pollingInFlight.current = true;
+    const version = meetingRefreshVersion.current;
     await getMeeting(initial.id, accessToken)
       .then((next) => {
+        if (version !== meetingRefreshVersion.current) return;
         setMeeting(next);
         if (!reviewDrafts.current.speakerMappingsChanged) setSpeakerMappings(next.speaker_mappings ?? {});
         if (!reviewDrafts.current.editingTranscript) setTranscriptDraft(next.transcript ?? "");
@@ -162,9 +165,10 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
         setApprovalVerificationError(null);
       })
       .catch(() => {
+        if (version !== meetingRefreshVersion.current) return;
         setPollingError("Unable to refresh meeting status. Please try again.");
       })
-      .finally(() => { pollingInFlight.current = false; });
+      .finally(() => { if (version === meetingRefreshVersion.current) pollingInFlight.current = false; });
   }, [initial.id, accessToken]);
 
   useEffect(() => {
@@ -176,6 +180,8 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   async function handleApprove() {
     if (approvalInFlight.current || reviewChangesPending || !emailPreview || !previewMatchesRecipients) return;
     approvalInFlight.current = true;
+    meetingRefreshVersion.current += 1;
+    pollingInFlight.current = false;
     setApproving(true);
     setApprovalFeedback(null);
     setApprovalVerificationError(null);
@@ -453,6 +459,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           </div>
         </div>
         <RecordingJobs
+          refreshKey={meeting.state}
           token={accessToken}
           meetingId={meeting.id}
           onChanged={refreshMeetingStatus}

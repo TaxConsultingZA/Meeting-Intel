@@ -137,7 +137,7 @@ it("does not treat whitespace-only filters as applied restrictions", async () =>
 it("explains meeting outputs with neutral labels and no personal action views", async () => {
   render(<ActionItemsClient accessToken="token" />);
   await screen.findByText("Send report");
-  expect(screen.getByText("Approved action items from meetings you can access. Review and edit extracted action items in Meeting Detail before approval.")).toBeInTheDocument();
+  expect(screen.getByText("Approved action items from meetings you can access. Task completion is separate from meeting-note approval. Approved wording remains locked.")).toBeInTheDocument();
   expect(screen.queryByRole("group", { name: "Action item views" })).not.toBeInTheDocument();
   expect(screen.queryByText(/My Actions|All Accessible|account email/)).not.toBeInTheDocument();
   expect(screen.getByRole("columnheader", { name: "Owner" })).toBeInTheDocument();

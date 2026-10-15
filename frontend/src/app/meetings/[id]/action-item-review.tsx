@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { editActionItem } from "@/lib/api";
 import type { ActionItemEdit, ActionItemOut, Confidence } from "@/lib/types";
+import TaskCompletionControl from "@/components/task-completion";
 
 function concerns(item: ActionItemOut) {
   return [!item.task.trim() && "Missing task", !item.owner?.trim() && "Missing owner",
@@ -10,29 +11,32 @@ function concerns(item: ActionItemOut) {
     item.confidence === "low" && "Low confidence"].filter(Boolean) as string[];
 }
 
-export default function ActionItemReview({ items, accessToken, canEdit, isApproved = false, transcript, onUpdate, onEditingChange }: {
+export default function ActionItemReview({ items, accessToken, canEdit, isApproved = false, transcript, onUpdate, onCompletionUpdate, onEditingChange }: {
   items: ActionItemOut[]; accessToken: string; canEdit: boolean; isApproved?: boolean; transcript?: string | null;
   onUpdate: (item: ActionItemOut) => void;
+  onCompletionUpdate?: (item: ActionItemOut) => void;
   onEditingChange?: (id: string, editing: boolean) => void;
 }) {
   if (!items.length) return <p className="text-sm text-gray-500">No action items extracted.</p>;
   const count = items.filter(item => concerns(item).length).length;
   return <div>
+    {isApproved && <p className="mb-2 text-sm text-gray-600">Task completion is separate from meeting-note approval. Approved wording remains locked.</p>}
     <p className="mb-3 text-sm text-gray-600">{items.length} action item(s) · {count} with review flags. {isApproved ? "These items are approved. Remaining flags describe extraction concerns; editing is locked after approval." : "Check each task against its evidence. Flags are guidance; confidence is not approval status."}</p>
     <div className="overflow-x-auto">
       <table className="w-full min-w-[720px] border-collapse text-sm">
         <caption className="sr-only">Meeting action items and source evidence</caption>
-        <thead><tr>{["Task", "Owner", "Due date", "Confidence", "Source evidence"].map(label =>
+        <thead><tr>{["Task", "Owner", "Due date", "Confidence", "Source evidence", ...(isApproved ? ["Task status"] : [])].map(label =>
           <th scope="col" key={label} className="bg-[#003366] px-4 py-3 text-left text-white">{label}</th>)}</tr></thead>
-        <tbody>{items.map(item => <ActionRow key={item.id} {...{ item, accessToken, canEdit, isApproved, transcript, onUpdate, onEditingChange }} />)}</tbody>
+        <tbody>{items.map(item => <ActionRow key={item.id} {...{ item, accessToken, canEdit, isApproved, transcript, onUpdate, onCompletionUpdate, onEditingChange }} />)}</tbody>
       </table>
     </div>
   </div>;
 }
 
-function ActionRow({ item, accessToken, canEdit, isApproved, transcript, onUpdate, onEditingChange }: {
+function ActionRow({ item, accessToken, canEdit, isApproved, transcript, onUpdate, onCompletionUpdate, onEditingChange }: {
   item: ActionItemOut; accessToken: string; canEdit: boolean; isApproved: boolean; transcript?: string | null;
   onUpdate: (item: ActionItemOut) => void;
+  onCompletionUpdate?: (item: ActionItemOut) => void;
   onEditingChange?: (id: string, editing: boolean) => void;
 }) {
   const values = () => ({ task: item.task, owner: item.owner ?? "", deadline_iso: item.deadline_iso ?? "", confidence: item.confidence });
@@ -109,6 +113,7 @@ function ActionRow({ item, accessToken, canEdit, isApproved, transcript, onUpdat
         {context ? <><p className="mt-3 text-xs font-semibold">Matching transcript context (first exact text match)</p><p className="mt-1 whitespace-pre-wrap text-xs">{context}</p></>
           : <p className="mt-2 text-xs text-gray-500">{transcript ? "No exact match in the current transcript. Check the transcript to verify this quote." : "Transcript unavailable for comparison."}</p>}
       </details> : <p className="text-gray-500">No source evidence provided.</p>}</td>
+      {isApproved && <td className={cell}><TaskCompletionControl item={item} token={accessToken} onUpdate={value => (onCompletionUpdate ?? onUpdate)({ ...item, ...value })} /></td>}
     </tr>
     {editing && <tr><td colSpan={5} className="border border-blue-200 bg-blue-50 p-4">
       <form aria-label={`Edit action item: ${item.task}`} noValidate onSubmit={event => { event.preventDefault(); void save(); }}>

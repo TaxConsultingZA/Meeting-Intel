@@ -550,6 +550,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                 canEdit={canEdit && !reviewControlsBusy}
                 isApproved={isApproved}
                 onUpdate={handleEditItem}
+                onCompletionUpdate={updated => setMeeting(current => ({ ...current, action_items: current.action_items.map(item => item.id === updated.id ? updated : item) }))}
                 onEditingChange={handleActionEditingChange}
               />
             </Section>

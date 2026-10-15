@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ApiError, getApprovedActionItems } from "@/lib/api";
 import type { ActionItemFilters, ApprovedActionItemsPage } from "@/lib/types";
+import TaskCompletionControl from "@/components/task-completion";
 
 const initial: ActionItemFilters = { view: "all", meeting: "", owner: "", deadline: "", offset: 0 };
 const controlBase = "rounded-md border px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-[#003366]";
@@ -63,7 +64,7 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
   return <main className="mx-auto min-w-0 max-w-7xl px-4 py-8 sm:px-6">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div><h1 className="text-2xl font-bold text-[#003366]">Action Items</h1>
-        <p className="mt-2 max-w-2xl text-sm text-gray-600">Approved action items from meetings you can access. Review and edit extracted action items in Meeting Detail before approval.</p></div>
+        <p className="mt-2 max-w-2xl text-sm text-gray-600">Approved action items from meetings you can access. Task completion is separate from meeting-note approval. Approved wording remains locked.</p></div>
       <button className={control} disabled={loading} onClick={() => { setResult(null); setLoading(true); setRefresh(value => value + 1); }}>Refresh</button>
     </div>
     <form aria-label="Filter action items" className="mt-5 grid gap-3 rounded-lg border bg-gray-50 p-4 sm:grid-cols-3" onSubmit={event => { event.preventDefault(); change({ ...filters, ...draft, offset: 0 }); }}>
@@ -95,7 +96,7 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
         <p role="status" className="mb-3 text-sm text-gray-600">Showing {filters.offset + 1}–{filters.offset + result.items.length}</p>
         <div className="overflow-x-auto rounded-lg border"><table className="w-full min-w-[760px] text-left text-sm">
           <caption className="sr-only">Approved action items and source evidence</caption>
-          <thead className="bg-[#003366] text-white"><tr>{["Task", "Meeting", "Owner", "Due date", "Confidence", "Source evidence"].map(label => <th scope="col" key={label} className="px-4 py-3">{label}</th>)}</tr></thead>
+          <thead className="bg-[#003366] text-white"><tr>{["Task", "Meeting", "Owner", "Due date", "Confidence", "Source evidence", "Task status"].map(label => <th scope="col" key={label} className="px-4 py-3">{label}</th>)}</tr></thead>
           <tbody>{result.items.map(item => <tr key={item.id} className="border-t even:bg-gray-50">
             <td className="max-w-sm whitespace-pre-wrap break-words px-4 py-4 align-top font-medium">{item.task}</td>
             <td className="px-4 py-4 align-top"><Link className="text-[#003366] underline" href={`/meetings/${encodeURIComponent(item.meeting_id)}`}>{item.meeting_title?.trim() || "Untitled meeting"}</Link></td>
@@ -107,6 +108,7 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
             </td>
             <td className="px-4 py-4 align-top">{confidenceLabel(item.confidence)}</td>
             <td className="max-w-sm px-4 py-4 align-top">{item.source_quote?.trim() ? <details><summary className="cursor-pointer text-[#003366]">View source evidence</summary><blockquote className="mt-2 whitespace-pre-wrap break-words border-l-2 border-[#C9A52C] pl-3">{item.source_quote}</blockquote></details> : "No source evidence provided."}</td>
+            <td className="px-4 py-4 align-top"><TaskCompletionControl item={item} token={accessToken} onUpdate={value => setResult(current => current ? { ...current, items: current.items.map(row => row.id === item.id ? { ...row, ...value } : row) } : current)} /></td>
           </tr>)}</tbody>
         </table></div>
       </>}

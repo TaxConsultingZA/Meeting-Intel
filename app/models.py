@@ -350,6 +350,12 @@ class ActionItem(Base):
     approved: Mapped[bool] = mapped_column(Boolean, default=False)
     edited_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # Task execution is independent of the meeting-note approval gate.
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("registered_users.id", name="fk_action_items_completed_by", ondelete="SET NULL"), nullable=True,
+    )
+
     raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     meeting: Mapped["Meeting"] = relationship(back_populates="action_items")

@@ -6,6 +6,11 @@ import type { ActionItemFilters, ApprovedActionItemsPage } from "./types";
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 const API_TIMEOUT_MS = 30_000;
 
+export function setTaskCompletion(itemId: string, completed: boolean, token: string) {
+  return apiFetch<import("./types").TaskCompletion>(`/action-items/${encodeURIComponent(itemId)}/completion`, token,
+    { method: "PUT", body: JSON.stringify({ completed }) });
+}
+
 export function getApprovedActionItems(token: string, filters: ActionItemFilters, signal?: AbortSignal): Promise<ApprovedActionItemsPage> {
   const params = new URLSearchParams({ ...filters, offset: String(filters.offset), limit: "50" });
   return apiFetch(`/action-items?${params}`, token, { signal, cache: "no-store" });

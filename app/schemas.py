@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictBool, field_validator
 from .models import Confidence, ProcessingState
 
 
@@ -104,7 +104,24 @@ class ShareMeetingIn(BaseModel):
 
 # ── API output models ─────────────────────────────────────────────────────────
 
-class ActionItemOut(BaseModel):
+class TaskCompletionOut(BaseModel):
+    completed_at: datetime | None = None
+    completed_by_id: UUID | None = None
+    can_complete: bool = False
+
+    @field_validator("completed_at")
+    @classmethod
+    def completion_utc(cls, value):
+        # PostgreSQL returns aware values; normalize lightweight SQLite test
+        # storage too so the API always provides an unambiguous UTC timestamp.
+        return value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
+
+
+class TaskCompletionIn(BaseModel):
+    completed: StrictBool
+
+
+class ActionItemOut(TaskCompletionOut):
     """API response shape for a single action item returned to the frontend."""
     id: str
     task: str
@@ -116,7 +133,7 @@ class ActionItemOut(BaseModel):
     approved: bool
 
 
-class ApprovedActionItemOut(BaseModel):
+class ApprovedActionItemOut(TaskCompletionOut):
     id: UUID
     task: str
     meeting_id: UUID

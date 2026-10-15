@@ -33,7 +33,13 @@ export type MeetingReviewStatus = "awaiting_review" | "approved" | "sent";
 export type Confidence = "high" | "medium" | "low";
 
 /** A single action item as returned by GET /reviews/{id}. */
-export interface ActionItemOut {
+export interface TaskCompletion {
+  completed_at?: string | null;
+  completed_by_id?: string | null;
+  can_complete?: boolean;
+}
+
+export interface ActionItemOut extends TaskCompletion {
   id: string;
   task: string;
   owner: string | null;
@@ -45,7 +51,7 @@ export interface ActionItemOut {
 }
 
 /** Approved source actions for the read-only cross-meeting page. */
-export interface ApprovedActionItem {
+export interface ApprovedActionItem extends TaskCompletion {
   id: string;
   meeting_id: string;
   meeting_title: string | null;

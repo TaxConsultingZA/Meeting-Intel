@@ -254,6 +254,9 @@ def _to_out(m: Meeting, upn: str | None = None, *, is_admin: bool = False) -> Me
                 id=str(a.id), task=a.task, owner=a.owner,
                 deadline_text=a.deadline_text, deadline_iso=a.deadline_iso,
                 confidence=a.confidence, source_quote=a.source_quote, approved=a.approved,
+                completed_at=getattr(a, "completed_at", None),
+                completed_by_id=getattr(a, "completed_by_id", None),
+                can_complete=can_complete_task(m, a, upn, is_admin=is_admin),
             ) for a in m.action_items
         ],
     )
@@ -361,6 +364,18 @@ def _require_editor(m: Meeting, upn: str, *, is_admin: bool = False) -> None:
             or participant.edit_access_status != "approved"
         ):
             raise HTTPException(403, "Edit access must be approved by the meeting organiser")
+
+
+def can_complete_task(m: Meeting, item: ActionItem, upn: str | None, *, is_admin: bool = False) -> bool:
+    if not upn or not item.approved or m.state not in (ProcessingState.approved, ProcessingState.sent):
+        return False
+    if not is_admin and not any(normalize_upn(p.user_upn) == upn and _has_view_access(p) for p in m.participants):
+        return False
+    try:
+        _require_editor(m, upn, is_admin=is_admin)
+    except HTTPException:
+        return False
+    return True
 
 
 def _require_approved_attendee(m: Meeting, upn: str) -> MeetingParticipant:

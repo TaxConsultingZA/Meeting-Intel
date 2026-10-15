@@ -71,7 +71,7 @@ def test_all_only_approved_and_accessible_without_admin_bypass(api):
     assert titles(response) == {"Budget", "Tax 100%", "Shared"}
     assert response.headers["cache-control"] == "no-store"
     item = response.json()["items"][0]
-    assert set(item) == {"id", "task", "meeting_id", "meeting_title", "owner", "deadline_iso", "deadline_text", "source_quote", "confidence"}
+    assert set(item) == {"id", "task", "meeting_id", "meeting_title", "owner", "deadline_iso", "deadline_text", "source_quote", "confidence", "completed_at", "completed_by_id", "can_complete"}
     assert {row["meeting_title"]: row["confidence"] for row in response.json()["items"]} == {"Budget": "high", "Tax 100%": "medium", "Shared": "low"}
     db.commit.assert_not_awaited()
     db.add.assert_not_called()

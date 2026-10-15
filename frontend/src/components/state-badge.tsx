@@ -8,7 +8,7 @@ const CONFIG: Record<ProcessingState, { label: string; cls: string; dot: string 
   extracting:      { label: "Extracting",      cls: "bg-blue-50 text-blue-700",   dot: "bg-blue-500 animate-pulse" },
   awaiting_review: { label: "Awaiting Review", cls: "bg-amber-50 text-amber-800", dot: "bg-amber-400" },
   approved:        { label: "Approved",        cls: "bg-green-50 text-green-800", dot: "bg-green-500" },
-  sent:            { label: "Sent",            cls: "bg-green-50 text-green-700", dot: "bg-green-400" },
+  sent:            { label: "Email submission accepted", cls: "bg-green-50 text-green-700", dot: "bg-green-400" },
   failed:          { label: "Failed",          cls: "bg-red-50 text-red-800",     dot: "bg-red-500" },
   cancelled:       { label: "Cancelled",       cls: "bg-gray-100 text-gray-700", dot: "bg-gray-400" },
   cancel_requested:{ label: "Cancel requested",cls: "bg-amber-50 text-amber-800", dot: "bg-amber-400 animate-pulse" },

@@ -67,11 +67,11 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
       <button className={control} disabled={loading} onClick={() => { setResult(null); setLoading(true); setRefresh(value => value + 1); }}>Refresh</button>
     </div>
     <form aria-label="Filter action items" className="mt-5 grid gap-3 rounded-lg border bg-gray-50 p-4 sm:grid-cols-3" onSubmit={event => { event.preventDefault(); change({ ...filters, ...draft, offset: 0 }); }}>
-      {([ ["meeting", "Meeting", "Search meeting title"], ["owner", "Person mentioned in meeting", "Search name or email mentioned"], ["deadline", "Deadline mentioned", "Date or spoken deadline"] ] as const).map(([key, label, placeholder]) =>
+      {([ ["meeting", "Meeting", "Search meeting title"], ["owner", "Owner", "Search owner name or email"], ["deadline", "Due date", "Date or original wording"] ] as const).map(([key, label, placeholder]) =>
         <label key={key} className="flex min-w-0 flex-col gap-1 text-sm font-medium text-gray-700">{label}
           <input className={`${control} min-w-0 w-full`} maxLength={255} placeholder={placeholder} value={draft[key]} onChange={event => setDraft({ ...draft, [key]: event.target.value })} />
         </label>)}
-      <p className="text-xs text-gray-600 sm:col-span-3">Filters match text, ignoring case. Deadline searches both the date and original spoken deadline.</p>
+      <p className="text-xs text-gray-600 sm:col-span-3">Filters match text, ignoring case. Due date searches both the date and original wording.</p>
       <div className="flex flex-wrap gap-2 sm:col-span-3"><button type="submit" className={`${control} font-semibold text-[#003366]`}>Apply filters</button>
         <button type="button" className={control} onClick={() => { setDraft({ meeting: "", owner: "", deadline: "" }); change({ ...initial }); }}>Clear filters</button></div>
     </form>
@@ -95,13 +95,16 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
         <p role="status" className="mb-3 text-sm text-gray-600">Showing {filters.offset + 1}–{filters.offset + result.items.length}</p>
         <div className="overflow-x-auto rounded-lg border"><table className="w-full min-w-[760px] text-left text-sm">
           <caption className="sr-only">Approved action items and source evidence</caption>
-          <thead className="bg-[#003366] text-white"><tr>{["Task", "Meeting", "Person mentioned in meeting", "Deadline mentioned", "Confidence", "Source evidence"].map(label => <th scope="col" key={label} className="px-4 py-3">{label}</th>)}</tr></thead>
+          <thead className="bg-[#003366] text-white"><tr>{["Task", "Meeting", "Owner", "Due date", "Confidence", "Source evidence"].map(label => <th scope="col" key={label} className="px-4 py-3">{label}</th>)}</tr></thead>
           <tbody>{result.items.map(item => <tr key={item.id} className="border-t even:bg-gray-50">
             <td className="max-w-sm whitespace-pre-wrap break-words px-4 py-4 align-top font-medium">{item.task}</td>
             <td className="px-4 py-4 align-top"><Link className="text-[#003366] underline" href={`/meetings/${encodeURIComponent(item.meeting_id)}`}>{item.meeting_title?.trim() || "Untitled meeting"}</Link></td>
             <td className="px-4 py-4 align-top">{item.owner?.trim() || "Unspecified"}</td>
-            <td className="px-4 py-4 align-top">{item.deadline_iso || item.deadline_text?.trim() || "Unspecified"}
-              {item.deadline_iso && item.deadline_text && <p className="mt-1 text-xs text-gray-500">As spoken: {item.deadline_text}</p>}</td>
+            <td className="px-4 py-4 align-top">
+              {item.deadline_iso ? <><span className="block text-xs text-gray-500">Due date</span><span>{item.deadline_iso}</span></> : item.deadline_text?.trim() ? <p>Due date not resolved</p> : "Unspecified"}
+              {item.deadline_text?.trim() && <p className="mt-1 text-xs text-gray-500">Original wording: {item.deadline_text}</p>}
+              {!item.deadline_iso && item.deadline_text?.trim() && <p className="mt-1 text-xs text-gray-500">Relative wording refers to the original meeting, not today.</p>}
+            </td>
             <td className="px-4 py-4 align-top">{confidenceLabel(item.confidence)}</td>
             <td className="max-w-sm px-4 py-4 align-top">{item.source_quote?.trim() ? <details><summary className="cursor-pointer text-[#003366]">View source evidence</summary><blockquote className="mt-2 whitespace-pre-wrap break-words border-l-2 border-[#C9A52C] pl-3">{item.source_quote}</blockquote></details> : "No source evidence provided."}</td>
           </tr>)}</tbody>

@@ -22,7 +22,7 @@ const STATE_LABEL: Record<ProcessingState, string> = {
   extracting: "Extracting",
   awaiting_review: "Awaiting Review",
   approved: "Approved",
-  sent: "Sent",
+  sent: "Email submission accepted",
   failed: "Failed",
   cancelled: "Cancelled", cancel_requested: "Cancel requested", processing: "Processing", completed: "Completed",
 };

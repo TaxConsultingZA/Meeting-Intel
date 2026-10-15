@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import StateBadge from "../state-badge";
-import RecordingJobs, { JobControls } from "../recording-jobs";
+import RecordingJobs, { JobControls, recordingStatusMessage } from "../recording-jobs";
 import type { ProcessingFailure, ProcessingState, RecordingJobOut } from "@/lib/types";
 import { toast } from "sonner";
 import { cancelRecordingJob, getRecordingJobs, retryRecordingJob, reprocessRecordingJob } from "@/lib/api";
@@ -10,6 +10,15 @@ vi.mock("@/lib/api", () => ({ cancelRecordingJob: vi.fn(), retryRecordingJob: vi
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const job: RecordingJobOut = { job_id: "job", drive_item_id: "item", meeting_id: "meeting", title: "Meeting", status: "failed", processing_status: "failed", review_status: null, phase: "failed", attempts: 3, max_attempts: 3, error: null, can_retry: true, can_cancel: false, can_reprocess: false, processing_enabled: false };
+
+it("describes sent status as accepted submission without claiming delivery", () => {
+  render(<StateBadge state="sent" />);
+  expect(screen.getByText("Email submission accepted")).toBeVisible();
+  const message = recordingStatusMessage({ ...job, processing_status: "completed", review_status: "sent" });
+  expect(message).toContain("Email submission accepted");
+  expect(message).toContain("Delivery confirmation is not available");
+  expect(message).not.toContain("have been emailed");
+});
 
 describe("safe processing failure transparency", () => {
   it.each<[ProcessingFailure["stage"], string]>([

@@ -17,17 +17,28 @@ it("shows approved source fields, evidence and meeting link without write contro
   expect(screen.getByRole("link", { name: "Budget" })).toHaveAttribute("href", "/meetings/m1");
   expect(screen.getByText("Alice")).toBeInTheDocument();
   expect(screen.getByText("2026-10-12")).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Due date" })).toBeInTheDocument();
+  expect(screen.getByText("Original wording: Monday")).toBeInTheDocument();
   expect(screen.getByText("Please send the report.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /^(save|edit|assign|start tracking)/i })).not.toBeInTheDocument();
   expect(getApprovedActionItems).toHaveBeenCalledWith("token", expect.objectContaining({ view: "all" }), expect.any(AbortSignal));
+});
+
+it.each(["Friday", "next week"])("preserves %s without guessing a due date", async deadline_text => {
+  vi.mocked(getApprovedActionItems).mockResolvedValueOnce({ ...page, items: [{ ...page.items[0], deadline_iso: null, deadline_text }] });
+  render(<ActionItemsClient accessToken="token" />);
+  expect(await screen.findByText("Due date not resolved")).toBeInTheDocument();
+  expect(screen.getByText(`Original wording: ${deadline_text}`)).toBeInTheDocument();
+  expect(screen.getByText(/original meeting, not today/)).toBeInTheDocument();
+  expect(screen.queryByText("Due date", { selector: "span" })).not.toBeInTheDocument();
 });
 
 it("applies and clears all three filters within accessible meetings", async () => {
   render(<ActionItemsClient accessToken="token" />);
   await screen.findByText("Send report");
   fireEvent.change(screen.getByLabelText("Meeting"), { target: { value: "Budget" } });
-  fireEvent.change(screen.getByLabelText("Person mentioned in meeting"), { target: { value: "Alice" } });
-  fireEvent.change(screen.getByLabelText("Deadline mentioned"), { target: { value: "Monday" } });
+  fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "Alice" } });
+  fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "Monday" } });
   fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
   await waitFor(() => expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", { view: "all", meeting: "Budget", owner: "Alice", deadline: "Monday", offset: 0 }, expect.anything()));
   fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
@@ -101,7 +112,7 @@ it("uses only applied filters to select the no-matches message", async () => {
   vi.mocked(getApprovedActionItems).mockResolvedValue({ ...page, items: [] });
   render(<ActionItemsClient accessToken="token" />);
   await screen.findByRole("heading", { name: "No approved action items yet" });
-  fireEvent.change(screen.getByLabelText("Person mentioned in meeting"), { target: { value: "Alice" } });
+  fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "Alice" } });
   expect(screen.queryByRole("heading", { name: "No matching action items" })).not.toBeInTheDocument();
   expect(getApprovedActionItems).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
@@ -129,11 +140,11 @@ it("explains meeting outputs with neutral labels and no personal action views", 
   expect(screen.getByText("Approved action items from meetings you can access. Review and edit extracted action items in Meeting Detail before approval.")).toBeInTheDocument();
   expect(screen.queryByRole("group", { name: "Action item views" })).not.toBeInTheDocument();
   expect(screen.queryByText(/My Actions|All Accessible|account email/)).not.toBeInTheDocument();
-  expect(screen.getByRole("columnheader", { name: "Person mentioned in meeting" })).toBeInTheDocument();
-  expect(screen.getByRole("columnheader", { name: "Deadline mentioned" })).toBeInTheDocument();
-  expect(screen.getByLabelText("Person mentioned in meeting")).toBeInTheDocument();
-  expect(screen.getByLabelText("Deadline mentioned")).toBeInTheDocument();
-  expect(screen.queryByRole("columnheader", { name: "Owner" })).not.toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Owner" })).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Due date" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Owner")).toBeInTheDocument();
+  expect(screen.getByLabelText("Due date")).toBeInTheDocument();
+  expect(screen.queryByRole("columnheader", { name: "Person mentioned in meeting" })).not.toBeInTheDocument();
   expect(screen.queryByRole("columnheader", { name: "Deadline" })).not.toBeInTheDocument();
 });
 

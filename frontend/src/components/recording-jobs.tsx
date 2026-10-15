@@ -37,7 +37,7 @@ export function processingFailureMessage(failure?: ProcessingFailure | null): st
 export function recordingStatusMessage(job: RecordingJobOut): string {
   switch (job.processing_status) {
     case "completed":
-      if (job.review_status === "sent") return "Processing is complete. Approved notes have been emailed.";
+      if (job.review_status === "sent") return "Processing is complete. Meeting notes have been approved. Email submission accepted. Delivery confirmation is not available.";
       if (job.review_status === "approved") return "Processing is complete. Meeting notes have been approved.";
       if (job.review_status === "awaiting_review") return "Processing is complete. Meeting notes are ready for review. Open the meeting to review them.";
       return "Recording processing is complete. Open the meeting to see available results.";

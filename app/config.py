@@ -111,6 +111,7 @@ class Settings(BaseSettings):
     app_url: str = "http://localhost:3000"
 
     # --- Behaviour ---
+    enable_scheduled_sync: bool = True     # false disables the API timer, not manual actions or reads
     enable_auto_reconcile: bool = False     # if true, start a background task at startup to scan OneDrives
     auto_send_email: bool = False           # v1: humans approve before send
     popia_notice_enabled: bool = True       # send processing notice to organizer on job start

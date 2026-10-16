@@ -32,6 +32,7 @@ async def test_reconcile_endpoint_reuses_inflight_task(monkeypatch):
         await release.wait()
 
     monkeypatch.setattr(main.settings, "reconcile_secret", "secret")
+    monkeypatch.setattr(main.settings, "enable_scheduled_sync", False)
     monkeypatch.setattr(main, "_manual_reconcile_task", None)
     monkeypatch.setattr("app.workers.reconcile.reconcile", reconcile)
 
@@ -47,6 +48,7 @@ async def test_reconcile_endpoint_reuses_inflight_task(monkeypatch):
 @pytest.mark.asyncio
 async def test_lifespan_cancels_and_awaits_reconcile_task(monkeypatch):
     from app import main
+    monkeypatch.setattr(main.settings, "enable_scheduled_sync", True)
 
     cancelled = asyncio.Event()
 
@@ -65,3 +67,22 @@ async def test_lifespan_cancels_and_awaits_reconcile_task(monkeypatch):
     async with main._lifespan(None):
         await asyncio.sleep(0)
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_disabled_schedule_never_starts_background_sync(monkeypatch, caplog):
+    from app import main
+
+    monkeypatch.setattr(main.settings, "enable_scheduled_sync", False)
+    monkeypatch.setattr(main, "_init_db", AsyncMock())
+    monkeypatch.setattr(main, "_seed_business_units", AsyncMock())
+    monkeypatch.setattr(main, "_seed_admin_users", AsyncMock())
+    loop = AsyncMock()
+    monkeypatch.setattr(main, "_reconcile_loop", loop)
+
+    with caplog.at_level("INFO", logger="meeting_intel"):
+        async with main._lifespan(None):
+            await asyncio.sleep(0)
+            assert await main.health() == {"status": "ok"}
+    loop.assert_not_called()
+    assert "Scheduled Calendar sync and OneDrive reconciliation disabled" in caplog.text

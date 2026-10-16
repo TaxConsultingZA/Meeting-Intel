@@ -99,15 +99,20 @@ async def _lifespan(app: FastAPI):
 
     # Calendar sync is required by the DB-backed Calendar pages. The existing
     # flag controls only the potentially expensive OneDrive reconciliation.
-    log.info("Starting Calendar sync background task (OneDrive reconcile=%s)...", settings.enable_auto_reconcile)
-    task = asyncio.create_task(_reconcile_loop())
+    task = None
+    if settings.enable_scheduled_sync:
+        log.info("Starting Calendar sync background task (OneDrive reconcile=%s)...", settings.enable_auto_reconcile)
+        task = asyncio.create_task(_reconcile_loop())
+    else:
+        log.info("Scheduled Calendar sync and OneDrive reconciliation disabled")
 
     try:
         yield
     finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(title="Meeting Intelligence", lifespan=_lifespan)

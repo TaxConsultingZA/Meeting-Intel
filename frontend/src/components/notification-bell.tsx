@@ -48,6 +48,7 @@ export default function NotificationBell({ upn }: { upn: string }) {
   const ref = useRef<HTMLDivElement>(null);
 
   const fetchAndDiff = useCallback(async () => {
+    if (document.visibilityState === "hidden") return;
     try {
       const data = await getNotifications(upn);
       setNotifications(data);

@@ -130,6 +130,22 @@ it("renders the dashboard frame while slow dashboard data loads asynchronously",
   await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
 });
 
+it("shows a calendar failure without waiting for unrelated recording status", async () => {
+  vi.mocked(getAllMeetings).mockResolvedValue([]);
+  vi.mocked(getSyncStatus).mockResolvedValue([]);
+  vi.mocked(getRecordingJobs).mockReturnValue(new Promise(() => {}));
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  vi.mocked(getUpcomingMeetings).mockRejectedValue(new Error("Calendar unavailable"));
+
+  render(<DashboardClient meetings={[]} recordingJobs={[]} upcoming={[]} historical={[]}
+    upn="reviewer@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} deferInitialLoad />);
+
+  expect(await screen.findByText("Calendar sync failed: Calendar unavailable")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Meeting Intelligence" })).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent("Loading dashboard data");
+});
+
 it("loads historical meetings once when Old Meetings is first opened and preserves their rendering", async () => {
   const historical = processedMeeting({ id: "historical-1", title: "Historical client meeting", state: "sent", recorded_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() });
   vi.mocked(getHistoricalMeetings).mockResolvedValue([historical]);

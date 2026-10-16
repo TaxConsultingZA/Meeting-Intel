@@ -92,6 +92,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
     let cancelled = false;
     const errors = { meetings: [] as string[], recordingJobs: [] as string[], sync: [] as string[], calendar: [] as string[] };
+    const publishErrors = { meetings: setMeetingLoadErrors, recordingJobs: setRecordingJobLoadErrors, sync: setSyncLoadErrors, calendar: setCalendarLoadErrors };
     const load = async <T,>(promise: Promise<T>, label: string, apply: (data: T) => void, category: keyof typeof errors) => {
       try {
         const data = await promise;
@@ -99,6 +100,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       } catch (error) {
         const detail = error instanceof Error ? error.message : "Unknown error";
         errors[category].push(`${label}: ${detail}`);
+        if (!cancelled) publishErrors[category]([...errors[category]]);
       }
     };
 

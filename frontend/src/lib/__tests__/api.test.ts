@@ -19,6 +19,25 @@ function makeResponse(body: unknown, status = 200): Response {
   } as unknown as Response;
 }
 
+describe("syncCalendarsNow", () => {
+  it("makes exactly one authenticated POST without target users or recording options", async () => {
+    const result = { status: "success", succeeded: 3, failed: 0, skipped: 0, created: 2, updated: 4 };
+    mockFetch.mockResolvedValueOnce(makeResponse(result));
+    const { syncCalendarsNow } = await import("../api");
+    expect(await syncCalendarsNow("offline-token")).toEqual(result);
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(new URL(url).pathname).toBe("/calendar/sync");
+    expect(init).toMatchObject({ method: "POST", body: "{}", headers: { Authorization: "Bearer offline-token" } });
+  });
+  it("does not retry a failed sync POST", async () => {
+    mockFetch.mockResolvedValueOnce(makeResponse({ error: "Unavailable" }, 503));
+    const { syncCalendarsNow } = await import("../api");
+    await expect(syncCalendarsNow("offline-token")).rejects.toThrow();
+    expect(mockFetch).toHaveBeenCalledOnce();
+  });
+});
+
 describe("getAuditEvents", () => {
   it("uses the existing API with safe query encoding, bearer auth, and no caching", async () => {
     mockFetch.mockResolvedValueOnce(makeResponse({ items: [], next_cursor: null }));

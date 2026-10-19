@@ -9,7 +9,7 @@ import { formatEventTime, parseInstant } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
 import RecentMeetings from "@/components/recent-meetings";
 import { JobControls, recordingStatusMessage } from "@/components/recording-jobs";
-import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecordingJobs, getSyncStatus, getUpcomingMeetings, requestHistoricalAccess, requestMeetingEditAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
+import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecordingJobs, getSyncStatus, getUpcomingMeetings, requestHistoricalAccess, requestMeetingEditAccess, shareMeeting, syncCalendarsNow, unsubscribeCurrentUser } from "@/lib/api";
 import type { AvailableRecording, MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
 
 /** Convert a UPN like "jane.doe@taxconsulting.co.za" to a display name "Jane Doe". */
@@ -28,6 +28,7 @@ interface Props {
   upn: string;
   accessToken: string;
   isSubscribed: boolean;
+  isAdmin?: boolean;
   syncStates: SyncState[];
   loadErrors: string[];
   deferInitialLoad?: boolean;
@@ -55,7 +56,7 @@ function conciseMicrosoftError(error: string): string {
   return error.length > 180 ? `${error.slice(0, 177)}...` : error;
 }
 
-export default function DashboardClient({ meetings: initialMeetings, recordingJobs: initialRecordingJobs = [], upcoming: initialUpcoming, historical: initialHistorical, upn, accessToken, isSubscribed, syncStates: initialSyncStates, loadErrors: initialLoadErrors, deferInitialLoad = false }: Props) {
+export default function DashboardClient({ meetings: initialMeetings, recordingJobs: initialRecordingJobs = [], upcoming: initialUpcoming, historical: initialHistorical, upn, accessToken, isSubscribed, isAdmin = false, syncStates: initialSyncStates, loadErrors: initialLoadErrors, deferInitialLoad = false }: Props) {
   const router = useRouter();
   const [meetings, setMeetings] = useState(initialMeetings);
   const [recordingJobs, setRecordingJobs] = useState(initialRecordingJobs);
@@ -79,10 +80,20 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const [calendarLoadErrors, setCalendarLoadErrors] = useState<string[]>([]);
   const [pollingError, setPollingError] = useState("");
   const [refreshingProcessing, setRefreshingProcessing] = useState(false);
-  const [dashboardLoading, setDashboardLoading] = useState(deferInitialLoad);
+  const [loading, setLoading] = useState({
+    meetings: deferInitialLoad,
+    recordingJobs: deferInitialLoad,
+    sync: deferInitialLoad,
+    calendar: deferInitialLoad && isSubscribed,
+  });
   const [shareModal, setShareModal] = useState<{ meetingId: string; title: string } | null>(null);
   const [unsubscribing, setUnsubscribing] = useState(false);
   const pollingInFlight = useRef(false);
+  const calendarSyncInFlight = useRef(false);
+  const calendarDisplayVersion = useRef(0);
+  const [calendarSyncing, setCalendarSyncing] = useState(false);
+  const [calendarSyncFeedback, setCalendarSyncFeedback] = useState<{ message: string; failed: boolean } | null>(null);
+  const [calendarRefreshKey, setCalendarRefreshKey] = useState(0);
   const hasActiveProcessing = recordingJobs.some((job) =>
     job.status === "pending" || job.status === "processing" || job.processing_status === "cancel_requested"
   ) || meetings.some((meeting) => PIPELINE_STATES.includes(meeting.state));
@@ -91,38 +102,34 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     if (!deferInitialLoad) return;
 
     let cancelled = false;
-    const errors = { meetings: [] as string[], recordingJobs: [] as string[], sync: [] as string[], calendar: [] as string[] };
     const publishErrors = { meetings: setMeetingLoadErrors, recordingJobs: setRecordingJobLoadErrors, sync: setSyncLoadErrors, calendar: setCalendarLoadErrors };
-    const load = async <T,>(promise: Promise<T>, label: string, apply: (data: T) => void, category: keyof typeof errors) => {
+    const load = async <T,>(promise: Promise<T>, label: string, apply: (data: T) => void, category: keyof typeof publishErrors) => {
+      const version = calendarDisplayVersion.current;
+      const currentRequest = () => !cancelled && (
+        (category !== "calendar" && category !== "sync") || version === calendarDisplayVersion.current
+      );
+      setLoading((current) => ({ ...current, [category]: true }));
       try {
         const data = await promise;
-        if (!cancelled) apply(data);
+        if (currentRequest()) {
+          apply(data);
+          publishErrors[category]([]);
+        }
       } catch (error) {
         const detail = error instanceof Error ? error.message : "Unknown error";
-        errors[category].push(`${label}: ${detail}`);
-        if (!cancelled) publishErrors[category]([...errors[category]]);
+        if (currentRequest()) publishErrors[category]([`${label}: ${detail}`]);
+      } finally {
+        if (currentRequest()) setLoading((current) => ({ ...current, [category]: false }));
       }
     };
 
-    const requests = [
-      load(getAllMeetings(accessToken), "Meeting records could not be loaded", setMeetings, "meetings"),
-      load(getSyncStatus(accessToken), "Sync status could not be loaded", setSyncStates, "sync"),
-      load(getRecordingJobs(accessToken, undefined, 20), "Recording status could not be loaded. Refresh to try again.", setRecordingJobs, "recordingJobs"),
-    ];
+    void load(getAllMeetings(accessToken), "Meeting records could not be loaded", setMeetings, "meetings");
+    void load(getSyncStatus(accessToken), "Sync status could not be loaded", setSyncStates, "sync");
+    void load(getRecordingJobs(accessToken, undefined, 20), "Recording status could not be loaded. Refresh to try again.", setRecordingJobs, "recordingJobs");
     if (isSubscribed) {
-      requests.push(load(getUpcomingMeetings(accessToken), "Calendar sync failed", setUpcoming, "calendar"));
+      void load(getUpcomingMeetings(accessToken), "Calendar sync failed", setUpcoming, "calendar");
     }
-
-    void Promise.all(requests).then(() => {
-      if (!cancelled) {
-        setMeetingLoadErrors(errors.meetings);
-        setRecordingJobLoadErrors(errors.recordingJobs);
-        setSyncLoadErrors(errors.sync);
-        setCalendarLoadErrors(errors.calendar);
-        setDashboardLoading(false);
-      }
-    });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; calendarDisplayVersion.current += 1; };
   }, [accessToken, deferInitialLoad, isSubscribed]);
 
   const refreshProcessing = useCallback(async () => {
@@ -177,6 +184,49 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
   async function refreshRecordingJobs() {
     await refreshProcessing();
+  }
+
+  async function handleCalendarSync() {
+    if (!isAdmin || !isSubscribed || calendarSyncInFlight.current) return;
+    calendarSyncInFlight.current = true;
+    setCalendarSyncing(true);
+    setCalendarSyncFeedback(null);
+    try {
+      const result = await syncCalendarsNow(accessToken);
+      setCalendarSyncFeedback({
+        failed: result.status !== "success",
+        message: `Calendar sync finished: ${result.succeeded} succeeded, ${result.failed} failed, ${result.skipped} skipped; ${result.created} events added, ${result.updated} existing events refreshed.${result.failed || result.skipped ? " Check existing Microsoft access and subscription status before syncing again." : ""}`,
+      });
+      // Refresh each display independently; a slow read does not repeat the sync.
+      const version = ++calendarDisplayVersion.current;
+      setCalendarRefreshKey((current) => current + 1);
+      setLoading((current) => ({ ...current, calendar: true, sync: true }));
+      void getUpcomingMeetings(accessToken).then((events) => {
+        if (version !== calendarDisplayVersion.current) return;
+        setUpcoming(events);
+        setCalendarLoadErrors([]);
+      }).catch(() => {
+        if (version === calendarDisplayVersion.current) setCalendarLoadErrors(["Calendar sync finished, but the calendar display could not be refreshed. Use Refresh or reload the page."]);
+      }).finally(() => {
+        if (version === calendarDisplayVersion.current) setLoading((current) => ({ ...current, calendar: false }));
+      });
+      void getSyncStatus(accessToken).then((states) => {
+        if (version !== calendarDisplayVersion.current) return;
+        setSyncStates(states);
+        setSyncLoadErrors([]);
+      }).catch(() => {
+        if (version === calendarDisplayVersion.current) setSyncLoadErrors(["Sync status could not be refreshed. Reload the page to check the latest result."]);
+      }).finally(() => {
+        if (version === calendarDisplayVersion.current) setLoading((current) => ({ ...current, sync: false }));
+      });
+    } catch {
+      setCalendarSyncFeedback({ failed: true,
+        message: "Calendar sync could not be confirmed. Check sync status and existing Microsoft access. If another sync is running, wait for it to finish before trying again.",
+      });
+    } finally {
+      calendarSyncInFlight.current = false;
+      setCalendarSyncing(false);
+    }
   }
 
   function selectTab(nextTab: Tab) {
@@ -257,20 +307,30 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     alert("Edit access requested. The meeting organiser will review it.");
   }
 
-  const stats: { icon: string; num: number; label: string; color: string; tab: Tab }[] = [
-    { icon: "📅", num: upcomingEvents.length,                  label: "Upcoming",         color: "bg-blue-50",   tab: "upcoming"     },
-    { icon: "⚙️", num: inProgressEvents.length + activeRecordingJobs.length + pipelineActive.length, label: "In Progress", color: "bg-indigo-50", tab: "in_progress"  },
-    { icon: "📋", num: pendingReview.length + pendingProcessingRequests.length, label: "Awaiting Review", color: "bg-amber-50", tab: "review" },
-    { icon: "✅", num: oldMeetings.length,                     label: "Completed",        color: "bg-green-50",  tab: "old_meetings" },
+  const calendarLoading = isSubscribed && loading.calendar;
+  const inProgressIncomplete = calendarLoading || loading.recordingJobs || loading.meetings
+    || calendarLoadErrors.length > 0 || recordingJobLoadErrors.length > 0 || meetingLoadErrors.length > 0;
+  const meetingsIncomplete = loading.meetings || meetingLoadErrors.length > 0;
+  const stats: { icon: string; num: number; label: string; color: string; tab: Tab; loading: boolean }[] = [
+    { icon: "📅", num: upcomingEvents.length,                  label: "Upcoming",         color: "bg-blue-50",   tab: "upcoming", loading: calendarLoading },
+    { icon: "⚙️", num: inProgressEvents.length + activeRecordingJobs.length + pipelineActive.length, label: "In Progress", color: "bg-indigo-50", tab: "in_progress", loading: loading.meetings || loading.recordingJobs || calendarLoading },
+    { icon: "📋", num: pendingReview.length + pendingProcessingRequests.length, label: "Awaiting Review", color: "bg-amber-50", tab: "review", loading: loading.meetings },
+    { icon: "✅", num: oldMeetings.length,                     label: "Completed",        color: "bg-green-50",  tab: "old_meetings", loading: loading.meetings },
   ];
 
   return (
     <main className="max-w-5xl mx-auto px-6 py-7">
-      {dashboardLoading && (
-        <div role="status" className="mb-5 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-[#003366]">
-          Loading dashboard data…
-        </div>
-      )}
+      {[
+        { pending: loading.meetings, label: "Meeting records", text: "Loading meeting records…" },
+        { pending: loading.recordingJobs, label: "Recording status", text: "Loading recording status…" },
+        { pending: loading.sync, label: "Sync status", text: "Loading sync status…" },
+        { pending: calendarLoading, label: "Calendar meetings", text: "Loading calendar meetings…" },
+      ].filter((section) => section.pending).map((section) => (
+        <p key={section.label} role="status" aria-label={`${section.label} loading`}
+          className="mb-3 rounded-md bg-blue-50 px-4 py-2 text-sm text-[#003366]">
+          {section.text}
+        </p>
+      ))}
       {microsoftErrors.length > 0 && (
         <div role="alert" className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
           <p className="font-semibold">Microsoft data is temporarily unavailable</p>
@@ -313,6 +373,13 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           </p>
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
+          {isAdmin && isSubscribed && (
+            <button type="button" onClick={() => void handleCalendarSync()} disabled={calendarSyncing}
+              title="Sync calendars for active Microsoft-linked subscribers; does not process recordings"
+              className="rounded-md border border-[#003366] bg-white px-3 py-2 text-[13px] font-semibold text-[#003366] disabled:opacity-50">
+              {calendarSyncing ? "Syncing calendars…" : "Sync calendar now"}
+            </button>
+          )}
           {isSubscribed && (
             <button
               type="button"
@@ -335,6 +402,11 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           </button>
         </div>
       </div>
+
+      {calendarSyncFeedback && <p role={calendarSyncFeedback.failed ? "alert" : "status"}
+        className="mb-4 rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-[#003366]">
+        {calendarSyncFeedback.message}
+      </p>}
 
       {showImport && <ImportModal
         upn={accessToken}
@@ -360,7 +432,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
               {s.icon}
             </div>
             <div>
-              <div className="text-[22px] font-bold text-[#003366] leading-none">{s.num}</div>
+              <div className="text-[22px] font-bold text-[#003366] leading-none">{s.loading ? "…" : s.num}</div>
               <div className="text-[12px] text-[#6b7280] mt-0.5">{s.label}</div>
             </div>
           </button>
@@ -404,6 +476,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
             token={accessToken}
             cacheIdentity={upn}
             isSubscribed={isSubscribed}
+            refreshKey={calendarRefreshKey}
             historical={historical}
             processingRequests={processingRequests}
             onRefreshProcessingRequests={refreshProcessingRequests}
@@ -413,10 +486,10 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
         </div>
       )}
       {tab === "upcoming" && (
-        dashboardLoading && upcomingEvents.length === 0
+        calendarLoading && upcomingEvents.length === 0
           ? <DashboardSkeleton />
           : upcomingEvents.length === 0
-          ? <EmptyState
+          ? calendarLoadErrors.length === 0 && <EmptyState
               icon="📅"
               title={isSubscribed ? "No upcoming meetings" : "Calendar processing is off"}
               sub={isSubscribed
@@ -431,7 +504,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       {/* In Progress */}
       {tab === "in_progress" && (
         inProgressEvents.length === 0 && activeRecordingJobs.length === 0 && pipelineActive.length === 0
-          ? <EmptyState icon="⚙️" title="Nothing in progress" sub="Meetings currently happening or being processed will appear here." />
+          ? !inProgressIncomplete && <EmptyState icon="⚙️" title="Nothing in progress" sub="Meetings currently happening or being processed will appear here." />
           : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {inProgressEvents.map((ev) => <CalendarCard key={ev.event_id} event={ev} inProgress />)}
               {activeRecordingJobs.map((job) => <RecordingJobCard key={job.job_id} job={job} token={accessToken} onChanged={refreshRecordingJobs} />)}
@@ -441,13 +514,13 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
       {/* Awaiting Review */}
       {tab === "review" && (
-        pendingReview.length === 0 && pendingProcessingRequests.length === 0 && !processingRequestsError
+        pendingReview.length === 0 && pendingProcessingRequests.length === 0 && !processingRequestsError && !meetingsIncomplete
           ? <EmptyState icon="📭" title="All caught up" sub="No meetings are awaiting your review." />
           : <div className="space-y-7">
               <section aria-labelledby="ai-notes-reviews-heading">
                 <h2 id="ai-notes-reviews-heading" className="mb-3 text-base font-semibold text-[#003366]">Existing AI Notes Reviews</h2>
                 {pendingReview.length === 0
-                  ? <p className="text-sm text-[#6b7280]">No AI notes are awaiting review.</p>
+                  ? !meetingsIncomplete && <p className="text-sm text-[#6b7280]">No AI notes are awaiting review.</p>
                   : <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                       {pendingReview.map((m) => <MeetingCard key={m.id} meeting={m} />)}
                     </div>}
@@ -492,7 +565,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           {historicalLoading && <p role="status" className="mb-3 rounded-md bg-blue-50 p-3 text-sm text-[#003366]">Loading historical meetings…</p>}
           {historicalError && <p role="alert" className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{historicalError}</p>}
           {oldMeetings.length === 0
-          ? <EmptyState icon="📂" title="No completed meetings yet" sub="Approved and sent meetings will appear here." />
+          ? !meetingsIncomplete && <EmptyState icon="📂" title="No completed meetings yet" sub="Approved and sent meetings will appear here." />
           : <div className="overflow-x-auto rounded-lg">
             <div className="min-w-[760px] bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
               <table className="w-full text-sm">
@@ -555,7 +628,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       {/* Cancelled */}
       {tab === "cancelled" && (
         cancelled.length === 0
-          ? <EmptyState icon="🚫" title="No failed or cancelled recordings" sub="Failed and explicitly cancelled recordings appear here." />
+          ? !meetingsIncomplete && <EmptyState icon="🚫" title="No failed or cancelled recordings" sub="Failed and explicitly cancelled recordings appear here." />
           : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {cancelled.map((m) => <MeetingCard key={m.id} meeting={m} />)}
             </div>

@@ -63,10 +63,11 @@ function compatibilityKey(title: string | null | undefined, date: string | null 
   return [normalized(title), Number.isNaN(instant) ? normalized(date) : String(instant), normalized(organizer)].join("|");
 }
 
-export default function RecentMeetings({ token, cacheIdentity = "current-user", isSubscribed, historical = [], processingRequests, onRefreshProcessingRequests, onRequestHistoricalAccess, onRequestMeetingEditAccess }: {
+export default function RecentMeetings({ token, cacheIdentity = "current-user", isSubscribed, historical = [], processingRequests, onRefreshProcessingRequests, onRequestHistoricalAccess, onRequestMeetingEditAccess, refreshKey = 0 }: {
   token: string;
   cacheIdentity?: string;
   isSubscribed: boolean;
+  refreshKey?: number;
   historical?: MeetingOut[];
   processingRequests?: RecordingProcessingRequest[];
   onRefreshProcessingRequests?: () => Promise<void>;
@@ -123,7 +124,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
       if (active) applyResults(results, { silent: Boolean(cached) || isStale });
     });
     return () => { active = false; };
-  }, [load, applyResults, cacheIdentity, isSubscribed]);
+  }, [load, applyResults, cacheIdentity, isSubscribed, refreshKey]);
 
   const displayedRequests = processingRequests ?? requests;
 

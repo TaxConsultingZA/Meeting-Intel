@@ -1,14 +1,43 @@
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
-from ..models import SyncedCalendarEvent
-from .deps import require_subscribed
+from ..models import RegisteredUser, SyncedCalendarEvent
+from .deps import registered_user, require_subscribed
+from ..services.calendar_sync import CalendarSyncBusy, sync_subscribed_calendars_once
 from .recording_processing_requests import EventReference
 from ..utils.timezones import parse_graph_datetime, utc_iso
 
 router = APIRouter()
+
+
+class CalendarSyncRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class CalendarSyncResult(BaseModel):
+    status: Literal["success", "partial", "failed"]
+    succeeded: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    skipped: int = Field(ge=0)
+    created: int = Field(ge=0)
+    updated: int = Field(ge=0)
+
+
+@router.post("/calendar/sync", response_model=CalendarSyncResult)
+async def sync_calendar_now(body: CalendarSyncRequest,
+                            user: RegisteredUser = Depends(registered_user)):
+    if not user.is_admin or not user.is_subscribed:
+        raise HTTPException(403, "A subscribed administrator is required for calendar sync")
+    try:
+        return await sync_subscribed_calendars_once()
+    except CalendarSyncBusy:
+        raise HTTPException(409, "Calendar sync is already running. Wait before trying again.") from None
+    except Exception:
+        raise HTTPException(503, "Calendar sync could not be completed. Check sync status before trying again.") from None
 
 
 @router.get("/calendar/recent")

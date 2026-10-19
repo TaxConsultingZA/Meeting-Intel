@@ -48,6 +48,7 @@ export default async function DashboardPage() {
         upn={upn}
         accessToken={accessToken}
         isSubscribed={me.is_subscribed}
+        isAdmin={me.is_admin}
         deferInitialLoad
       />
     </>

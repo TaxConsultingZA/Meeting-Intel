@@ -14,6 +14,32 @@ def _graph_datetime(value: dict | None) -> datetime | None:
     return parse_graph_datetime(value)
 
 
+async def store_calendar_events(db, upn: str, events: list[dict]) -> tuple[int, int]:
+    """Refresh only cached Calendar rows; counts are new/existing rows refreshed."""
+    created = updated = 0
+    for raw in events:
+        event_id = raw.get("id")
+        if not event_id:
+            continue
+        row = await db.scalar(select(SyncedCalendarEvent).where(
+            SyncedCalendarEvent.user_upn == upn,
+            SyncedCalendarEvent.event_id == event_id,
+        ))
+        if row is None:
+            row = SyncedCalendarEvent(user_upn=upn, event_id=event_id, raw=raw)
+            db.add(row)
+            created += 1
+        else:
+            updated += 1
+        row.subject = raw.get("subject")
+        row.starts_at = _graph_datetime(raw.get("start"))
+        row.ends_at = _graph_datetime(raw.get("end"))
+        row.raw = raw
+        row.last_synced_at = datetime.now(timezone.utc)
+    await db.commit()
+    return created, updated
+
+
 async def sync_calendar_events(days: int = 14) -> int:
     """Fetch and upsert calendar events for subscribed users only."""
     async with SessionLocal() as db:
@@ -36,25 +62,7 @@ async def sync_calendar_events(days: int = 14) -> int:
                 await record_sync_result(db, user_upn=upn, source="calendar", error=exc)
             continue
         async with SessionLocal() as db:
-            for raw in events:
-                event_id = raw.get("id")
-                if not event_id:
-                    continue
-                row = await db.scalar(
-                    select(SyncedCalendarEvent).where(
-                        SyncedCalendarEvent.user_upn == upn,
-                        SyncedCalendarEvent.event_id == event_id,
-                    )
-                )
-                if row is None:
-                    row = SyncedCalendarEvent(user_upn=upn, event_id=event_id, raw=raw)
-                    db.add(row)
-                row.subject = raw.get("subject")
-                row.starts_at = _graph_datetime(raw.get("start"))
-                row.ends_at = _graph_datetime(raw.get("end"))
-                row.raw = raw
-                row.last_synced_at = datetime.now(timezone.utc)
-                synced += 1
-            await db.commit()
+            created, updated = await store_calendar_events(db, upn, events)
+            synced += created + updated
             await record_sync_result(db, user_upn=upn, source="calendar")
     return synced

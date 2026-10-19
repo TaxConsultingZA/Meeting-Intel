@@ -338,6 +338,20 @@ export async function getSyncStatus(accessToken: string): Promise<SyncState[]> {
   return apiFetch<SyncState[]>("/users/me/sync-status", accessToken);
 }
 
+export interface CalendarSyncResult {
+  status: "success" | "partial" | "failed";
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  created: number;
+  updated: number;
+}
+
+/** One explicit calendar-only run for existing subscribers; no automatic retry. */
+export function syncCalendarsNow(accessToken: string): Promise<CalendarSyncResult> {
+  return apiFetch("/calendar/sync", accessToken, { method: "POST", body: "{}" });
+}
+
 /** Explicitly opt the current user into automatic Calendar/OneDrive processing. */
 export async function subscribeCurrentUser(
   accessToken: string,

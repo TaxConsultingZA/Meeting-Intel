@@ -52,6 +52,20 @@ it("defaults to the last 7 days with recordings", () => {
   expect(screen.getByRole("combobox", { name: "Recording" })).toHaveValue("with");
 });
 
+it("revalidates after calendar sync without resetting the selected filters", async () => {
+  vi.mocked(api.getRecentMeetings).mockResolvedValueOnce([event("view")]);
+  const view = render(<RecentMeetings token="token" isSubscribed refreshKey={0} />);
+  expect(await screen.findByRole("link", { name: "View" })).toBeInTheDocument();
+  fireEvent.change(screen.getByRole("combobox", { name: "Time" }), { target: { value: "all" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Recording" }), { target: { value: "all" } });
+  vi.mocked(api.getRecentMeetings).mockResolvedValueOnce([{ ...event("view"), subject: "Synced calendar row" }]);
+  view.rerender(<RecentMeetings token="token" isSubscribed refreshKey={1} />);
+  expect(await screen.findByText("Synced calendar row")).toBeVisible();
+  expect(screen.getByRole("combobox", { name: "Time" })).toHaveValue("all");
+  expect(screen.getByRole("combobox", { name: "Recording" })).toHaveValue("all");
+  expect(api.getRecentMeetings).toHaveBeenCalledTimes(2);
+});
+
 function event(action: RecentMeeting["action"]): RecentMeeting {
   return { event_id: action, subject: action, action, status: "ended", start: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
     end: new Date(Date.now() - 23 * 60 * 60 * 1000).toISOString(), start_tz: "UTC", organizer_name: "Organizer", organizer_email: "org@example.test",

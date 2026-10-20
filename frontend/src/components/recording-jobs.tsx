@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { cancelRecordingJob, getRecordingJobs, reprocessRecordingJob, retryRecordingJob } from "@/lib/api";
 import type { ProcessingFailure, RecordingJobOut, RecordingProcessingStatus } from "@/lib/types";
 import StateBadge from "./state-badge";
+import LoadingSpinner from "./loading-spinner";
 
 function lifecycleStatus(status: RecordingProcessingStatus): RecordingProcessingStatus {
   return status === "downloading" || status === "extracting" || status === "cancel_requested"
@@ -158,7 +159,7 @@ export default function RecordingJobs({ token, meetingId, refreshKey, onChanged,
       {!error && <button type="button" disabled={refreshing} onClick={() => void refresh()} className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-800 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50">{refreshing && <Loader2 size={12} aria-hidden="true" className="animate-spin" />}{refreshing ? "Refreshing status…" : "Refresh status"}</button>}
     </div>
     <div className="space-y-2 p-3">
-    {loading && <p role={meetingId ? undefined : "status"} aria-live="polite" className="flex items-center gap-2 text-sm text-[#6b7280]"><Loader2 size={16} className="animate-spin" aria-hidden="true" />Loading recording status… This may take a moment.</p>}
+    {loading && <LoadingSpinner label="Recording status loading" />}
     {error && <div role="alert" className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
       <p className="font-semibold">Unable to refresh recording status</p>
       <p className="mt-1 text-xs">{error} {jobs.length > 0 ? "Showing the last available status." : meetingId ? "Meeting information remains available in the main panel." : "Try refreshing to load recording jobs."}</p>

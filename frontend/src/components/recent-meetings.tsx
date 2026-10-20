@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import LoadingSpinner from "./loading-spinner";
 import { useCallback, useEffect, useRef, useState } from "react";
 import LocalDateTime from "./local-date-time";
 import { getRecentMeetings, getProcessingRequests, requestRecordingProcessing, decideRecordingProcessing, processRecentMeeting } from "@/lib/api";
@@ -89,22 +90,27 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
   useEffect(() => {
     processingRequestsRef.current = processingRequests;
   }, [processingRequests]);
-  const load = useCallback(() => Promise.allSettled([
-      isSubscribed ? getRecentMeetings(token) : Promise.resolve([]),
-      controlledRequests ? Promise.resolve(processingRequestsRef.current ?? []) : getProcessingRequests(token, null),
-    ]), [token, isSubscribed, controlledRequests]);
-  const applyResults = useCallback((results: Awaited<ReturnType<typeof load>>, options?: { silent?: boolean }) => {
+  const load = useCallback(async (active: () => boolean = () => true, silent = false) => {
     const errors: string[] = [];
-    if (results[0].status === "fulfilled") {
-      setEvents(results[0].value);
-      if (isSubscribed) writeCache(cacheIdentity, results[0].value);
-    }
-    else if (!options?.silent) errors.push("Recent Meetings unavailable. Please refresh to retry.");
-    if (results[1].status === "fulfilled") setRequests(results[1].value);
-    else if (!options?.silent) errors.push("Processing requests unavailable.");
-    setError(errors.join(" "));
-    setLoading(false);
-  }, [cacheIdentity, isSubscribed]);
+    const report = (message: string) => {
+      if (!active() || silent) return;
+      errors.push(message);
+      setError(errors.join(" "));
+    };
+    // Publish each read as it settles; the other read may still be pending.
+    await Promise.allSettled([
+      (isSubscribed ? getRecentMeetings(token) : Promise.resolve([])).then((rows) => {
+        if (!active()) return;
+        setEvents(rows);
+        if (isSubscribed) writeCache(cacheIdentity, rows);
+      }).catch(() => report("Recent Meetings unavailable. Please refresh to retry."))
+        .finally(() => { if (active()) setLoading(false); }),
+      (controlledRequests ? Promise.resolve(processingRequestsRef.current ?? []) : getProcessingRequests(token, null))
+        .then((rows) => { if (active()) setRequests(rows); })
+        .catch(() => report("Processing requests unavailable.")),
+    ]);
+    if (active()) setError(errors.join(" "));
+  }, [token, isSubscribed, controlledRequests, cacheIdentity]);
 
   useEffect(() => {
     let active = true;
@@ -120,11 +126,9 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     // A cached result is rendered immediately. Revalidate it without replacing
     // the page with a loading state, especially once its TTL has elapsed.
     const isStale = cached ? Date.now() - cached.cachedAt >= RECENT_MEETINGS_CACHE_TTL_MS : false;
-    void load().then((results) => {
-      if (active) applyResults(results, { silent: Boolean(cached) || isStale });
-    });
+    void load(() => active, Boolean(cached) || isStale);
     return () => { active = false; };
-  }, [load, applyResults, cacheIdentity, isSubscribed, refreshKey]);
+  }, [load, cacheIdentity, isSubscribed, refreshKey]);
 
   const displayedRequests = processingRequests ?? requests;
 
@@ -132,7 +136,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     setRefreshing(true);
     setError("");
     try {
-      applyResults(await load());
+      await load();
       await onRefreshProcessingRequests?.();
     }
     finally { setRefreshing(false); }
@@ -179,8 +183,8 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
         </button>
       </div>
       {error && <p role="alert" className="mb-4 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{error}</p>}
-      {loading && <p role="status">Loading recent meetings and processing requests…</p>}
-      {refreshing && <p role="status" className="mb-3 text-sm text-[#6b7280]">Refreshing recent meetings and processing requests…</p>}
+      {loading && <LoadingSpinner label="Recent meetings loading" />}
+      {refreshing && <LoadingSpinner label="Recent meetings refreshing" />}
       {!isSubscribed && <p className="mb-4 text-sm">Subscribe to discover recent Calendar meetings and recordings.</p>}
       <div className="mb-5 flex flex-wrap gap-3">
         <label className="text-sm font-medium text-[#374151]">Time

@@ -126,7 +126,7 @@ describe("recording job controls", () => {
   it("shows loading feedback while recording status is being fetched", () => {
     vi.mocked(getRecordingJobs).mockReturnValue(new Promise(() => {}));
     render(<RecordingJobs token="token" />);
-    expect(screen.getByRole("status")).toHaveTextContent("Loading recording status");
+    expect(screen.getByRole("status", { name: "Recording status loading" })).toBeInTheDocument();
   });
   it("shows no retry control for completed and allows cancelled retry", () => {
     const { rerender } = render(<JobControls job={{ ...job, status: "completed", processing_status: "completed", phase: "completed", can_retry: false, can_cancel: false }} token="token" onChanged={vi.fn()} />);

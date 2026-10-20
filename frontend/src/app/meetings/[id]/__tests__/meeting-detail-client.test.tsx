@@ -210,7 +210,7 @@ it.each([
 
   render(<MeetingDetailClient meeting={meeting} upn="attendee@taxconsulting.co.za" accessToken="token" />);
 
-  expect(screen.getByRole("status")).toHaveTextContent(message);
+  expect(screen.getByText(message)).toHaveAttribute("role", "status");
 });
 
 it("shows the organiser edit-access status", () => {
@@ -224,7 +224,7 @@ it("shows the organiser edit-access status", () => {
 
   render(<MeetingDetailClient meeting={meeting} upn="owner@taxconsulting.co.za" accessToken="token" />);
 
-  expect(screen.getByRole("status")).toHaveTextContent("You are the meeting organiser and have full edit access.");
+  expect(screen.getByText("You are the meeting organiser and have full edit access.")).toHaveAttribute("role", "status");
 });
 
 
@@ -536,9 +536,13 @@ it.each(["confirmed", "reconciled", "refresh-failed"])("refreshes the terminal s
   else vi.mocked(approveMeeting).mockResolvedValue({ ok: true, state: "approved" });
   if (outcome === "refresh-failed") vi.mocked(getMeeting).mockRejectedValue(new Error("Offline"));
   else vi.mocked(getMeeting).mockResolvedValue({ ...meeting, state: "approved" });
-  const preview = await openReviewedApproval(meeting);
+  vi.mocked(previewMeetingEmail).mockResolvedValue({ subject: "Final notes", html: "<p>Exact email content</p>", recipients: [], fingerprint: "fingerprint" });
+  render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="token" />);
   const sidebar = within(screen.getByRole("region", { name: "Recording processing" }));
   await sidebar.findByRole("button", { name: "Reprocess" });
+  fireEvent.click(screen.getByRole("button", { name: /Approve Meeting Notes/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Review Email Preview" }));
+  const preview = await screen.findByRole("dialog", { name: "Email Preview" });
   fireEvent.click(within(preview).getByRole("button", { name: "Close Preview" }));
   fireEvent.click(screen.getByRole("button", { name: "Approve Meeting Notes" }));
   expect(await sidebar.findByText("Approved")).toBeVisible();

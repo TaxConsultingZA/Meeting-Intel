@@ -209,3 +209,11 @@ it("refreshes without clearing successful meetings or processing requests", asyn
   expect(api.getRecentMeetings).toHaveBeenCalledTimes(2);
   expect(api.getProcessingRequests).toHaveBeenCalledTimes(2);
 });
+
+it("publishes calendar rows while processing requests remain pending", async () => {
+  vi.mocked(api.getRecentMeetings).mockResolvedValue([event("view")]);
+  vi.mocked(api.getProcessingRequests).mockReturnValue(new Promise(() => {}));
+  render(<RecentMeetings token="token" isSubscribed />);
+  expect(await screen.findByRole("link", { name: "View" })).toBeVisible();
+  expect(screen.queryByRole("status", { name: "Recent meetings loading" })).not.toBeInTheDocument();
+});

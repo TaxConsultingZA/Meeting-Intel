@@ -41,6 +41,7 @@ it("does not repeat a completed calendar sync on a timer", async () => {
   vi.mocked(getProcessingRequests).mockResolvedValue([]);
   render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} isAdmin
     upn="admin@example.test" accessToken="offline-test-token" isSubscribed syncStates={[]} loadErrors={[]} />);
+  await act(async () => {});
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" })); });
   await act(async () => { await vi.advanceTimersByTimeAsync(600_000); });
   expect(syncCalendarsNow).toHaveBeenCalledOnce();
@@ -59,6 +60,7 @@ it("does not replace post-sync calendar results with a slow initial response", a
   vi.mocked(syncCalendarsNow).mockResolvedValue(syncCounts);
   render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} isAdmin deferInitialLoad
     upn="admin@example.test" accessToken="offline-test-token" isSubscribed syncStates={[]} loadErrors={[]} />);
+  await act(async () => {});
   fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" }));
   expect(await screen.findByText("After sync")).toBeVisible();
   await act(async () => { finishInitial([calendarEvent({ subject: "Before sync" })]); });
@@ -66,7 +68,7 @@ it("does not replace post-sync calendar results with a slow initial response", a
   expect(screen.getByText("After sync")).toBeVisible();
 });
 
-it("syncs once per click, blocks duplicate clicks and shows aggregate counts", async () => {
+it("syncs once per click, blocks duplicate clicks and shows concise success", async () => {
   let finish!: (result: typeof syncCounts) => void;
   vi.mocked(syncCalendarsNow).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   vi.mocked(getUpcomingMeetings).mockResolvedValue([]);
@@ -77,12 +79,13 @@ it("syncs once per click, blocks duplicate clicks and shows aggregate counts", a
 
   expect(syncCalendarsNow).not.toHaveBeenCalled();
   const button = screen.getByRole("button", { name: "Sync calendar now" });
+  await act(async () => {});
   fireEvent.click(button);
   fireEvent.click(button);
   expect(syncCalendarsNow).toHaveBeenCalledExactlyOnceWith("offline-test-token");
   expect(screen.getByRole("button", { name: "Syncing calendars…" })).toBeDisabled();
   await act(async () => { finish(syncCounts); });
-  expect(screen.getByRole("status")).toHaveTextContent("3 succeeded, 0 failed, 0 skipped; 2 events added, 4 existing events refreshed");
+  expect(screen.getByRole("status")).toHaveTextContent("Calendar sync succeeded.");
   expect(screen.getByRole("button", { name: "Sync calendar now" })).toBeEnabled();
   expect(getUpcomingMeetings).toHaveBeenCalledOnce();
   expect(getSyncStatus).toHaveBeenCalledOnce();
@@ -94,6 +97,7 @@ it("shows a recoverable sync error without retrying or leaking provider details"
   vi.mocked(getProcessingRequests).mockResolvedValue([]);
   render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} isAdmin
     upn="admin@example.test" accessToken="offline-test-token" isSubscribed syncStates={[]} loadErrors={[]} />);
+  await act(async () => {});
   fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Check sync status and existing Microsoft access");
   expect(screen.getByRole("alert")).not.toHaveTextContent("SECRET");
@@ -102,20 +106,22 @@ it("shows a recoverable sync error without retrying or leaking provider details"
   vi.mocked(syncCalendarsNow).mockResolvedValueOnce(syncCounts);
   vi.mocked(getUpcomingMeetings).mockResolvedValue([]);
   vi.mocked(getSyncStatus).mockResolvedValue([]);
+  await act(async () => {});
   fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" }));
-  expect(await screen.findByText(/3 succeeded/)).toBeVisible();
+  expect(await screen.findByText("Calendar sync succeeded.")).toBeVisible();
   expect(syncCalendarsNow).toHaveBeenCalledTimes(2);
 });
 
-it("reports partial failures and skipped users without hiding success counts", async () => {
+it("reports partial sync failures clearly", async () => {
   vi.mocked(syncCalendarsNow).mockResolvedValue({ ...syncCounts, status: "partial", succeeded: 1, failed: 1, skipped: 1 });
   vi.mocked(getProcessingRequests).mockResolvedValue([]);
   vi.mocked(getUpcomingMeetings).mockResolvedValue([]);
   vi.mocked(getSyncStatus).mockResolvedValue([]);
   render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} isAdmin
     upn="admin@example.test" accessToken="offline-test-token" isSubscribed syncStates={[]} loadErrors={[]} />);
+  await act(async () => {});
   fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("1 succeeded, 1 failed, 1 skipped");
+  expect(await screen.findByRole("alert")).toHaveTextContent("Calendar sync partially completed.");
   expect(syncCalendarsNow).toHaveBeenCalledOnce();
 });
 
@@ -219,7 +225,7 @@ it("renders the dashboard frame while slow dashboard data loads asynchronously",
     isSubscribed={true} syncStates={[]} loadErrors={[]} deferInitialLoad />);
 
   expect(screen.getByRole("heading", { name: "Meeting Intelligence" })).toBeInTheDocument();
-  expect(screen.getByRole("status", { name: "Calendar meetings loading" })).toHaveTextContent("Loading calendar meetings");
+  expect(screen.getByRole("status", { name: "Calendar meetings loading" })).toHaveAccessibleName("Calendar meetings loading");
   expect(getUpcomingMeetings).toHaveBeenCalledWith("offline-test-token");
   expect(getHistoricalMeetings).not.toHaveBeenCalled();
 
@@ -241,7 +247,7 @@ it("shows a calendar failure without waiting for unrelated recording status", as
 
   expect(await screen.findByText("Calendar sync failed: Calendar unavailable")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Meeting Intelligence" })).toBeInTheDocument();
-  expect(screen.getByRole("status", { name: "Recording status loading" })).toHaveTextContent("Loading recording status");
+  expect(screen.getByRole("status", { name: "Recording status loading" })).toHaveAccessibleName("Recording status loading");
   expect(screen.queryByRole("status", { name: "Calendar meetings loading" })).not.toBeInTheDocument();
   expect(screen.queryByText("No upcoming meetings")).not.toBeInTheDocument();
 });
@@ -345,7 +351,7 @@ it("loads historical meetings once when Old Meetings is first opened and preserv
 
   fireEvent.click(screen.getByRole("button", { name: "Old Meetings" }));
   expect(getHistoricalMeetings).toHaveBeenCalledTimes(1);
-  expect(screen.getByRole("status")).toHaveTextContent("Loading historical meetings");
+  expect(screen.getByRole("status")).toHaveAccessibleName("Historical meetings loading");
   await waitFor(() => expect(screen.queryByText("Loading historical meetings…")).not.toBeInTheDocument());
 
   fireEvent.click(screen.getByRole("button", { name: "Meetings" }));
@@ -506,9 +512,8 @@ it.each(["jobs", "meetings"] as const)("preserves loaded data when refreshing %s
   fireEvent.click(screen.getByRole("button", { name: /^Awaiting Review/ }));
 
   await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
-  expect(screen.getByText("Previously loaded meeting")).toBeVisible();
-  expect(screen.queryByText("Updated meeting")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /^In Progress/ })).toHaveTextContent("1");
+  expect(screen.getByText(failureSource === "jobs" ? "Updated meeting" : "Previously loaded meeting")).toBeVisible();
+  expect(screen.getByRole("button", { name: /^In Progress/ })).toHaveTextContent(failureSource === "jobs" ? "1" : "In Progress");
   const warning = screen.getByRole("status", { name: "Dashboard refresh status" });
   expect(warning).toHaveTextContent("Your last loaded meeting and recording information is still shown.");
   expect(warning).not.toHaveTextContent("SECRET");
@@ -522,10 +527,11 @@ it.each(["jobs", "meetings"] as const)("preserves loaded data when refreshing %s
   fireEvent.click(busy);
   expect(getRecordingJobs).toHaveBeenCalledTimes(2);
   expect(getAllMeetings).toHaveBeenCalledTimes(2);
-  expect(screen.getByText("Previously loaded meeting")).toBeVisible();
+  await act(async () => {});
+  expect(screen.getByText("Updated meeting")).toBeVisible();
   await act(async () => { rejectRetry(new Error("SECRET retry failure")); });
   expect(screen.getByRole("button", { name: "Retry refresh" })).toBeEnabled();
-  expect(screen.getByText("Previously loaded meeting")).toBeVisible();
+  expect(screen.getByText("Updated meeting")).toBeVisible();
 
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Retry refresh" })); });
   expect(screen.getByText("Updated meeting")).toBeVisible();
@@ -587,4 +593,37 @@ it("shows Share for an organizer when UPN casing differs", () => {
   fireEvent.click(screen.getByRole("button", { name: "Old Meetings" }));
 
   expect(screen.getByRole("button", { name: /Share/ })).toBeInTheDocument();
+});
+
+it("expires concise sync success at one minute", async () => {
+  vi.useFakeTimers();
+  vi.mocked(syncCalendarsNow).mockResolvedValue(syncCounts);
+  vi.mocked(getUpcomingMeetings).mockResolvedValue([]);
+  vi.mocked(getSyncStatus).mockResolvedValue([]);
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} syncStates={[]} loadErrors={[]}
+    accessToken="offline" upn="admin@example.test" isSubscribed isAdmin />);
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" })); });
+  expect(screen.getByText("Calendar sync succeeded.")).toBeVisible();
+  expect(screen.queryByText(/events added|succeeded,/)).not.toBeInTheDocument();
+  await act(async () => { await vi.advanceTimersByTimeAsync(59_999); });
+  expect(screen.getByText("Calendar sync succeeded.")).toBeVisible();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(screen.queryByText("Calendar sync succeeded.")).not.toBeInTheDocument();
+  expect(syncCalendarsNow).toHaveBeenCalledOnce();
+});
+
+it("publishes a polled meeting before the recording request settles", async () => {
+  vi.useFakeTimers();
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  vi.mocked(getAllMeetings).mockResolvedValue([processedMeeting({ title: "Fast polled review" })]);
+  vi.mocked(getRecordingJobs).mockReturnValue(new Promise(() => {}));
+  render(<DashboardClient meetings={[]} recordingJobs={[recordingJob()]} upcoming={[]} historical={[]}
+    upn="reviewer@example.test" accessToken="offline" isSubscribed syncStates={[]} loadErrors={[]} />);
+  fireEvent.click(screen.getByRole("button", { name: /^Awaiting Review/ }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+  expect(screen.getByText("Fast polled review")).toBeVisible();
+  expect(getRecordingJobs).toHaveBeenCalledOnce();
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+  expect(getRecordingJobs).toHaveBeenCalledOnce();
 });

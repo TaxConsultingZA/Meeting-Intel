@@ -1,5 +1,11 @@
 # Project status
 
+## 2026-10-20 Frontend loading feedback
+
+- Recent Meetings now publishes each completed read independently instead of waiting for both requests.
+- Dashboard, Action Items, Admin and Meeting Detail use compact indeterminate loading circles and retain loaded content and recovery feedback. Successful calendar sync displays `Calendar sync succeeded.` for about one minute.
+- Real public-page load times and backend/database bottlenecks remain unmeasured. Mock regression tests do not establish overall speed improvements.
+
 Snapshot: 2026-10-09. Based on the current working tree and local Git history;
 Local development reference only.
 HEAD is `139ed37` (2026-10-06). Existing uncommitted work is included explicitly.

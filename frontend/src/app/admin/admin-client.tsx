@@ -1,8 +1,9 @@
 "use client";
-import { Fragment, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import LoadingSpinner from "@/components/loading-spinner";
 import Link from "next/link";
 import { UserPlus, Trash2, Shield, Pencil, ChevronDown, Loader2, History, ArrowRight } from "lucide-react";
-import { cleanupAdminJob, decideMeetingEditAccess, decideRecordingProcessing, getAdminMeetings, getAdminUserSyncStatus, getBusinessUnits, getRecordingJobs, getRegisteredUsers, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
+import { getAdminAccessRequests, cleanupAdminJob, decideMeetingEditAccess, decideRecordingProcessing, getAdminMeetings, getAdminUserSyncStatus, getBusinessUnits, getRecordingJobs, getRegisteredUsers, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
 import type { RegisteredUser, BusinessUnit, RecordingJobOut, AdminAccessRequest, AdminMeetingOut, SyncState } from "@/lib/types";
 import { JobControls } from "@/components/recording-jobs";
 import { toast } from "sonner";
@@ -13,9 +14,10 @@ interface Props {
   initialRequests: AdminAccessRequest[];
   callerUpn: string;
   accessToken: string;
+  deferInitialRequests?: boolean;
 }
 
-export default function AdminClient({ initialRequests, callerUpn, accessToken }: Props) {
+export default function AdminClient({ initialRequests, callerUpn, accessToken, deferInitialRequests = false }: Props) {
   const [users, setUsers] = useState<RegisteredUser[]>([]);
   const [businessUnits, setBusinessUnits] = useState<BusinessUnit[]>([]);
   const [showAdd, setShowAdd] = useState(false);
@@ -25,7 +27,10 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
   const [meetings, setMeetings] = useState<AdminMeetingOut[]>([]);
   const [requests, setRequests] = useState(initialRequests);
   const [loaded, setLoaded] = useState({ meetings: false, jobs: false, users: false });
-  const [loading, setLoading] = useState<string | null>(null);
+  const [loading, setLoading] = useState({ meetings: false, jobs: false, users: false });
+  const sectionsInFlight = useRef(new Set<string>());
+  const [requestsLoading, setRequestsLoading] = useState(deferInitialRequests);
+  const [requestsError, setRequestsError] = useState("");
   const [syncOpen, setSyncOpen] = useState<string | null>(null);
   const [syncByUser, setSyncByUser] = useState<Record<string, SyncState[]>>({});
   const [syncLoading, setSyncLoading] = useState<string | null>(null);
@@ -33,9 +38,29 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
   const [busyJob, setBusyJob] = useState<{ id: string; action: "reprocess" | "cleanup" } | null>(null);
   const jobsInFlight = useRef(new Set<string>());
 
+  const refreshRequests = useCallback(async (active: () => boolean = () => true) => {
+    setRequestsLoading(true);
+    try {
+      const rows = await getAdminAccessRequests(accessToken);
+      if (active()) { setRequests(rows); setRequestsError(""); }
+    } catch {
+      if (active()) setRequestsError("Access requests could not be loaded.");
+    } finally {
+      if (active()) setRequestsLoading(false);
+    }
+  }, [accessToken]);
+
+  useEffect(() => {
+    if (!deferInitialRequests) return;
+    let active = true;
+    void refreshRequests(() => active);
+    return () => { active = false; };
+  }, [deferInitialRequests, refreshRequests]);
+
   async function loadSection(section: "meetings" | "jobs" | "users") {
-    if (loaded[section]) return;
-    setLoading(section);
+    if (loaded[section] || sectionsInFlight.current.has(section)) return;
+    sectionsInFlight.current.add(section);
+    setLoading((current) => ({ ...current, [section]: true }));
     setError(null);
     try {
       if (section === "meetings") setMeetings(await getAdminMeetings(accessToken));
@@ -51,7 +76,8 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
     } catch (e: unknown) {
       setError(section === "jobs" ? "Recording jobs could not be loaded. Close and reopen Processing Jobs to try again." : e instanceof Error ? e.message : `Failed to load ${section}`);
     } finally {
-      setLoading((current) => current === section ? null : current);
+      sectionsInFlight.current.delete(section);
+      setLoading((current) => ({ ...current, [section]: false }));
     }
   }
 
@@ -219,7 +245,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
       <details onToggle={(event) => event.currentTarget.open && void loadSection("meetings")} className="group mb-3 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
         <SectionHeader id="admin-meetings" label="Meetings" count={loaded.meetings ? meetings.length : undefined} />
         <div className="px-4 pb-3"><p className="text-xs text-[#6b7280]">Operational metadata and Admin meeting-content access across users.</p></div>
-        {loading === "meetings" && <Loading />}
+        {loading.meetings && <LoadingSpinner label="Meetings loading" />}
         {loaded.meetings && <>
         <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr>{["Meeting", "Organizer / owner", "Recording", "Meeting", "Job", "Request"].map((label) => <th key={label} className="bg-[#003366] text-white px-3 py-2 text-left">{label}</th>)}</tr></thead>
           <tbody>{meetings.map((meeting) => <tr key={meeting.id} className="border-t align-top"><td className="px-3 py-2 font-medium"><Link href={`/meetings/${meeting.id}`} className="text-[#003366] underline-offset-2 hover:underline">{meeting.title ?? "Untitled meeting"}</Link></td><td className="px-3 py-2">{meeting.organizer_upn ?? "Unknown"}{meeting.owner_upn && meeting.owner_upn !== meeting.organizer_upn ? ` / ${meeting.owner_upn}` : ""}<AccessList meeting={meeting} onRevoke={handleRevoke} /></td><td className="px-3 py-2">{meeting.recording_status}</td><td className="px-3 py-2"><StatusText value={meeting.meeting_status} /></td><td className="px-3 py-2">{meeting.job_status ? <StatusText value={meeting.job_status} /> : "—"}</td><td className="px-3 py-2">{meeting.request_status ? <StatusText value={meeting.request_status} /> : "—"}</td></tr>)}</tbody>
@@ -232,7 +258,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
         <SectionHeader id="admin-jobs" label="Processing Jobs" count={loaded.jobs ? jobs.length : undefined} />
         <div className="px-4 pb-4">
         <p className="text-xs text-[#6b7280] mb-3">Jobs across all registered users.</p>
-        {loading === "jobs" && <p role="status" className="flex items-center gap-2 text-sm text-[#6b7280]"><Loader2 size={16} aria-hidden="true" className="animate-spin" />Loading recording jobs… This may take a moment.</p>}
+        {loading.jobs && <LoadingSpinner label="Recording jobs loading" />}
         {loaded.jobs && <>
         {jobs.length === 0 && <p className="text-sm text-[#9ca3af]">No recording jobs yet. Jobs appear here once recordings are queued for processing.</p>}
         {jobs.map((job) => (
@@ -262,7 +288,9 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
         <SectionHeader id="admin-requests" label="Access Requests" count={requests.length} />
         <div className="px-4 pb-4">
         <p className="text-xs text-[#6b7280] mb-3">Processing, view, and edit requests across all users. Admins have full-control authority through the available approval workflows.</p>
-        {requests.length === 0 && <p className="text-sm text-[#9ca3af]">No access requests.</p>}
+        {requestsLoading && <LoadingSpinner label="Access requests loading" />}
+        {requestsError && <div role="alert">{requestsError} <button type="button" disabled={requestsLoading} onClick={() => void refreshRequests()}>Retry access requests</button></div>}
+        {!requestsLoading && !requestsError && requests.length === 0 && <p className="text-sm text-[#9ca3af]">No access requests.</p>}
         {requests.map((request) => (
           <div key={request.id} className="border-t py-3 text-sm">
             <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{request.meeting}</span><StatusText value={request.status} /></div>
@@ -298,7 +326,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
             <UserPlus size={15} /> Register User
           </button>
         </div>
-        {loading === "users" && <Loading />}
+        {loading.users && <LoadingSpinner label="Users loading" />}
         {loaded.users && <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -379,7 +407,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken }:
                 <tr>
                   <td colSpan={6} className="border border-[#dde1e8] bg-slate-50 px-4 py-3">
                     {syncLoading === u.upn
-                      ? <p role="status" className="text-xs text-[#6b7280]">Loading sync diagnostics…</p>
+                      ? <LoadingSpinner label="Sync diagnostics loading" />
                       : syncErrors[u.upn]
                         ? <p className="text-xs text-red-700">{syncErrors[u.upn]}</p>
                         : <SyncDiagnostics states={syncByUser[u.upn] ?? []} />}
@@ -426,9 +454,6 @@ function SectionHeader({ id, label, count }: { id: string; label: string; count?
   );
 }
 
-function Loading() {
-  return <p role="status" className="px-4 pb-4 text-sm text-[#6b7280]">Loading…</p>;
-}
 
 function SyncDiagnostics({ states }: { states: SyncState[] }) {
   const bySource = new Map(states.map((state) => [state.source, state]));

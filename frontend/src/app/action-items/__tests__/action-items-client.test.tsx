@@ -172,3 +172,17 @@ it.each([
   expect(screen.getByText("Please send the report.")).toBeInTheDocument();
   expect(getApprovedActionItems).toHaveBeenCalledOnce();
 });
+
+it("keeps loaded actions visible during a slow refresh and a recoverable failure", async () => {
+  render(<ActionItemsClient accessToken="token" />);
+  await screen.findByText("Send report");
+  let fail!: (error: Error) => void;
+  vi.mocked(getApprovedActionItems).mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  expect(screen.getByText("Send report")).toBeVisible();
+  expect(screen.getByRole("status", { name: "Action items loading" })).toBeInTheDocument();
+  fail(new Error("offline"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Unable to load action items");
+  expect(screen.getByText("Send report")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
+});

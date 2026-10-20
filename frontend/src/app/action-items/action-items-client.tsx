@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { ApiError, getApprovedActionItems } from "@/lib/api";
 import type { ActionItemFilters, ApprovedActionItemsPage } from "@/lib/types";
 import TaskCompletionControl from "@/components/task-completion";
+import LoadingSpinner from "@/components/loading-spinner";
 
 const initial: ActionItemFilters = { view: "all", meeting: "", owner: "", deadline: "", offset: 0 };
 const controlBase = "rounded-md border px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-[#003366]";
@@ -25,19 +26,22 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
+  const [displayedOffset, setDisplayedOffset] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
     async function load() {
       setLoading(true);
-      setResult(null);
       setError("");
       try {
         const page = await getApprovedActionItems(accessToken, filters, controller.signal);
-        if (active) setResult(page);
+        if (active) { setResult(page); setDisplayedOffset(filters.offset); }
       } catch (failure) {
-        if (active) setError(failure instanceof ApiError ? failure.responseBody : "Unable to load action items. Please try again.");
+        if (active) {
+          if (failure instanceof ApiError && [401, 403].includes(failure.status)) setResult(null);
+          setError(failure instanceof ApiError ? failure.responseBody : "Unable to load action items. Please try again.");
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -46,8 +50,7 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
     return () => { active = false; controller.abort(); };
   }, [accessToken, filters, refresh]);
 
-  // Hide previous results immediately when navigation/filter/refresh requests change.
-  function change(next: ActionItemFilters) { setResult(null); setLoading(true); setFilters(next); }
+  function change(next: ActionItemFilters) { setLoading(true); setFilters(next); }
 
   const hasAppliedFilters = [filters.meeting, filters.owner, filters.deadline].some(value => value.trim());
   const emptyTitle = filters.offset > 0
@@ -65,7 +68,7 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div><h1 className="text-2xl font-bold text-[#003366]">Action Items</h1>
         <p className="mt-2 max-w-2xl text-sm text-gray-600">Approved action items from meetings you can access. Task completion is separate from meeting-note approval. Approved wording remains locked.</p></div>
-      <button className={control} disabled={loading} onClick={() => { setResult(null); setLoading(true); setRefresh(value => value + 1); }}>Refresh</button>
+      <button className={control} disabled={loading} onClick={() => { setLoading(true); setRefresh(value => value + 1); }}>Refresh</button>
     </div>
     <form aria-label="Filter action items" className="mt-5 grid gap-3 rounded-lg border bg-gray-50 p-4 sm:grid-cols-3" onSubmit={event => { event.preventDefault(); change({ ...filters, ...draft, offset: 0 }); }}>
       {([ ["meeting", "Meeting", "Search meeting title"], ["owner", "Owner", "Search owner name or email"], ["deadline", "Due date", "Date or original wording"] ] as const).map(([key, label, placeholder]) =>
@@ -77,7 +80,8 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
         <button type="button" className={control} onClick={() => { setDraft({ meeting: "", owner: "", deadline: "" }); change({ ...initial }); }}>Clear filters</button></div>
     </form>
     <section className="mt-6" aria-label="Approved action items" aria-busy={loading}>
-      {loading && <p role="status" className="p-6 text-gray-600">Loading action items…</p>}
+      {loading && <LoadingSpinner label="Action items loading" />}
+      {result && loading && <p className="sr-only">Showing previous results while the requested view loads.</p>}
       {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">{error}</div>}
       {result && !result.items.length && <div className="rounded-lg border bg-white px-6 py-10 text-center">
         <div role="status">
@@ -93,7 +97,7 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
           : !hasAppliedFilters && <Link className="mt-4 inline-block text-sm font-semibold text-[#003366] underline" href="/">View meetings on Dashboard</Link>}
       </div>}
       {result && result.items.length > 0 && <>
-        <p role="status" className="mb-3 text-sm text-gray-600">Showing {filters.offset + 1}–{filters.offset + result.items.length}</p>
+        <p role="status" className="mb-3 text-sm text-gray-600">Showing {displayedOffset + 1}–{displayedOffset + result.items.length}</p>
         <div className="overflow-x-auto rounded-lg border"><table className="w-full min-w-[760px] text-left text-sm">
           <caption className="sr-only">Approved action items and source evidence</caption>
           <thead className="bg-[#003366] text-white"><tr>{["Task", "Meeting", "Owner", "Due date", "Confidence", "Source evidence", "Task status"].map(label => <th scope="col" key={label} className="px-4 py-3">{label}</th>)}</tr></thead>
@@ -113,8 +117,8 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
         </table></div>
       </>}
       {result && result.items.length > 0 && <div className="mt-4 flex gap-2" aria-label="Pagination">
-        <button className={control} disabled={filters.offset === 0} onClick={() => change({ ...filters, offset: Math.max(0, filters.offset - 50) })}>Previous</button>
-        <button className={control} disabled={!result.has_more} onClick={() => change({ ...filters, offset: filters.offset + 50 })}>Next</button>
+        <button className={control} disabled={loading || filters.offset === 0} onClick={() => change({ ...filters, offset: Math.max(0, filters.offset - 50) })}>Previous</button>
+        <button className={control} disabled={loading || !result.has_more} onClick={() => change({ ...filters, offset: filters.offset + 50 })}>Next</button>
       </div>}
     </section>
   </main>;

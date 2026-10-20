@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { getAdminMeetings, getBusinessUnits, getRecordingJobs, getRegisteredUsers } from "@/lib/api";
 import AdminClient from "../admin-client";
@@ -37,4 +37,22 @@ it("keeps access requests open and lazily loads collapsed sections once", async 
     expect(getRegisteredUsers).toHaveBeenCalledWith("token");
     expect(getBusinessUnits).toHaveBeenCalledWith("token");
   });
+});
+
+it("keeps concurrent sections loading independently and avoids duplicate in-flight reads", async () => {
+  let finish!: (rows: never[]) => void;
+  vi.mocked(getAdminMeetings).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  vi.mocked(getRecordingJobs).mockResolvedValue([]);
+  render(<AdminClient initialRequests={[]} callerUpn="admin@example.test" accessToken="token" />);
+  fireEvent.click(screen.getByText("Meetings"));
+  await screen.findByRole("status", { name: "Meetings loading" });
+  fireEvent.click(screen.getByText("Processing Jobs"));
+  await screen.findByText(/No recording jobs yet/);
+  expect(screen.getByRole("status", { name: "Meetings loading" })).toBeVisible();
+  fireEvent.click(screen.getByText("Meetings"));
+  fireEvent.click(screen.getByText("Meetings"));
+  await act(async () => {});
+  expect(getAdminMeetings).toHaveBeenCalledOnce();
+  await act(async () => { finish([]); });
+  expect(screen.queryByRole("status", { name: "Meetings loading" })).not.toBeInTheDocument();
 });

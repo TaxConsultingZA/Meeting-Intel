@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import LoadingSpinner from "@/components/loading-spinner";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Calendar, Users, ChevronRight, Upload, Mic, Video, Share2, Power } from "lucide-react";
@@ -10,6 +11,7 @@ import ImportModal from "@/components/import-modal";
 import RecentMeetings from "@/components/recent-meetings";
 import { JobControls, recordingStatusMessage } from "@/components/recording-jobs";
 import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecordingJobs, getSyncStatus, getUpcomingMeetings, requestHistoricalAccess, requestMeetingEditAccess, shareMeeting, syncCalendarsNow, unsubscribeCurrentUser } from "@/lib/api";
+import type { CalendarSyncResult } from "@/lib/api";
 import type { AvailableRecording, MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
 
 /** Convert a UPN like "jane.doe@taxconsulting.co.za" to a display name "Jane Doe". */
@@ -19,6 +21,11 @@ function formatUpn(upn: string | null | undefined): string {
 }
 
 const PIPELINE_STATES: ProcessingState[] = ["queued", "downloading", "transcribing", "extracting"];
+
+function calendarSyncMessage(result: CalendarSyncResult) {
+  if (result.status === "success") return "Calendar sync succeeded.";
+  return `Calendar sync ${result.status === "partial" ? "partially completed" : "failed"}. Some calendars could not be read. Check existing Microsoft access and subscription status, then use Sync calendar now to try again.`;
+}
 
 interface Props {
   meetings: MeetingOut[];
@@ -94,6 +101,12 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const [calendarSyncing, setCalendarSyncing] = useState(false);
   const [calendarSyncFeedback, setCalendarSyncFeedback] = useState<{ message: string; failed: boolean } | null>(null);
   const [calendarRefreshKey, setCalendarRefreshKey] = useState(0);
+  useEffect(() => {
+    if (!calendarSyncFeedback || calendarSyncFeedback.failed) return;
+    const timer = setTimeout(() => setCalendarSyncFeedback(null), 60_000);
+    return () => clearTimeout(timer);
+  }, [calendarSyncFeedback]);
+
   const hasActiveProcessing = recordingJobs.some((job) =>
     job.status === "pending" || job.status === "processing" || job.processing_status === "cancel_requested"
   ) || meetings.some((meeting) => PIPELINE_STATES.includes(meeting.state));
@@ -137,12 +150,11 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     pollingInFlight.current = true;
     setRefreshingProcessing(true);
     try {
-      const [nextJobs, nextMeetings] = await Promise.all([
-        getRecordingJobs(accessToken),
-        getAllMeetings(accessToken),
+      const results = await Promise.allSettled([
+        getRecordingJobs(accessToken).then(setRecordingJobs),
+        getAllMeetings(accessToken).then(setMeetings),
       ]);
-      setRecordingJobs(nextJobs);
-      setMeetings(nextMeetings);
+      if (results.some((result) => result.status === "rejected")) throw new Error("Refresh incomplete");
       setPollingError("");
     } catch (error) {
       setPollingError("Live updates are temporarily unavailable. Your last loaded meeting and recording information is still shown.");
@@ -195,7 +207,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       const result = await syncCalendarsNow(accessToken);
       setCalendarSyncFeedback({
         failed: result.status !== "success",
-        message: `Calendar sync finished: ${result.succeeded} succeeded, ${result.failed} failed, ${result.skipped} skipped; ${result.created} events added, ${result.updated} existing events refreshed.${result.failed || result.skipped ? " Check existing Microsoft access and subscription status before syncing again." : ""}`,
+        message: calendarSyncMessage(result),
       });
       // Refresh each display independently; a slow read does not repeat the sync.
       const version = ++calendarDisplayVersion.current;
@@ -321,15 +333,12 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   return (
     <main className="max-w-5xl mx-auto px-6 py-7">
       {[
-        { pending: loading.meetings, label: "Meeting records", text: "Loading meeting records…" },
-        { pending: loading.recordingJobs, label: "Recording status", text: "Loading recording status…" },
-        { pending: loading.sync, label: "Sync status", text: "Loading sync status…" },
-        { pending: calendarLoading, label: "Calendar meetings", text: "Loading calendar meetings…" },
+        { pending: loading.meetings, label: "Meeting records" },
+        { pending: loading.recordingJobs, label: "Recording status" },
+        { pending: loading.sync, label: "Sync status" },
+        { pending: calendarLoading, label: "Calendar meetings" },
       ].filter((section) => section.pending).map((section) => (
-        <p key={section.label} role="status" aria-label={`${section.label} loading`}
-          className="mb-3 rounded-md bg-blue-50 px-4 py-2 text-sm text-[#003366]">
-          {section.text}
-        </p>
+        <LoadingSpinner key={section.label} label={`${section.label} loading`} />
       ))}
       {microsoftErrors.length > 0 && (
         <div role="alert" className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
@@ -404,7 +413,9 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       </div>
 
       {calendarSyncFeedback && <p role={calendarSyncFeedback.failed ? "alert" : "status"}
-        className="mb-4 rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-[#003366]">
+        className={calendarSyncFeedback.failed
+          ? "mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+          : "mb-4 text-sm text-[#003366]"}>
         {calendarSyncFeedback.message}
       </p>}
 
@@ -432,7 +443,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
               {s.icon}
             </div>
             <div>
-              <div className="text-[22px] font-bold text-[#003366] leading-none">{s.loading ? "…" : s.num}</div>
+              <div className="text-[22px] font-bold text-[#003366] leading-none">{s.num}{s.loading && <LoadingSpinner label={`${s.label} loading`} />}</div>
               <div className="text-[12px] text-[#6b7280] mt-0.5">{s.label}</div>
             </div>
           </button>
@@ -487,7 +498,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       )}
       {tab === "upcoming" && (
         calendarLoading && upcomingEvents.length === 0
-          ? <DashboardSkeleton />
+          ? <LoadingSpinner label="Meetings loading" />
           : upcomingEvents.length === 0
           ? calendarLoadErrors.length === 0 && <EmptyState
               icon="📅"
@@ -562,7 +573,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       {/* Old Meetings */}
       {tab === "old_meetings" && (
         <>
-          {historicalLoading && <p role="status" className="mb-3 rounded-md bg-blue-50 p-3 text-sm text-[#003366]">Loading historical meetings…</p>}
+          {historicalLoading && <LoadingSpinner label="Historical meetings loading" />}
           {historicalError && <p role="alert" className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{historicalError}</p>}
           {oldMeetings.length === 0
           ? !meetingsIncomplete && <EmptyState icon="📂" title="No completed meetings yet" sub="Approved and sent meetings will appear here." />
@@ -752,20 +763,6 @@ function EmptyState({ icon, title, sub }: { icon: string; title: string; sub: st
       <div className="text-4xl mb-3">{icon}</div>
       <h3 className="text-[15px] font-semibold text-[#1a1a2e] mb-1">{title}</h3>
       <p className="text-[13.5px]">{sub}</p>
-    </div>
-  );
-}
-
-function DashboardSkeleton() {
-  return (
-    <div aria-hidden="true" className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      {[0, 1, 2].map((item) => (
-        <div key={item} className="h-40 animate-pulse rounded-lg border border-[#dde1e8] bg-white p-4">
-          <div className="mb-4 h-4 w-2/3 rounded bg-slate-200" />
-          <div className="mb-2 h-3 w-full rounded bg-slate-100" />
-          <div className="h-3 w-1/2 rounded bg-slate-100" />
-        </div>
-      ))}
     </div>
   );
 }

@@ -347,9 +347,105 @@ export interface CalendarSyncResult {
   updated: number;
 }
 
-/** One explicit calendar-only run for existing subscribers; no automatic retry. */
-export function syncCalendarsNow(accessToken: string): Promise<CalendarSyncResult> {
-  return apiFetch("/calendar/sync", accessToken, { method: "POST", body: "{}" });
+export interface CalendarSyncRun extends Omit<CalendarSyncResult, "status"> {
+  id: string;
+  status: CalendarSyncResult["status"] | "queued" | "running" | "unknown";
+  error_category: string | null;
+  retry_allowed: boolean;
+}
+
+export class CalendarSyncUnconfirmedError extends Error {
+  readonly syncUnconfirmed = true;
+}
+
+const PENDING_CALENDAR_SYNC = "meeting-intel.pending-calendar-sync";
+
+function pendingCalendarSyncId(): string | undefined {
+  try { return window.localStorage.getItem(PENDING_CALENDAR_SYNC) ?? undefined; }
+  catch { return undefined; }
+}
+
+function rememberCalendarSync(id: string) {
+  try { window.localStorage.setItem(PENDING_CALENDAR_SYNC, id); }
+  catch { throw new CalendarSyncUnconfirmedError("The browser could not retain the sync request ID. Check status before submitting again."); }
+}
+
+function forgetCalendarSync(id: string) {
+  if (pendingCalendarSyncId() === id) {
+    try { window.localStorage.removeItem(PENDING_CALENDAR_SYNC); } catch { /* Keep status reads available. */ }
+  }
+}
+
+function requireCalendarRun(run: CalendarSyncRun): CalendarSyncRun {
+  if (!run || typeof run.id !== "string" || !run.id || typeof run.retry_allowed !== "boolean"
+    || !["queued", "running", "success", "partial", "failed", "unknown"].includes(run.status)
+    || ![run.succeeded, run.failed, run.skipped, run.created, run.updated].every((count) => Number.isInteger(count) && count >= 0)) {
+    throw new CalendarSyncUnconfirmedError("Calendar sync status was invalid. Check status; do not submit again.");
+  }
+  return run;
+}
+
+export async function getCalendarSyncRun(accessToken: string, runId?: string | null, signal?: AbortSignal): Promise<CalendarSyncRun | null> {
+  const id = runId === null ? undefined : runId ?? pendingCalendarSyncId();
+  const run = await apiFetch<CalendarSyncRun | null>(`/calendar/sync${id ? `?run_id=${encodeURIComponent(id)}` : ""}`, accessToken,
+    { cache: "no-store", signal });
+  return run === null ? null : requireCalendarRun(run);
+}
+
+/** Read-only observation. Never turns a missing/uncertain result into another POST. */
+export async function waitForCalendarSync(accessToken: string, initial: CalendarSyncRun, signal?: AbortSignal): Promise<CalendarSyncResult> {
+  let run: CalendarSyncRun | null = initial;
+  try {
+    while (run && (run.status === "queued" || run.status === "running")) {
+      await new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
+        const abort = () => { clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); };
+        const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, 2_000);
+        signal?.addEventListener("abort", abort, { once: true });
+      });
+      run = await getCalendarSyncRun(accessToken, run.id, signal);
+    }
+  } catch {
+    throw new CalendarSyncUnconfirmedError("Sync status could not be confirmed. Check status without starting another sync.");
+  }
+  if (!run || (run.status !== "success" && run.status !== "partial" && run.status !== "failed")) {
+    const saved = run ? ` Confirmed saved progress: ${run.succeeded} succeeded; ${run.created} added, ${run.updated} updated.` : "";
+    throw new CalendarSyncUnconfirmedError(`Sync outcome needs investigation; some calendar changes may already be saved.${saved} Do not start another sync.`);
+  }
+  forgetCalendarSync(run.id);
+  return { ...run, status: run.status };
+}
+
+/** One idempotent submission, followed only by status reads. */
+export async function syncCalendarsNow(accessToken: string, signal?: AbortSignal): Promise<CalendarSyncResult> {
+  const pendingId = pendingCalendarSyncId();
+  if (pendingId) {
+    let previous: CalendarSyncRun | null;
+    try { previous = await getCalendarSyncRun(accessToken, pendingId, signal); }
+    catch { throw new CalendarSyncUnconfirmedError("Previous sync acceptance is unconfirmed. Check status; do not submit again."); }
+    if (!previous) throw new CalendarSyncUnconfirmedError("Previous sync acceptance is unconfirmed. Check status; do not submit again.");
+    return waitForCalendarSync(accessToken, previous, signal);
+  }
+  const requestId = crypto.randomUUID();
+  rememberCalendarSync(requestId);
+  let run: CalendarSyncRun | null;
+  try {
+    run = await apiFetch<CalendarSyncRun>("/calendar/sync", accessToken, {
+      method: "POST", body: JSON.stringify({ request_id: requestId }), signal,
+    });
+    run = requireCalendarRun(run);
+  } catch (error) {
+    if (error instanceof ApiError && [401, 403, 422].includes(error.status)) {
+      forgetCalendarSync(requestId);
+      throw error;
+    }
+    // A lost acceptance response is ambiguous. Recover using the SAME id; no retry.
+    try { run = await getCalendarSyncRun(accessToken, error instanceof ApiError && error.status === 409 ? null : requestId, signal); }
+    catch { throw new CalendarSyncUnconfirmedError("Sync acceptance is unconfirmed. Check status; do not submit again."); }
+    if (!run) throw new CalendarSyncUnconfirmedError("Sync acceptance is unconfirmed. Check status; do not submit again.");
+  }
+  rememberCalendarSync(run.id);
+  return waitForCalendarSync(accessToken, run, signal);
 }
 
 /** Explicitly opt the current user into automatic Calendar/OneDrive processing. */

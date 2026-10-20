@@ -13,6 +13,8 @@ from app.db import get_db
 from app.models import RegisteredUser, SyncedCalendarEvent
 from app.services import calendar_sync as service
 
+REQUEST = {"request_id": "11111111-1111-4111-8111-111111111111"}
+
 
 COUNTS = {"status": "success", "succeeded": 3, "failed": 0, "skipped": 0,
           "created": 2, "updated": 4}
@@ -57,14 +59,18 @@ async def endpoint():
         yield client, db
 
 
+RUN = {**COUNTS, "id": REQUEST["request_id"], "status": "queued",
+       "error_category": None, "retry_allowed": False}
+
+
 HEADERS = {"Authorization": "Bearer mock:admin@taxconsulting.co.za"}
 
 
 async def test_endpoint_requires_authentication(endpoint, monkeypatch):
     client, _ = endpoint
     sync = AsyncMock()
-    monkeypatch.setattr(calendar, "sync_subscribed_calendars_once", sync)
-    response = await client.post("/calendar/sync", json={})
+    monkeypatch.setattr(calendar.calendar_runs, "submit", sync)
+    response = await client.post("/calendar/sync", json=REQUEST)
     assert response.status_code == 401
     sync.assert_not_awaited()
 
@@ -75,8 +81,8 @@ async def test_endpoint_requires_existing_subscribed_admin(endpoint, monkeypatch
     db.scalar.return_value.is_admin = admin
     db.scalar.return_value.is_subscribed = subscribed
     sync = AsyncMock()
-    monkeypatch.setattr(calendar, "sync_subscribed_calendars_once", sync)
-    response = await client.post("/calendar/sync", json={}, headers=HEADERS)
+    monkeypatch.setattr(calendar.calendar_runs, "submit", sync)
+    response = await client.post("/calendar/sync", json=REQUEST, headers=HEADERS)
     assert response.status_code == 403
     sync.assert_not_awaited()
 
@@ -86,18 +92,18 @@ async def test_endpoint_accepts_one_explicit_run_with_schedule_disabled(endpoint
 
     client, _ = endpoint
     monkeypatch.setattr(get_settings(), "enable_scheduled_sync", False)
-    sync = AsyncMock(return_value=COUNTS)
-    monkeypatch.setattr(calendar, "sync_subscribed_calendars_once", sync)
-    response = await client.post("/calendar/sync", json={}, headers=HEADERS)
-    assert response.status_code == 200 and response.json() == COUNTS
-    sync.assert_awaited_once_with()
+    sync = AsyncMock(return_value=RUN)
+    monkeypatch.setattr(calendar.calendar_runs, "submit", sync)
+    response = await client.post("/calendar/sync", json=REQUEST, headers=HEADERS)
+    assert response.status_code == 202 and response.json() == RUN
+    assert sync.await_args.args[0] == __import__("uuid").UUID(REQUEST["request_id"])
     assert get_settings().enable_scheduled_sync is False
 
 
 async def test_endpoint_rejects_caller_supplied_targets(endpoint, monkeypatch):
     client, _ = endpoint
     sync = AsyncMock()
-    monkeypatch.setattr(calendar, "sync_subscribed_calendars_once", sync)
+    monkeypatch.setattr(calendar.calendar_runs, "submit", sync)
     response = await client.post("/calendar/sync", json={"users": ["outside@example.test"]}, headers=HEADERS)
     assert response.status_code == 422
     sync.assert_not_awaited()
@@ -106,45 +112,27 @@ async def test_endpoint_rejects_caller_supplied_targets(endpoint, monkeypatch):
 async def test_endpoint_hides_infrastructure_errors(endpoint, monkeypatch):
     client, _ = endpoint
     sync = AsyncMock(side_effect=RuntimeError("SECRET database credentials"))
-    monkeypatch.setattr(calendar, "sync_subscribed_calendars_once", sync)
-    response = await client.post("/calendar/sync", json={}, headers=HEADERS)
+    monkeypatch.setattr(calendar.calendar_runs, "submit", sync)
+    response = await client.post("/calendar/sync", json=REQUEST, headers=HEADERS)
     assert response.status_code == 503 and "SECRET" not in response.text
     sync.assert_awaited_once()
 
 
-async def test_concurrent_endpoint_request_is_rejected_without_starting_a_second_sync(endpoint, monkeypatch):
+async def test_status_read_does_not_start_sync(endpoint, monkeypatch):
     client, _ = endpoint
-    first, second = connection(), connection(False)
-    monkeypatch.setattr(service, "engine", SimpleNamespace(connect=MagicMock(
-        side_effect=[context(first), context(second)],
-    )))
-    started, release = asyncio.Event(), asyncio.Event()
-
-    async def waiting():
-        started.set()
-        await release.wait()
-        return COUNTS
-
-    sync = AsyncMock(side_effect=waiting)
-    monkeypatch.setattr(service, "_sync_subscribers", sync)
-    pending = asyncio.create_task(client.post("/calendar/sync", json={}, headers=HEADERS))
-    try:
-        await asyncio.wait_for(started.wait(), 1)
-        duplicate = await client.post("/calendar/sync", json={}, headers=HEADERS)
-        assert duplicate.status_code == 409
-    finally:
-        release.set()
-    response = await pending
-    assert response.status_code == 200
-    sync.assert_awaited_once()
-    assert "pg_advisory_unlock" in str(first.execute.await_args.args[0])
-    second.execute.assert_not_awaited()
+    read = AsyncMock(return_value=RUN)
+    submit = AsyncMock()
+    monkeypatch.setattr(calendar.calendar_runs, "get_run", read)
+    monkeypatch.setattr(calendar.calendar_runs, "submit", submit)
+    response = await client.get("/calendar/sync", headers=HEADERS)
+    assert response.status_code == 200 and response.json() == RUN
+    submit.assert_not_awaited()
 
 
 async def test_subscriber_scope_counts_failures_and_no_recording_side_effects(monkeypatch):
+    from app.ai import runtime_bridge
     from app.services import jobs
     from app.workers import reconcile
-    from app.ai import runtime_bridge
 
     ids = [uuid4() for _ in range(5)]
     snapshot = session()

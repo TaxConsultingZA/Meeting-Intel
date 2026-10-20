@@ -92,11 +92,15 @@ async def _reconcile_loop() -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """FastAPI lifespan: initialise DB, seed reference data, then start the reconcile loop."""
-    await _init_db()
-    await _seed_business_units()
-    await _seed_admin_users()
+    """Start background scheduling without changing schema or reference data.
 
+    Schema provisioning belongs to Alembic; existing reference/admin records
+    are read by request handlers and must not be rewritten on API restarts.
+    """
+
+    from .services import calendar_runs
+
+    calendar_runs.start_lifespan()
     # Calendar sync is required by the DB-backed Calendar pages. The existing
     # flag controls only the potentially expensive OneDrive reconciliation.
     task = None
@@ -109,6 +113,7 @@ async def _lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await calendar_runs.shutdown()
         if task is not None:
             task.cancel()
             with suppress(asyncio.CancelledError):

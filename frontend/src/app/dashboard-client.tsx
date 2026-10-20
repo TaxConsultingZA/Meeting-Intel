@@ -10,7 +10,7 @@ import { formatEventTime, parseInstant } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
 import RecentMeetings from "@/components/recent-meetings";
 import { JobControls, recordingStatusMessage } from "@/components/recording-jobs";
-import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecordingJobs, getSyncStatus, getUpcomingMeetings, requestHistoricalAccess, requestMeetingEditAccess, shareMeeting, syncCalendarsNow, unsubscribeCurrentUser } from "@/lib/api";
+import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecordingJobs, getSyncStatus, getUpcomingMeetings, requestHistoricalAccess, requestMeetingEditAccess, shareMeeting, syncCalendarsNow, unsubscribeCurrentUser, getCalendarSyncRun, waitForCalendarSync, CalendarSyncUnconfirmedError } from "@/lib/api";
 import type { CalendarSyncResult } from "@/lib/api";
 import type { AvailableRecording, MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
 
@@ -99,14 +99,71 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const calendarSyncInFlight = useRef(false);
   const calendarDisplayVersion = useRef(0);
   const [calendarSyncing, setCalendarSyncing] = useState(false);
+  const [calendarSyncBlocked, setCalendarSyncBlocked] = useState(isAdmin && isSubscribed);
+  const [calendarStatusVersion, setCalendarStatusVersion] = useState(0);
+  const calendarObserver = useRef<AbortController | null>(null);
   const [calendarSyncFeedback, setCalendarSyncFeedback] = useState<{ message: string; failed: boolean } | null>(null);
   const [calendarRefreshKey, setCalendarRefreshKey] = useState(0);
+
   useEffect(() => {
     if (!calendarSyncFeedback || calendarSyncFeedback.failed) return;
     const timer = setTimeout(() => setCalendarSyncFeedback(null), 60_000);
     return () => clearTimeout(timer);
   }, [calendarSyncFeedback]);
 
+  useEffect(() => {
+    if (!isAdmin || !isSubscribed) return;
+    const observer = new AbortController();
+    calendarObserver.current = observer;
+    void (async () => {
+      try {
+        const run = await getCalendarSyncRun(accessToken, undefined, observer.signal);
+        if (observer.signal.aborted) return;
+        if (!run) { setCalendarSyncBlocked(false); return; }
+        const wasPending = run.status === "queued" || run.status === "running";
+        calendarSyncInFlight.current = true;
+        setCalendarSyncing(run.status === "queued" || run.status === "running");
+        const result = await waitForCalendarSync(accessToken, run, observer.signal);
+        if (observer.signal.aborted) return;
+        setCalendarSyncBlocked(!run.retry_allowed && run.status === "unknown");
+        // Completed history is not evidence that a new sync just succeeded.
+        if (wasPending || result.status !== "success") {
+          setCalendarSyncFeedback({ failed: result.status !== "success", message: calendarSyncMessage(result) });
+        }
+        // A terminal history entry predates this mount's initial reads. Only a
+        // run observed in flight needs a second refresh when it completes.
+        if (!wasPending) return;
+        ++calendarDisplayVersion.current;
+        setCalendarRefreshKey((version) => version + 1);
+        setLoading((current) => ({ ...current, calendar: true, sync: true }));
+        void getUpcomingMeetings(accessToken).then((events) => {
+          if (!observer.signal.aborted) { setUpcoming(events); setCalendarLoadErrors([]); }
+        }).catch(() => {
+          if (!observer.signal.aborted) setCalendarLoadErrors(["Calendar display could not be refreshed. Reload to try again."]);
+        }).finally(() => {
+          if (!observer.signal.aborted) setLoading((current) => ({ ...current, calendar: false }));
+        });
+        void getSyncStatus(accessToken).then((states) => {
+          if (!observer.signal.aborted) { setSyncStates(states); setSyncLoadErrors([]); }
+        }).catch(() => {
+          if (!observer.signal.aborted) setSyncLoadErrors(["Sync status could not be refreshed. Reload to try again."]);
+        }).finally(() => {
+          if (!observer.signal.aborted) setLoading((current) => ({ ...current, sync: false }));
+        });
+      } catch (error) {
+        if (!observer.signal.aborted) setCalendarSyncFeedback({ failed: true,
+          message: error instanceof CalendarSyncUnconfirmedError ? error.message
+            : "Calendar sync outcome is unconfirmed; some changes may already be saved. Check sync status without starting another sync.",
+        });
+      } finally {
+        if (!observer.signal.aborted) {
+          calendarSyncInFlight.current = false;
+          setCalendarSyncing(false);
+        }
+      }
+    })();
+    return () => { observer.abort(); calendarObserver.current?.abort(); calendarSyncInFlight.current = false; };
+  }, [accessToken, isAdmin, isSubscribed, calendarStatusVersion]);
   const hasActiveProcessing = recordingJobs.some((job) =>
     job.status === "pending" || job.status === "processing" || job.processing_status === "cancel_requested"
   ) || meetings.some((meeting) => PIPELINE_STATES.includes(meeting.state));
@@ -199,12 +256,15 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   }
 
   async function handleCalendarSync() {
-    if (!isAdmin || !isSubscribed || calendarSyncInFlight.current) return;
+    if (!isAdmin || !isSubscribed || calendarSyncBlocked || calendarSyncInFlight.current) return;
     calendarSyncInFlight.current = true;
     setCalendarSyncing(true);
     setCalendarSyncFeedback(null);
+    const observer = new AbortController();
+    calendarObserver.current = observer;
     try {
-      const result = await syncCalendarsNow(accessToken);
+      const result = await syncCalendarsNow(accessToken, observer.signal);
+      if (observer.signal.aborted) return;
       setCalendarSyncFeedback({
         failed: result.status !== "success",
         message: calendarSyncMessage(result),
@@ -231,13 +291,18 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       }).finally(() => {
         if (version === calendarDisplayVersion.current) setLoading((current) => ({ ...current, sync: false }));
       });
-    } catch {
+    } catch (error) {
+      if (observer.signal.aborted) return;
+      setCalendarSyncBlocked(true);
       setCalendarSyncFeedback({ failed: true,
-        message: "Calendar sync could not be confirmed. Check sync status and existing Microsoft access. If another sync is running, wait for it to finish before trying again.",
+        message: error instanceof CalendarSyncUnconfirmedError ? error.message
+          : "Calendar sync could not be confirmed. Check sync status and existing Microsoft access; some changes may already be saved. Do not submit again until the outcome is known.",
       });
     } finally {
-      calendarSyncInFlight.current = false;
-      setCalendarSyncing(false);
+      if (!observer.signal.aborted) {
+        calendarSyncInFlight.current = false;
+        setCalendarSyncing(false);
+      }
     }
   }
 
@@ -332,14 +397,6 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
   return (
     <main className="max-w-5xl mx-auto px-6 py-7">
-      {[
-        { pending: loading.meetings, label: "Meeting records" },
-        { pending: loading.recordingJobs, label: "Recording status" },
-        { pending: loading.sync, label: "Sync status" },
-        { pending: calendarLoading, label: "Calendar meetings" },
-      ].filter((section) => section.pending).map((section) => (
-        <LoadingSpinner key={section.label} label={`${section.label} loading`} />
-      ))}
       {microsoftErrors.length > 0 && (
         <div role="alert" className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
           <p className="font-semibold">Microsoft data is temporarily unavailable</p>
@@ -374,18 +431,19 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           {refreshingProcessing ? "Retrying…" : "Retry refresh"}
         </button>
       </div>}
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <div>
+      <div className="mb-6 grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:gap-x-6">
+        <div className="min-w-0">
           <h1 className="text-[22px] font-bold text-[#003366]">Meeting Intelligence</h1>
           <p className="text-[#6b7280] text-[13.5px] mt-0.5">
             Review and approve AI-extracted meeting notes before they are emailed to participants.
           </p>
         </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 [&>button]:shrink-0 [&>button]:whitespace-nowrap lg:justify-end">
           {isAdmin && isSubscribed && (
-            <button type="button" onClick={() => void handleCalendarSync()} disabled={calendarSyncing}
+            <button type="button" onClick={() => void handleCalendarSync()} disabled={calendarSyncing || calendarSyncBlocked}
               title="Sync calendars for active Microsoft-linked subscribers; does not process recordings"
-              className="rounded-md border border-[#003366] bg-white px-3 py-2 text-[13px] font-semibold text-[#003366] disabled:opacity-50">
+              className="inline-flex items-center gap-2 rounded-md border border-[#003366] bg-white px-3 py-2 text-[13px] font-semibold text-[#003366] disabled:opacity-50">
+              {calendarSyncing && <span aria-hidden="true" className="h-3.5 w-3.5 rounded-full border-2 border-current border-r-transparent motion-safe:animate-spin" />}
               {calendarSyncing ? "Syncing calendars…" : "Sync calendar now"}
             </button>
           )}
@@ -418,6 +476,10 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           : "mb-4 text-sm text-[#003366]"}>
         {calendarSyncFeedback.message}
       </p>}
+      {calendarSyncBlocked && !calendarSyncing && isAdmin && isSubscribed && (
+        <button type="button" className="mb-4 rounded-md border px-3 py-2 text-sm"
+          onClick={() => { setCalendarSyncBlocked(true); setCalendarStatusVersion((version) => version + 1); }}>Check sync status</button>
+      )}
 
       {showImport && <ImportModal
         upn={accessToken}
@@ -443,7 +505,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
               {s.icon}
             </div>
             <div>
-              <div className="text-[22px] font-bold text-[#003366] leading-none">{s.num}{s.loading && <LoadingSpinner label={`${s.label} loading`} />}</div>
+              <div className="text-[22px] font-bold text-[#003366] leading-none" aria-busy={s.loading}>{s.num}</div>
               <div className="text-[12px] text-[#6b7280] mt-0.5">{s.label}</div>
             </div>
           </button>
@@ -480,6 +542,9 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
         ))}
       </div>
 
+      {!calendarSyncing && (Object.values(loading).some(Boolean) || historicalLoading) && (
+        <LoadingSpinner label="Dashboard loading" />
+      )}
       {/* Upcoming Meetings */}
       {hasOpenedRecent && (
         <div hidden={tab !== "recent"}>
@@ -498,7 +563,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       )}
       {tab === "upcoming" && (
         calendarLoading && upcomingEvents.length === 0
-          ? <LoadingSpinner label="Meetings loading" />
+          ? null
           : upcomingEvents.length === 0
           ? calendarLoadErrors.length === 0 && <EmptyState
               icon="📅"
@@ -573,7 +638,6 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       {/* Old Meetings */}
       {tab === "old_meetings" && (
         <>
-          {historicalLoading && <LoadingSpinner label="Historical meetings loading" />}
           {historicalError && <p role="alert" className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{historicalError}</p>}
           {oldMeetings.length === 0
           ? !meetingsIncomplete && <EmptyState icon="📂" title="No completed meetings yet" sub="Approved and sent meetings will appear here." />

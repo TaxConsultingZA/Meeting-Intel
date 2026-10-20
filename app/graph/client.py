@@ -411,7 +411,10 @@ async def _calendar_pages(url: str) -> list[dict]:
             if url in seen or not url.startswith(settings.graph_base.rstrip("/") + "/"):
                 raise RuntimeError("Invalid Calendar pagination")
             seen.add(url)
-            r = await c.get(url, headers={**_headers(), "Prefer": 'outlook.timezone="UTC"'})
+            # MSAL token acquisition is synchronous network I/O. Do not block
+            # the API event loop (including sync heartbeat/status requests).
+            headers = await asyncio.to_thread(_headers)
+            r = await c.get(url, headers={**headers, "Prefer": 'outlook.timezone="UTC"'})
             r.raise_for_status()
             data = r.json()
             events.extend(data.get("value", []))

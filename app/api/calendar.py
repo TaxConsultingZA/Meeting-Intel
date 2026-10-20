@@ -1,43 +1,114 @@
+import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from time import monotonic
+from typing import Annotated, Literal
+from uuid import UUID, uuid4
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..db import get_db
 from ..models import RegisteredUser, SyncedCalendarEvent
-from .deps import registered_user, require_subscribed
-from ..services.calendar_sync import CalendarSyncBusy, sync_subscribed_calendars_once
-from .recording_processing_requests import EventReference
+from ..services import calendar_runs
+from ..services.calendar_sync import CalendarSyncBusy
 from ..utils.timezones import parse_graph_datetime, utc_iso
+from .deps import registered_user, require_subscribed
+from .recording_processing_requests import EventReference
 
-router = APIRouter()
+log = logging.getLogger("meeting_intel.calendar_sync")
+
+
+class CalendarSyncRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def observed(request):
+            if not request.url.path.startswith("/calendar/sync"):
+                return await handler(request)
+            started = monotonic()
+            diagnostic_id = uuid4()
+            edge_id = request.headers.get("x-railway-request-id", "unavailable")
+            if len(edge_id) > 128 or any(not (char.isalnum() or char in "-_") for char in edge_id):
+                edge_id = "unavailable"
+            request.state.sync_phase = "authentication"
+            request.state.sync_run_id = None
+            status = 500
+            log.info("calendar_sync request_started diagnostic_id=%s edge_request_id=%s method=%s",
+                     diagnostic_id, edge_id, request.method)
+            try:
+                async with asyncio.timeout(20):
+                    response = await handler(request)
+                    status = response.status_code
+                    return response
+            except TimeoutError:
+                status = 503
+                log.warning("calendar_sync request_timeout diagnostic_id=%s phase=%s", diagnostic_id, request.state.sync_phase)
+                raise HTTPException(503, "Calendar sync status is unconfirmed. Check status; do not resubmit.") from None
+            except HTTPException as exc:
+                status = exc.status_code
+                raise
+            finally:
+                log.info("calendar_sync request_finished diagnostic_id=%s run_id=%s phase=%s status=%d elapsed_ms=%d",
+                         diagnostic_id, request.state.sync_run_id, request.state.sync_phase, status,
+                         int((monotonic() - started) * 1000))
+        return observed
+
+
+router = APIRouter(route_class=CalendarSyncRoute)
 
 
 class CalendarSyncRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    request_id: UUID
 
 
 class CalendarSyncResult(BaseModel):
-    status: Literal["success", "partial", "failed"]
+    id: UUID
+    status: Literal["queued", "running", "success", "partial", "failed", "unknown"]
     succeeded: int = Field(ge=0)
     failed: int = Field(ge=0)
     skipped: int = Field(ge=0)
     created: int = Field(ge=0)
     updated: int = Field(ge=0)
+    error_category: str | None
+    retry_allowed: bool
 
 
-@router.post("/calendar/sync", response_model=CalendarSyncResult)
-async def sync_calendar_now(body: CalendarSyncRequest,
-                            user: RegisteredUser = Depends(registered_user)):
+@router.post("/calendar/sync", response_model=CalendarSyncResult, status_code=202)
+async def sync_calendar_now(body: CalendarSyncRequest, request: Request,
+                            user: Annotated[RegisteredUser, Depends(registered_user)]):
     if not user.is_admin or not user.is_subscribed:
         raise HTTPException(403, "A subscribed administrator is required for calendar sync")
     try:
-        return await sync_subscribed_calendars_once()
+        request.state.sync_phase = "acceptance"
+        request.state.sync_run_id = body.request_id
+        result = await calendar_runs.submit(body.request_id, user.id)
+        request.state.sync_run_id = result["id"]
+        return result
     except CalendarSyncBusy:
         raise HTTPException(409, "Calendar sync is already running. Wait before trying again.") from None
-    except Exception:
+    except Exception:  # noqa: BLE001 -- operation boundary must not expose database errors.
         raise HTTPException(503, "Calendar sync could not be completed. Check sync status before trying again.") from None
+
+
+@router.get("/calendar/sync", response_model=CalendarSyncResult | None)
+async def calendar_sync_status(request: Request,
+                               user: Annotated[RegisteredUser, Depends(registered_user)],
+                               run_id: UUID | None = None):
+    if not user.is_admin or not user.is_subscribed:
+        raise HTTPException(403, "A subscribed administrator is required for calendar sync")
+    request.state.sync_phase = "status"
+    try:
+        result = await calendar_runs.get_run(run_id)
+    except Exception:  # noqa: BLE001 -- operation boundary must not expose database errors.
+        raise HTTPException(503, "Calendar sync status is unavailable; do not resubmit.") from None
+    if run_id is not None and result is None:
+        raise HTTPException(404, "Calendar sync acceptance is unconfirmed; do not resubmit.")
+    return result
 
 
 @router.get("/calendar/recent")

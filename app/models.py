@@ -111,6 +111,29 @@ class RegisteredUser(Base):
     business_unit: Mapped["BusinessUnit | None"] = relationship(back_populates="users")
 
 
+class CalendarSyncRun(Base):
+    """One explicit operation; unknown outcomes retain the singleton active slot."""
+    __tablename__ = "calendar_sync_runs"
+    __table_args__ = (
+        Index("uq_calendar_sync_active", "active_slot", unique=True),
+        CheckConstraint("active_slot IS NULL OR active_slot = 1"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    requested_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)
+    active_slot: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    succeeded: Mapped[int] = mapped_column(Integer, default=0)
+    failed: Mapped[int] = mapped_column(Integer, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, default=0)
+    created: Mapped[int] = mapped_column(Integer, default=0)
+    updated: Mapped[int] = mapped_column(Integer, default=0)
+    error_category: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
 class UserSyncState(Base):
     """Last known Microsoft sync result for one user and one data source.
 

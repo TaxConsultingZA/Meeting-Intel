@@ -37,6 +37,7 @@ async def record_sync_result(
     user_upn: str,
     source: str,
     error: object | None = None,
+    commit: bool = True,
 ) -> UserSyncState:
     upn = user_upn.strip().lower()
     now = datetime.now(timezone.utc)
@@ -57,5 +58,6 @@ async def record_sync_result(
     else:
         row.status = "failed"
         row.last_error = _clean_error(error)
-    await db.commit()
+    if commit:
+        await db.commit()
     return row

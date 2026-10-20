@@ -14,7 +14,7 @@ def _graph_datetime(value: dict | None) -> datetime | None:
     return parse_graph_datetime(value)
 
 
-async def store_calendar_events(db, upn: str, events: list[dict]) -> tuple[int, int]:
+async def store_calendar_events(db, upn: str, events: list[dict], *, commit: bool = True) -> tuple[int, int]:
     """Refresh only cached Calendar rows; counts are new/existing rows refreshed."""
     created = updated = 0
     for raw in events:
@@ -36,7 +36,8 @@ async def store_calendar_events(db, upn: str, events: list[dict]) -> tuple[int, 
         row.ends_at = _graph_datetime(raw.get("end"))
         row.raw = raw
         row.last_synced_at = datetime.now(timezone.utc)
-    await db.commit()
+    if commit:
+        await db.commit()
     return created, updated
 
 

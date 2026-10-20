@@ -1,11 +1,13 @@
 """Shared FastAPI dependencies used across multiple routers."""
+import asyncio
+
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import get_settings
 from ..auth.entra import validate_access_token
+from ..config import get_settings
 from ..db import get_db
 from ..models import RegisteredUser
 from ..services.status_diagnostics import authentication_timing
@@ -49,7 +51,9 @@ async def current_user(
     if settings.auth_mode != "entra":
         raise HTTPException(500, "Unsupported AUTH_MODE")
 
-    claims = validate_access_token(token)
+    # Signing-key refresh may perform synchronous network I/O. Keep status
+    # requests, operation heartbeats and shutdown responsive while it waits.
+    claims = await asyncio.to_thread(validate_access_token, token)
     # ``preferred_username`` is mutable, so it is used only as an addressable
     # company UPN. Authorization is anchored to Entra's immutable object ID.
     upn = claims.get("preferred_username") or claims.get("upn") or claims.get("email")

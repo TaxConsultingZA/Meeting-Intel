@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from app.services import recording_enrichment
 from app.services.meeting_matching import match_calendar_event
 
@@ -59,6 +61,8 @@ async def test_enrichment_falls_back_to_other_subscribed_calendar(monkeypatch):
     }
     test = {
         "id": "test",
+        "attendees": [{"emailAddress": {"address": upn}} for upn in
+                      ("owner@example.test", "attendee@example.test")],
         **_event(
             "已取消: Test", "2026-09-01T08:30:00Z", "2026-09-01T09:00:00Z"
         ),
@@ -91,3 +95,104 @@ async def test_enrichment_falls_back_to_other_subscribed_calendar(monkeypatch):
     assert calendars.await_count == 2
     assert meeting.title == "已取消: Test"
     assert meeting.extracted_json["outlook_event_id"] == "test"
+
+
+def test_missing_recording_time_never_guesses_from_filename():
+    from app.services.meeting_matching import recording_datetime
+    name = "Review-20260901_084158-Meeting Recording.mp4"
+    assert recording_datetime(name, {}) is None
+    assert match_calendar_event(name, None, [
+        _event("Review", "2026-09-01T08:00:00Z", "2026-09-01T09:00:00Z")
+    ]) is None
+
+
+def test_equal_title_and_time_with_distinct_meetings_is_ambiguous_in_either_order():
+    first = {"id": "first", "iCalUId": "first", **_event(
+        "Review", "2026-09-01T08:00:00Z", "2026-09-01T09:00:00Z")}
+    second = {**first, "id": "second", "iCalUId": "second"}
+    assert match_calendar_event("Review.mp4", RECORDED_AT, [first, second]) is None
+    assert match_calendar_event("Review.mp4", RECORDED_AT, [second, first]) is None
+    copy = {**first, "id": "mailbox-copy"}
+    assert match_calendar_event("Review.mp4", RECORDED_AT, [first, copy]) is first
+
+
+async def test_external_creator_calendar_failure_uses_authorised_attendee_copy(monkeypatch):
+    event = {"id": "attendee-copy", **_event(
+        "Review", "2026-09-01T08:00:00Z", "2026-09-01T09:00:00Z"),
+        "organizer": {"emailAddress": {"address": "external@example.test"}},
+        "attendees": [{"emailAddress": {"address": "attendee@example.test"}}]}
+    meeting = SimpleNamespace(recorded_at=None, organizer_upn="external@example.test",
+        title=None, attendees_raw=None, extracted_json={})
+    monkeypatch.setattr(recording_enrichment.graph, "get_drive_item", AsyncMock(
+        return_value={"name": "Review.mp4", "createdDateTime": RECORDED_AT.isoformat()}))
+    calendars = AsyncMock(side_effect=[RuntimeError("mailbox inaccessible"), [event]])
+    monkeypatch.setattr(recording_enrichment, "events_between", calendars)
+    await recording_enrichment.enrich_recording_from_outlook(
+        meeting, "drive", "item", candidate_upns=["attendee@example.test"])
+    assert calendars.await_count == 2
+    assert meeting.organizer_upn == "external@example.test"
+    assert meeting.extracted_json["outlook_event_id"] == "attendee-copy"
+    assert meeting.attendees_raw[0]["emailAddress"]["address"] == "attendee@example.test"
+
+
+async def test_inaccessible_calendars_do_not_invent_meeting_identity(monkeypatch):
+    meeting = SimpleNamespace(recorded_at=None, organizer_upn="external@example.test",
+        title="Review.mp4", attendees_raw=None, extracted_json={})
+    monkeypatch.setattr(recording_enrichment.graph, "get_drive_item", AsyncMock(
+        return_value={"name": "Review.mp4", "createdDateTime": RECORDED_AT.isoformat()}))
+    monkeypatch.setattr(recording_enrichment, "events_between",
+        AsyncMock(side_effect=RuntimeError("mailbox inaccessible")))
+    await recording_enrichment.enrich_recording_from_outlook(
+        meeting, "drive", "item", candidate_upns=["attendee@example.test"])
+    assert meeting.title == "Review.mp4"
+    assert meeting.organizer_upn == "external@example.test"
+    assert meeting.attendees_raw is None
+    assert "outlook_event_id" not in meeting.extracted_json
+
+
+async def test_fallback_same_title_time_without_recording_identity_is_not_matched(monkeypatch):
+    meeting = SimpleNamespace(recorded_at=None, organizer_upn="external@example.test",
+        title="Review.mp4", attendees_raw=None, extracted_json={})
+    unrelated = {"id": "unrelated", **_event(
+        "Review", "2026-09-01T08:00:00Z", "2026-09-01T09:00:00Z"),
+        "organizer": {"emailAddress": {"address": "other@example.test"}}}
+    monkeypatch.setattr(recording_enrichment.graph, "get_drive_item", AsyncMock(
+        return_value={"name": "Review.mp4", "createdDateTime": RECORDED_AT.isoformat()}))
+    monkeypatch.setattr(recording_enrichment, "events_between",
+        AsyncMock(side_effect=[RuntimeError("mailbox inaccessible"), [unrelated]]))
+    await recording_enrichment.enrich_recording_from_outlook(
+        meeting, "drive", "item", candidate_upns=["attendee@example.test"])
+    assert meeting.title == "Review.mp4"
+    assert meeting.attendees_raw is None
+    assert "outlook_event_id" not in meeting.extracted_json
+
+
+@pytest.mark.parametrize("kind", ["mailbox_not_participant", "declined_creator", "resource_creator", "cancelled"])
+async def test_fallback_requires_active_human_recording_and_mailbox_participants(monkeypatch, kind):
+    recording_identity = "creator@example.test"
+    mailbox = "attendee@example.test"
+    attendees = [{"emailAddress": {"address": recording_identity}},
+                 {"emailAddress": {"address": mailbox}}]
+    event = {"id": "unsafe", **_event(
+        "Review", "2026-09-01T08:00:00Z", "2026-09-01T09:00:00Z"),
+        "organizer": {"emailAddress": {"address": "host@external.example"}},
+        "attendees": attendees}
+    if kind == "mailbox_not_participant":
+        attendees.pop()
+    elif kind == "declined_creator":
+        attendees[0]["status"] = {"response": "declined"}
+    elif kind == "resource_creator":
+        attendees[0]["type"] = "resource"
+    else:
+        event["isCancelled"] = True
+    meeting = SimpleNamespace(recorded_at=None, organizer_upn=recording_identity,
+        title="Review.mp4", attendees_raw=None, extracted_json={})
+    monkeypatch.setattr(recording_enrichment.graph, "get_drive_item", AsyncMock(
+        return_value={"name": "Review.mp4", "createdDateTime": RECORDED_AT.isoformat()}))
+    monkeypatch.setattr(recording_enrichment, "events_between",
+        AsyncMock(side_effect=[RuntimeError("mailbox inaccessible"), [event]]))
+    await recording_enrichment.enrich_recording_from_outlook(
+        meeting, "drive", "item", candidate_upns=[mailbox])
+    assert meeting.title == "Review.mp4"
+    assert meeting.attendees_raw is None
+    assert "outlook_event_id" not in meeting.extracted_json

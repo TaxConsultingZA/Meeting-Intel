@@ -1,6 +1,8 @@
 """Tests for app/services/ledger.py — claim_item idempotency gate."""
-import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 class TestClaimItem:
@@ -65,3 +67,30 @@ class TestClaimItem:
 
         assert result is False
         mock_db.rollback.assert_awaited_once()
+
+
+@pytest.mark.parametrize("commit", [True, False])
+async def test_rediscovery_repairs_missing_filename_without_reclaiming(commit):
+    from app.services.ledger import claim_item
+    row = SimpleNamespace(filename=None, drive_id="drive")
+    db = AsyncMock()
+    db.add = MagicMock()
+    db.scalar.return_value = row
+    assert await claim_item(db, "item", "drive", None, "reconcile",
+                            filename="Review.mp4", commit=commit) is False
+    assert row.filename == "Review.mp4"
+    db.add.assert_not_called()
+    assert db.commit.await_count == int(commit)
+    assert db.flush.await_count == int(not commit)
+
+
+async def test_rediscovery_does_not_replace_known_filename_or_other_drive_metadata():
+    from app.services.ledger import claim_item
+    db = AsyncMock()
+    for filename, drive in [("Known.mp4", "drive"), (None, "other-drive")]:
+        row = SimpleNamespace(filename=filename, drive_id=drive)
+        db.scalar.return_value = row
+        assert await claim_item(db, "item", "drive", None, "reconcile",
+                                filename="Review.mp4") is False
+        assert row.filename == filename
+    db.commit.assert_not_awaited()

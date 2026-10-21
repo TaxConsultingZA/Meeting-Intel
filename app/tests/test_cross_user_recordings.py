@@ -286,6 +286,62 @@ async def test_nonparticipant_forbidden(ctx):
     ctx.scan.assert_not_awaited()
 
 
+async def test_external_organiser_event_persists_and_is_visible_to_authorised_attendee(ctx, monkeypatch):
+    from app.workers.sync_microsoft import store_calendar_events
+    external = "host@external.example"
+    ctx.event["organizer"] = {"emailAddress": {"address": external}}
+    monkeypatch.setattr(service, "recent_states", AsyncMock(return_value={
+        service.occurrence_key(ctx.event): {"action": "no_recording"}}))
+    assert await store_calendar_events(ctx.db, ctx.requester.upn, [ctx.event]) == (1, 0)
+    rows = await calendar.recent_meetings(ctx.db, ctx.requester.upn)
+    assert len(rows) == 1
+    assert rows[0]["organizer_email"] == external
+    assert rows[0]["action"] == "no_recording"
+    assert await calendar.recent_meetings(ctx.db, ctx.outsider.upn) == []
+    with pytest.raises(HTTPException) as error:
+        service.validate_participant(ctx.event, ctx.outsider.upn)
+    assert error.value.status_code == 403
+
+
+async def test_unnamed_recording_rediscovery_repairs_available_name_without_processing(ctx):
+    from app.services.ledger import claim_item
+    ctx.requester.graph_drive_id = "drive:requester"
+    ctx.session.add(ProcessedItem(drive_item_id="unnamed", drive_id="drive:requester",
+        filename=None, source="webhook"))
+    ctx.session.commit()
+    rows = await recordings.available_recordings(ctx.db, ctx.requester.upn)
+    assert rows[0]["name"] == "Unknown"
+    assert not await claim_item(ctx.db, "unnamed", "drive:requester", None,
+        "reconcile", filename="Review.mp4")
+    rows = await recordings.available_recordings(ctx.db, ctx.requester.upn)
+    assert rows[0]["name"] == "Review.mp4"
+    assert rows[0]["meeting_id"] is None
+    assert not rows[0]["already_imported"]
+    assert list(await ctx.db.scalars(select(RecordingJob))) == []
+    service.graph.get_drive_item.assert_not_awaited()
+    ctx.scan.assert_not_awaited()
+
+
+@pytest.mark.parametrize("access_type,visible", [
+    ("participant", True), ("request_view", False), ("request_edit", False), ("revoked", False)])
+async def test_external_organiser_recording_preserves_meeting_access_rules(ctx, access_type, visible):
+    from app.api.reviews import all_meetings
+    meeting = Meeting(drive_item_id="external-item", title="Review",
+        organizer_upn="host@external.example", state=ProcessingState.awaiting_review)
+    ctx.session.add(meeting)
+    ctx.session.flush()
+    ctx.session.add(MeetingParticipant(meeting_id=meeting.id, user_upn=ctx.requester.upn,
+        is_organizer=False, access_type=access_type))
+    ctx.session.commit()
+    rows = await all_meetings(ctx.db, ctx.requester.upn)
+    assert bool(rows) is visible
+    if visible:
+        assert rows[0].organizer_upn == "host@external.example"
+        assert not rows[0].is_organizer
+        assert not rows[0].can_edit
+    assert await all_meetings(ctx.db, ctx.outsider.upn) == []
+
+
 async def test_unsubscribed_owner_not_scanned(ctx):
     ctx.owner.is_subscribed = False
     await ctx.db.commit()

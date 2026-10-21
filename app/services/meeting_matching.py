@@ -46,6 +46,7 @@ def match_calendar_event(
     """Return a nearby, title-compatible event or decline to guess."""
     recording_title = _normalise(clean_recording_title(recording_name))
     best: tuple[float, dict] | None = None
+    ambiguous = False
     for event in events:
         event_start = parse_graph_datetime(event.get("start"))
         event_end = parse_graph_datetime(event.get("end"))
@@ -71,7 +72,21 @@ def match_calendar_event(
         score = title_similarity * 100 - distance.total_seconds() / 3600
         if best is None or score > best[0]:
             best = (score, event)
-    return best[1] if best else None
+            ambiguous = False
+        elif score == best[0]:
+            # Different mailbox copies of the same occurrence are harmless.
+            # Equal title/time alone cannot establish meeting identity.
+            previous = best[1]
+            same_occurrence = bool(
+                event.get("iCalUId")
+                and event.get("iCalUId") == previous.get("iCalUId")
+                and event_start == parse_graph_datetime(previous.get("start"))
+                and event_end == parse_graph_datetime(previous.get("end"))
+                and event.get("organizer") == previous.get("organizer")
+            )
+            if not same_occurrence:
+                ambiguous = True
+    return best[1] if best and not ambiguous else None
 
 
 def event_people(event: dict | None) -> tuple[list[str], dict[str, str]]:

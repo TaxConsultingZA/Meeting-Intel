@@ -20,6 +20,14 @@ async def claim_item(
         select(ProcessedItem).where(ProcessedItem.drive_item_id == drive_item_id)
     )
     if existing:
+        # Older/webhook claims can lack a filename. Rediscovery should repair
+        # display metadata without making the recording claimable again.
+        if filename and not existing.filename and existing.drive_id == drive_id:
+            existing.filename = filename
+            if commit:
+                await db.commit()
+            else:
+                await db.flush()
         return False
     db.add(ProcessedItem(
         drive_item_id=drive_item_id, drive_id=drive_id, etag=etag,

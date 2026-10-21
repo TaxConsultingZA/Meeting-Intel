@@ -37,7 +37,14 @@ async def enrich_recording_from_outlook(
 
     window_start = recorded_at - timedelta(days=2)
     window_end = recorded_at + timedelta(days=2)
-    events = await events_between(organizer, window_start, window_end)
+    try:
+        events = await events_between(organizer, window_start, window_end)
+    except Exception:  # noqa: BLE001 -- optional mailbox read must allow authorised fallbacks.
+        # File creators can be external identities without a tenant mailbox.
+        # Still try the existing authorised subscriber calendars, without
+        # changing Graph permissions or treating a failed read as a match.
+        logger.warning("Could not read primary Outlook calendar for recording match")
+        events = []
     event = match_calendar_event(item.get("name", ""), recorded_at, events)
     if not event:
         seen = {organizer}
@@ -47,7 +54,20 @@ async def enrich_recording_from_outlook(
                 continue
             seen.add(upn)
             try:
-                events.extend(await events_between(upn, window_start, window_end))
+                # Subscription alone is not evidence that a similarly named
+                # event belongs to this recording. Require the recording's
+                # existing identity to be a person on the fallback event.
+                for candidate in await events_between(upn, window_start, window_end):
+                    if candidate.get("isCancelled"):
+                        continue
+                    participant_event = dict(candidate, attendees=[
+                        attendee for attendee in candidate.get("attendees") or []
+                        if attendee.get("type") != "resource"
+                        and (attendee.get("status") or {}).get("response") != "declined"
+                    ])
+                    participants = event_people(participant_event)[0]
+                    if organizer in participants and upn in participants:
+                        events.append(candidate)
             except Exception:
                 logger.warning("Could not read fallback Outlook calendar for recording match")
         event = match_calendar_event(item.get("name", ""), recorded_at, events)

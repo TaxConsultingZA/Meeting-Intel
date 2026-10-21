@@ -232,6 +232,7 @@ async def test_available_recordings_uses_reconciled_rows_without_graph(ctx):
         "drive_item_id": "persisted-item",
         "drive_id": "drive:requester",
         "name": "Persisted recording.mp4",
+        "calendar_matched": False,
         "size": None,
         "created_at": meeting.recorded_at.isoformat(),
         "already_imported": True,
@@ -320,6 +321,91 @@ async def test_unnamed_recording_rediscovery_repairs_available_name_without_proc
     assert list(await ctx.db.scalars(select(RecordingJob))) == []
     service.graph.get_drive_item.assert_not_awaited()
     ctx.scan.assert_not_awaited()
+
+
+@pytest.mark.parametrize("status", ["pending", "completed"])
+@pytest.mark.parametrize("has_meeting", [False, True])
+async def test_recording_label_recovery_preserves_existing_job_and_unmatched_state(ctx, status, has_meeting):
+    from app.services.ledger import claim_item
+    drive = "drive:requester"
+    ctx.requester.graph_drive_id = drive
+    meeting = Meeting(drive_item_id="legacy-unknown", title="Unknown",
+        organizer_upn="host@external.example", state=ProcessingState.awaiting_review)
+    ledger = ProcessedItem(drive_item_id="legacy-unknown", drive_id=drive,
+        filename=None, source="webhook")
+    job = RecordingJob(drive_item_id="legacy-unknown", drive_id=drive,
+        owner_upn=ctx.requester.upn, source="webhook", status=status, attempts=1)
+    ctx.session.add_all([ledger, job] + ([meeting] if has_meeting else []))
+    ctx.session.commit()
+    original_job = (job.id, job.status, job.attempts, job.owner_upn, job.source)
+    assert not await claim_item(ctx.db, ledger.drive_item_id, drive, None,
+        "reconcile", filename="Verified recording.mp4")
+    row = (await recordings.available_recordings(ctx.db, ctx.requester.upn))[0]
+    assert row["name"] == "Verified recording.mp4"
+    assert row["calendar_matched"] is False
+    assert row["already_imported"] is True
+    assert (job.id, job.status, job.attempts, job.owner_upn, job.source) == original_job
+    assert len(list(await ctx.db.scalars(select(RecordingJob)))) == 1
+    assert meeting.title == "Unknown"  # Display fallback never rewrites meeting data.
+    assert await recordings.available_recordings(ctx.db, ctx.outsider.upn) == []
+    ctx.scan.assert_not_awaited()
+
+
+async def test_recording_label_fallback_never_invents_or_overrides_verified_calendar_titles(ctx):
+    drive = "drive:requester"
+    ctx.requester.graph_drive_id = drive
+    ctx.session.add_all([
+        ProcessedItem(drive_item_id="no-metadata", drive_id=drive, source="webhook"),
+        ProcessedItem(drive_item_id="verified-title", drive_id=drive,
+            filename="Original filename.mp4", source="reconcile"),
+        Meeting(drive_item_id="verified-title", title="Unknown",
+            extracted_json={"outlook_event_id": "verified-event"}, state=ProcessingState.awaiting_review),
+    ])
+    ctx.session.commit()
+    rows = {row["drive_item_id"]: row for row in await recordings.available_recordings(ctx.db, ctx.requester.upn)}
+    assert rows["no-metadata"]["name"] == "Unknown"
+    assert rows["no-metadata"]["calendar_matched"] is False
+    assert rows["verified-title"]["name"] == "Unknown"
+    assert rows["verified-title"]["calendar_matched"] is True
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+async def test_external_calendar_binding_is_reported_without_forcing_ambiguous_recordings(ctx, monkeypatch, ambiguous):
+    from app.api.reviews import all_meetings
+    from app.services import recording_enrichment
+    drive = "drive:requester"
+    ctx.requester.graph_drive_id = drive
+    event = deepcopy(ctx.event)
+    event["organizer"] = {"emailAddress": {"address": "host@external.example"}}
+    candidates = [event]
+    if ambiguous:
+        candidates.append({**event, "id": "other", "iCalUId": "other-occurrence"})
+    monkeypatch.setattr(recording_enrichment, "events_between", AsyncMock(
+        side_effect=[RuntimeError("external mailbox inaccessible"), candidates]))
+    meeting = Meeting(drive_item_id=ctx.item["id"], title=ctx.item["name"],
+        organizer_upn="host@external.example", state=ProcessingState.awaiting_review)
+    job = RecordingJob(drive_item_id=ctx.item["id"], drive_id=drive,
+        owner_upn=ctx.requester.upn, source="manual", status="completed", attempts=1)
+    ctx.session.add_all([meeting, job, ProcessedItem(drive_item_id=ctx.item["id"],
+        drive_id=drive, filename=ctx.item["name"], source="reconcile")])
+    ctx.session.flush()
+    ctx.session.add(MeetingParticipant(meeting_id=meeting.id, user_upn=ctx.requester.upn,
+        is_organizer=False, access_type="participant"))
+    ctx.session.commit()
+    await recording_enrichment.enrich_recording_from_outlook(
+        meeting, drive, ctx.item["id"], candidate_upns=[ctx.requester.upn])
+    row = (await recordings.available_recordings(ctx.db, ctx.requester.upn))[0]
+    assert row["calendar_matched"] is (not ambiguous)
+    assert row["already_imported"] is True
+    assert job.status == "completed" and job.attempts == 1
+    if ambiguous:
+        assert not (meeting.extracted_json or {}).get("outlook_event_id")
+        assert row["name"] == ctx.item["name"]
+    else:
+        assert meeting.extracted_json["outlook_event_id"] == event["id"]
+        assert row["name"] == "Project Review"
+    assert not (await all_meetings(ctx.db, ctx.requester.upn))[0].is_organizer
+    assert await all_meetings(ctx.db, ctx.outsider.upn) == []
 
 
 @pytest.mark.parametrize("access_type,visible", [

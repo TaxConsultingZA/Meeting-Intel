@@ -106,6 +106,8 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
     request_semaphore = asyncio.Semaphore(RECORDINGS_DISCOVERY_CONCURRENCY)
 
     async def graph_get(client: httpx.AsyncClient, url: str) -> httpx.Response:
+        if not url.startswith(settings.graph_base.rstrip("/") + "/"):
+            raise RuntimeError("Invalid OneDrive pagination")
         async with request_semaphore:
             return await client.get(url, headers=_headers())
 
@@ -125,7 +127,9 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
             first_url, depth = queue.pop(0)
             url: str | None = first_url
             seen_urls: set[str] = set()
-            while url and url not in seen_urls:
+            while url:
+                if url in seen_urls:
+                    raise RuntimeError("Invalid OneDrive pagination")
                 if requests >= RECORDINGS_TRAVERSAL_MAX_REQUESTS:
                     if strict:
                         raise RuntimeError("OneDrive recording-folder traversal incomplete")
@@ -173,7 +177,9 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
             seen_page_urls: set[str] = set()
             items: list[dict] = []
 
-            while url and url not in seen_page_urls:
+            while url:
+                if url in seen_page_urls:
+                    raise RuntimeError("Invalid OneDrive pagination")
                 async with request_count_lock:
                     if request_count >= RECORDINGS_TRAVERSAL_MAX_REQUESTS:
                         return items, True

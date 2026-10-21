@@ -14,6 +14,25 @@ def _mock_token():
 
 
 class TestListRecordingsFolder:
+    @pytest.mark.parametrize("branch", ["files", "folders"])
+    @pytest.mark.parametrize("problem", ["cycle", "foreign"])
+    @pytest.mark.parametrize("strict", [False, True])
+    @respx.mock
+    async def test_invalid_recording_pagination_is_not_reported_as_complete(self, branch, problem, strict):
+        from app.graph.client import list_recordings_folder
+        roots = [self._root_path("drive-invalid"), self._documents_path("drive-invalid"),
+                 self._root_traversal("drive-invalid")]
+        broken = roots[0] if branch == "files" else roots[2]
+        next_url = broken if problem == "cycle" else "https://untrusted.example/recordings"
+        for url in roots:
+            respx.get(url).mock(return_value=httpx.Response(200, json={"value": [], **(
+                {"@odata.nextLink": next_url} if url == broken else {})}))
+        unsafe = respx.get("https://untrusted.example/recordings").mock(
+            return_value=httpx.Response(200, json={"value": []}))
+        with _mock_token(), pytest.raises(RuntimeError, match="Invalid OneDrive pagination"):
+            await list_recordings_folder("drive-invalid", strict=strict)
+        assert not unsafe.called
+
     @staticmethod
     def _root_path(drive_id: str) -> str:
         return f"{_BASE}/drives/{drive_id}/root:/Recordings:/children"

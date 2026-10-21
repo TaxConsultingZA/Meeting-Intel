@@ -257,8 +257,8 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
           {hasLoaded && !error && recordings.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16 text-[#6b7280]">
               <FolderOpen size={36} className="mb-3 text-[#dde1e8]" />
-              <p className="text-[13.5px] font-semibold text-[#1a1a2e] mb-1">No recordings found</p>
-              <p className="text-[12.5px]">No MP4 recordings were found in your OneDrive Recordings folder. After a recording is saved there, refresh this list.</p>
+              <p className="text-[13.5px] font-semibold text-[#1a1a2e] mb-1">No discovered recordings</p>
+              <p className="text-[12.5px]">No MP4 recordings are available in the saved list. Refreshing this list does not scan OneDrive.</p>
             </div>
           )}
 
@@ -284,6 +284,9 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
                       <span className="block truncate text-[13px]" title={rec.name}>
                         {rec.name.replace(/\.mp4$/i, "")}
                       </span>
+                      {rec.calendar_matched === false && (
+                        <span className="mt-0.5 block text-[11px] font-normal text-[#6b7280]">No calendar meeting linked</span>
+                      )}
                       {rec.meeting_error && (
                         <span className="block text-[11px] text-red-500 truncate mt-0.5" title="Processing could not finish. Open the meeting for recovery options.">
                           Processing could not finish. Open the meeting for recovery options.

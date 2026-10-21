@@ -196,3 +196,33 @@ async def test_fallback_requires_active_human_recording_and_mailbox_participants
     assert meeting.title == "Review.mp4"
     assert meeting.attendees_raw is None
     assert "outlook_event_id" not in meeting.extracted_json
+
+
+@pytest.mark.parametrize("primary_inaccessible", [False, True])
+async def test_enrichment_does_not_reintroduce_declined_or_resource_access_candidates(monkeypatch, primary_inaccessible):
+    organizer = "host@external.example"
+    subscriber = "attendee@example.test"
+    event = {"id": "attendee-copy", **_event(
+        "Review", "2026-09-01T08:00:00Z", "2026-09-01T09:00:00Z"),
+        "organizer": {"emailAddress": {"address": organizer}},
+        "attendees": [
+            {"emailAddress": {"address": subscriber}, "status": {"response": "accepted"}},
+            {"emailAddress": {"address": "declined@example.test"},
+             "status": {"response": "declined"}},
+            {"emailAddress": {"address": "room@example.test"}, "type": "resource"},
+        ]}
+    meeting = SimpleNamespace(recorded_at=None, organizer_upn=organizer,
+        title="Review.mp4", attendees_raw=None, extracted_json={})
+    monkeypatch.setattr(recording_enrichment.graph, "get_drive_item", AsyncMock(
+        return_value={"name": "Review.mp4", "createdDateTime": RECORDED_AT.isoformat()}))
+    responses = [RuntimeError("mailbox inaccessible"), [event]] if primary_inaccessible else [[event]]
+    calendars = AsyncMock(side_effect=responses)
+    monkeypatch.setattr(recording_enrichment, "events_between", calendars)
+    await recording_enrichment.enrich_recording_from_outlook(
+        meeting, "drive", "item", candidate_upns=[subscriber])
+    assert meeting.extracted_json["outlook_event_id"] == "attendee-copy"
+    assert meeting.organizer_upn == organizer
+    assert {person["emailAddress"]["address"] for person in meeting.attendees_raw} == {organizer, subscriber}
+    assert {person["email"] for person in meeting.extracted_json["speaker_candidates"]} == {organizer, subscriber}
+    assert calendars.await_count == (2 if primary_inaccessible else 1)
+    assert len(event["attendees"]) == 3  # Do not mutate the Calendar snapshot.

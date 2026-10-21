@@ -84,10 +84,18 @@ async def available_recordings(
     for ledger in ledgers:
         iid = ledger.drive_item_id
         m = meetings_by_item.get(iid)
+        metadata = (m.extracted_json or {}) if m else {}
+        calendar_matched = bool(metadata.get("outlook_event_id") or metadata.get("t5_calendar_event"))
+        name = (m.title or "").strip() if m else ""
+        # A legacy placeholder is not a verified meeting title. Prefer the
+        # discovered filename for display without rewriting meeting/job data.
+        if not name or (name.casefold() == "unknown" and not calendar_matched):
+            name = (ledger.filename or "").strip() or name or "Unknown"
         result.append({
             "drive_item_id": iid,
             "drive_id": ledger.drive_id,
-            "name": m.title if m and m.title else ledger.filename or "Unknown",
+            "name": name,
+            "calendar_matched": calendar_matched,
             "size": None,
             "created_at": m.recorded_at.isoformat() if m and m.recorded_at else None,
             "already_imported": iid in job_item_ids or m is not None,

@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ImportModal from "../import-modal";
-import { getAvailableRecordings, getRecordingJobs, reprocessRecording } from "@/lib/api";
+import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   getAvailableRecordings: vi.fn(),
@@ -23,6 +23,38 @@ const cachedRecording = {
   created_at: "2026-09-02T08:15:00Z", already_imported: false,
   meeting_id: null, meeting_state: null, meeting_error: null,
 };
+
+it("labels a recording without a calendar link and keeps Transcribe available", () => {
+  render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()}
+    initialRecordings={[{ ...cachedRecording, calendar_matched: false }]} />);
+  expect(screen.getByText("No calendar meeting linked")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Transcribe" })).toBeEnabled();
+  expect(importRecording).not.toHaveBeenCalled();
+});
+
+it.each(["pending", "completed"] as const)("keeps %s recording actions separate from calendar matching", (status) => {
+  render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()}
+    initialRecordings={[{ ...cachedRecording, calendar_matched: false, already_imported: true,
+      meeting_id: "recording-review", job: {
+        job_id: "job", drive_item_id: cachedRecording.drive_item_id,
+        meeting_id: "recording-review", title: "cached.mp4", status,
+        processing_status: status === "pending" ? "queued" : "completed",
+        review_status: null, phase: status === "pending" ? "queued" : "completed", attempts: 1, max_attempts: 3,
+        error: null, can_retry: false, can_cancel: status === "pending",
+        can_reprocess: false, processing_enabled: false,
+      } }]} />);
+  expect(screen.getByText("No calendar meeting linked")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "View" })).toHaveAttribute("href", "/meetings/recording-review");
+  expect(screen.queryByRole("button", { name: "Transcribe" })).not.toBeInTheDocument();
+  expect(Boolean(screen.queryByRole("button", { name: "Cancel" }))).toBe(status === "pending");
+  expect(importRecording).not.toHaveBeenCalled();
+});
+
+it("describes an empty saved list without claiming Refresh scans OneDrive", () => {
+  render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()} initialRecordings={[]} />);
+  expect(screen.getByText(/Refreshing this list does not scan OneDrive/)).toBeInTheDocument();
+  expect(screen.queryByText(/No MP4 recordings were found in your OneDrive/)).not.toBeInTheDocument();
+});
 
 it("opens immediately with a skeleton while recordings load asynchronously", async () => {
   let resolveRecordings!: (recordings: typeof cachedRecording[]) => void;

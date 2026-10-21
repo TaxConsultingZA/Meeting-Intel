@@ -79,6 +79,14 @@ async def enrich_recording_from_outlook(
 
 
 def apply_calendar_event(meeting: Any, event: dict) -> None:
+    # This list becomes the pipeline's input for participant access. Apply the
+    # same human/non-declined rule used by Calendar discovery and T5 approval,
+    # including when a primary-calendar match bypasses fallback validation.
+    event = dict(event, attendees=[
+        attendee for attendee in event.get("attendees") or []
+        if attendee.get("type") != "resource"
+        and (attendee.get("status") or {}).get("response") != "declined"
+    ])
     emails, names = event_people(event)
     organizer = ((event.get("organizer") or {}).get("emailAddress", {}).get("address") or "").strip().lower()
     if organizer:

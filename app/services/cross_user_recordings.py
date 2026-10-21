@@ -278,17 +278,17 @@ async def recent_state(
         return {"action": "no_recording" if no_match else "unavailable", "reason": exc.detail}
 
 
-async def recent_states(db, requester, events):
+async def recent_states(db, requester, events, *, all_available=False):
     """Resolve DB-backed recent-card states with a constant number of queries."""
     if not events:
         return {}
     keys = {occurrence_key(event) for event in events}
-    meeting_rows = (await db.execute(
-        select(Meeting, MeetingParticipant).join(MeetingParticipant).where(
-            MeetingParticipant.user_upn == requester.upn,
-            Meeting.state.in_(DONE),
-        )
-    )).all()
+    meeting_query = select(Meeting, MeetingParticipant).join(MeetingParticipant).where(
+        MeetingParticipant.user_upn == requester.upn,
+    )
+    if not all_available:
+        meeting_query = meeting_query.where(Meeting.state.in_(DONE))
+    meeting_rows = (await db.execute(meeting_query)).all()
     visible_by_key = {}
     restricted_by_key = {}
     for event in events:
@@ -296,7 +296,10 @@ async def recent_states(db, requester, events):
         for meeting, participant in meeting_rows:
             meta = meeting.extracted_json or {}
             bound = meta.get("calendar_occurrence_key") == occurrence_key(event)
-            legacy = (
+            if all_available and event.get("id"):
+                bound = bound or meta.get("outlook_event_id") == event["id"]
+            # A catalog merge must not collapse distinct meetings by their labels.
+            legacy = not all_available and (
                 normal_title(meeting.title or "") == normal_title(event.get("subject") or "")
                 and utc_iso(meeting.recorded_at.isoformat() if meeting.recorded_at else None)
                 == utc_iso(event.get("start"))

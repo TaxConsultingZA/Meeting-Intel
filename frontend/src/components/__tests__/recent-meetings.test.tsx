@@ -33,8 +33,8 @@ it("restores cached meetings immediately after remount and revalidates in the ba
 
 it("shows expired cached meetings while silently refreshing them", async () => {
   sessionStorage.setItem(
-    "meeting-intel:recent-meetings:v3:reviewer%40example.test",
-    JSON.stringify({ version: 3, cachedAt: Date.now() - 10 * 60 * 1000, events: [event("view")] }),
+    "meeting-intel:recent-meetings:v4:reviewer%40example.test",
+    JSON.stringify({ version: 4, cachedAt: Date.now() - 10 * 60 * 1000, events: [event("view")] }),
   );
   vi.mocked(api.getRecentMeetings).mockRejectedValue(new Error("calendar unavailable"));
 

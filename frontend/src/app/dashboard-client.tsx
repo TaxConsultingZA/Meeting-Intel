@@ -308,7 +308,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
   function selectTab(nextTab: Tab) {
     if (nextTab === "recent") setHasOpenedRecent(true);
-    if (nextTab === "old_meetings" && !historicalLoaded.current && !historicalLoadInFlight.current) {
+    if ((nextTab === "old_meetings" || nextTab === "recent") && !historicalLoaded.current && !historicalLoadInFlight.current) {
       historicalLoadInFlight.current = true;
       setHistoricalLoading(true);
       setHistoricalError("");
@@ -548,10 +548,13 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       {/* Upcoming Meetings */}
       {hasOpenedRecent && (
         <div hidden={tab !== "recent"}>
+          {historicalLoading && <LoadingSpinner label="Historical meetings loading" />}
+          {historicalError && <p role="alert" className="mb-3 text-sm text-amber-900">{historicalError}</p>}
           <RecentMeetings
             token={accessToken}
             cacheIdentity={upn}
             isSubscribed={isSubscribed}
+            accessibleMeetings={meetings}
             refreshKey={calendarRefreshKey}
             historical={historical}
             processingRequests={processingRequests}

@@ -219,9 +219,9 @@ export interface CalendarEvent {
   status: "upcoming" | "in_progress";
 }
 
-/** A single in-app notification item returned by GET /notifications. */
+/** A cached calendar card, including past and future events in catalog mode. */
 export interface RecentMeeting extends Omit<CalendarEvent, "status"> {
-  status: "ended";
+  status: "ended" | CalendarEvent["status"];
   action: "view" | "request_access" | "process" | "request_processing" | "request_pending" | "processing" | "no_recording" | "unavailable";
   meeting_id?: string;
   can_request_view_access?: boolean;

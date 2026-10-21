@@ -8,7 +8,7 @@ import { getRecentMeetings, getProcessingRequests, requestRecordingProcessing, d
 import type { MeetingOut, RecentMeeting, RecordingProcessingRequest } from "@/lib/types";
 
 const RECENT_MEETINGS_CACHE_TTL_MS = 5 * 60 * 1000;
-const RECENT_MEETINGS_CACHE_VERSION = 3;
+const RECENT_MEETINGS_CACHE_VERSION = 4;
 
 interface RecentMeetingsCacheEntry {
   version: number;
@@ -59,16 +59,12 @@ function historicalDate(meeting: MeetingOut) {
   return meeting.recorded_at ?? meeting.extracted_json?.meeting_time ?? null;
 }
 
-function compatibilityKey(title: string | null | undefined, date: string | null | undefined, organizer: string | null | undefined) {
-  const instant = date ? Date.parse(date) : NaN;
-  return [normalized(title), Number.isNaN(instant) ? normalized(date) : String(instant), normalized(organizer)].join("|");
-}
-
-export default function RecentMeetings({ token, cacheIdentity = "current-user", isSubscribed, historical = [], processingRequests, onRefreshProcessingRequests, onRequestHistoricalAccess, onRequestMeetingEditAccess, refreshKey = 0 }: {
+export default function RecentMeetings({ token, cacheIdentity = "current-user", isSubscribed, accessibleMeetings = [], historical = [], processingRequests, onRefreshProcessingRequests, onRequestHistoricalAccess, onRequestMeetingEditAccess, refreshKey = 0 }: {
   token: string;
   cacheIdentity?: string;
   isSubscribed: boolean;
   refreshKey?: number;
+  accessibleMeetings?: MeetingOut[];
   historical?: MeetingOut[];
   processingRequests?: RecordingProcessingRequest[];
   onRefreshProcessingRequests?: () => Promise<void>;
@@ -99,7 +95,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     };
     // Publish each read as it settles; the other read may still be pending.
     await Promise.allSettled([
-      (isSubscribed ? getRecentMeetings(token) : Promise.resolve([])).then((rows) => {
+      (isSubscribed ? getRecentMeetings(token, true) : Promise.resolve([])).then((rows) => {
         if (!active()) return;
         setEvents(rows);
         if (isSubscribed) writeCache(cacheIdentity, rows);
@@ -150,16 +146,26 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     finally { setBusy(false); }
   }
 
-  const recentMeetingIds = new Set(events.flatMap((event) => event.meeting_id ? [event.meeting_id] : []));
-  const recentCompatibilityKeys = new Set(events
-    .filter((event) => !event.meeting_id)
-    .map((event) => compatibilityKey(event.subject, event.start, event.organizer_email)));
-  const historicalOnly = historical.filter((meeting) =>
-    !recentMeetingIds.has(meeting.id)
-    && !recentCompatibilityKeys.has(compatibilityKey(meeting.title, historicalDate(meeting), meeting.organizer_upn)),
-  );
+  // These records already passed /reviews/all access checks. Calendar cache is
+  // only a discovery source and must not determine their visibility.
+  const accessible = [...new Map(accessibleMeetings.map((meeting) => [meeting.id, meeting])).values()];
+  const accessibleIds = new Set(accessible.map((meeting) => meeting.id));
+  const meetingIds = new Set(accessibleIds);
+  const eventIds = new Set<string>();
+  const recentOnly = events.filter((event) => {
+    if (eventIds.has(event.event_id) || (event.meeting_id && accessibleIds.has(event.meeting_id))) return false;
+    eventIds.add(event.event_id);
+    if (event.meeting_id) meetingIds.add(event.meeting_id);
+    return true;
+  });
+  const historicalOnly = historical.filter((meeting) => {
+    if (meetingIds.has(meeting.id)) return false;
+    meetingIds.add(meeting.id);
+    return true;
+  });
   const rows = [
-    ...events.map((event) => ({ kind: "recent" as const, id: event.event_id, date: event.start, organizer: event.organizer_email, hasRecording: event.action !== "no_recording", event })),
+    ...accessible.map((meeting) => ({ kind: "accessible" as const, id: meeting.id, date: historicalDate(meeting), organizer: meeting.organizer_upn, hasRecording: true, meeting })),
+    ...recentOnly.map((event) => ({ kind: "recent" as const, id: event.event_id, date: event.start, organizer: event.organizer_email, hasRecording: event.action !== "no_recording", event })),
     ...historicalOnly.map((meeting) => ({ kind: "historical" as const, id: meeting.id, date: historicalDate(meeting), organizer: meeting.organizer_upn, hasRecording: true, meeting })),
   ].filter((row) => {
     const timestamp = row.date ? Date.parse(row.date) : NaN;
@@ -228,7 +234,13 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
             <p className="my-2 text-sm text-[#6b7280]"><LocalDateTime value={historicalDate(meeting)} /></p>
             <p className="mb-3 text-xs text-[#6b7280]">Organised by {meeting.organizer_upn || "Unknown"}</p>
             <p className="mb-3 text-xs font-semibold text-[#6b7280]">Recording Available</p>
-            {meeting.edit_access_status === "pending" ? (
+            {row.kind === "accessible" ? (
+              <>
+                <Link className="font-semibold text-[#003366] underline" href={`/meetings/${meeting.id}`}>View</Link>
+                {meeting.can_request_edit_access && onRequestMeetingEditAccess && <button type="button" disabled={busy || loading} className={`${buttonClass} ml-2`} onClick={() => void act(() => onRequestMeetingEditAccess(meeting.id))}>Request Edit</button>}
+                {meeting.edit_access_status === "pending" && <span className="ml-2 text-sm text-amber-800">Edit Pending</span>}
+              </>
+            ) : meeting.edit_access_status === "pending" ? (
               <span className="text-sm text-amber-800">
                 {meeting.access_request_type === "edit" ? "View and edit" : "View"} request pending
               </span>

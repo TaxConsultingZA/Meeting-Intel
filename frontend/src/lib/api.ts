@@ -259,8 +259,8 @@ export async function getUpcomingMeetings(upn: string): Promise<CalendarEvent[]>
   return apiFetch<CalendarEvent[]>("/calendar/upcoming", upn);
 }
 
-export function getRecentMeetings(token: string): Promise<RecentMeeting[]> {
-  return apiFetch("/calendar/recent", token);
+export function getRecentMeetings(token: string, allAvailable = false): Promise<RecentMeeting[]> {
+  return apiFetch(`/calendar/recent${allAvailable ? "?all_available=true" : ""}`, token);
 }
 
 export function getProcessingRequests(token: string, status: "pending" | "approved" | "denied" | null = "pending"): Promise<RecordingProcessingRequest[]> {

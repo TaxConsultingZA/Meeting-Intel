@@ -112,23 +112,30 @@ async def calendar_sync_status(request: Request,
 
 
 @router.get("/calendar/recent")
-async def recent_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(require_subscribed)):
+async def recent_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(require_subscribed),
+                          all_available: bool = False):
+    """Read cached events only; the catalog opts out of the recent-time window."""
     from ..services import cross_user_recordings as service
     now = datetime.now(timezone.utc)
-    events = list(await db.scalars(
-        select(SyncedCalendarEvent.raw).where(
-            SyncedCalendarEvent.user_upn == upn,
+    query = select(SyncedCalendarEvent.raw).where(SyncedCalendarEvent.user_upn == upn)
+    if not all_available:
+        query = query.where(
             SyncedCalendarEvent.ends_at >= now - timedelta(days=30),
             SyncedCalendarEvent.ends_at < now,
         )
-    ))
+    events = list(await db.scalars(query))
     user = await service.user_by_upn(db, upn)
-    recent = [e for e in events if service.recent_event(e, now) and upn.lower() in service.people(e)]
+    recent = [e for e in events if upn.lower() in service.people(e)
+              and (all_available or service.recent_event(e, now))]
     result = []
-    states = await service.recent_states(db, user, recent)
-    for event in sorted(recent, key=lambda e: parse_graph_datetime(e["end"]), reverse=True):
+    states = (await service.recent_states(db, user, recent, all_available=True) if all_available
+              else await service.recent_states(db, user, recent))
+    for event in sorted(recent, key=lambda e: parse_graph_datetime(e.get("end"))
+                        or datetime.min.replace(tzinfo=now.tzinfo), reverse=True):
         row = _format_event(event)
-        row["status"] = "ended"
+        end = parse_graph_datetime(event.get("end"))
+        if not all_available or (end and end <= now):
+            row["status"] = "ended"
         row.update(states[service.occurrence_key(event)])
         result.append(row)
     return result

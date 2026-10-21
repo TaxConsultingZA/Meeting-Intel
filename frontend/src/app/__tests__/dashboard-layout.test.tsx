@@ -375,6 +375,7 @@ it("does not load calendar data or show a calendar loader for an unsubscribed us
 });
 
 it("loads historical meetings once when Old Meetings is first opened and preserves their rendering", async () => {
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
   const historical = processedMeeting({ id: "historical-1", title: "Historical client meeting", state: "sent", recorded_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() });
   vi.mocked(getHistoricalMeetings).mockResolvedValue([historical]);
   vi.mocked(getRecentMeetings).mockResolvedValue([]);
@@ -594,6 +595,7 @@ it("clears the refresh warning after the next successful automatic refresh", asy
 });
 
 it("keeps Meetings mounted after its first visit", async () => {
+  vi.mocked(getHistoricalMeetings).mockResolvedValue([]);
   vi.mocked(getRecentMeetings).mockResolvedValue([]);
   vi.mocked(getProcessingRequests).mockResolvedValue([]);
   render(<DashboardClient meetings={[]} recordingJobs={[]} upcoming={[]} historical={[]}

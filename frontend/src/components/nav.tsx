@@ -39,6 +39,7 @@ export default function Nav({ userEmail, accessToken, isAdmin }: NavProps) {
         {[
           { href: "/", label: "Dashboard" },
           { href: "/action-items", label: "Action Items" },
+          { href: "/search", label: "Search saved meetings" },
           ...(isAdmin ? [{ href: "/admin", label: "Admin" }] : []),
         ].map(({ href, label }) => (
           <Link

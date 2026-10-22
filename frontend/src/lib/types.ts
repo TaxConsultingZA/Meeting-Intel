@@ -32,7 +32,16 @@ export type MeetingReviewStatus = "awaiting_review" | "approved" | "sent";
 /** Confidence level the AI extractor assigns to each identified action item. */
 export type Confidence = "high" | "medium" | "low";
 
-/** A single action item as returned by GET /reviews/{id}. */
+/** Minimal metadata for saved-content search; no transcript or content snippets. */
+export interface MeetingSearchResult {
+  id: string;
+  title: string | null;
+  recorded_at: string | null;
+  matched_summary: boolean;
+  matched_action_items: boolean;
+}
+
+/** Independent task execution status. */
 export interface TaskCompletion {
   completed_at?: string | null;
   completed_by_id?: string | null;

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Annotated
 import asyncio
 import hashlib
 import json
@@ -22,7 +23,7 @@ from ..schemas import (
     MeetingOut, ActionItemOut, ActionItemEdit, ShareMeetingIn, ApproveMeetingIn,
     EmailPreviewOut, TranscriptEdit, SpeakerMappingIn, EditAccessDecisionIn,
     EditAccessRequestOut, CalendarParticipantOut, SendMeetingCopyIn, MeetingAccessRequestIn,
-    SpeakerCandidateOut,
+    SpeakerCandidateOut, MeetingSearchOut,
 )
 from ..graph import client as graph
 from ..email_templates import build_meeting_email
@@ -473,6 +474,37 @@ async def _build_speaker_sample(
             raise HTTPException(502, "Could not create the speaker audio sample") from exc
         with open(sample_path, "rb") as sample_file:
             return sample_file.read()
+
+
+@router.get("/reviews/search", response_model=list[MeetingSearchOut])
+async def search_meetings(
+    response: Response,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    upn: Annotated[str, Depends(current_user)],
+    q: str = Query(default="", max_length=255),
+):
+    """Search saved outputs with the same visibility predicate as /reviews/all."""
+    response.headers["Cache-Control"] = "no-store"
+    keyword = q.strip().lower()
+    if not keyword:
+        return []
+    access = select(MeetingParticipant.id).where(
+        MeetingParticipant.meeting_id == Meeting.id,
+        func.lower(MeetingParticipant.user_upn) == upn,
+        MeetingParticipant.access_type.notin_(NO_VIEW_ACCESS_TYPES),
+    ).exists()
+    summary_match = func.coalesce(func.lower(Meeting.summary).contains(keyword, autoescape=True), False)
+    action_match = select(ActionItem.id).where(
+        ActionItem.meeting_id == Meeting.id,
+        func.lower(ActionItem.task).contains(keyword, autoescape=True),
+    ).exists()
+    query = select(
+        Meeting.id, Meeting.title, Meeting.recorded_at,
+        summary_match.label("matched_summary"), action_match.label("matched_action_items"),
+    ).where(access, or_(summary_match, action_match)).order_by(
+        Meeting.recorded_at.desc().nullslast(), Meeting.id,
+    ).limit(50)
+    return (await db.execute(query)).mappings().all()
 
 
 @router.get("/reviews/all", response_model=list[MeetingOut])

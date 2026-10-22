@@ -14,4 +14,6 @@ it("keeps Admin active on the nested audit route", () => {
 it("does not expose Admin navigation to members", () => {
   render(<Nav userEmail="member@example.test" accessToken="token" />);
   expect(screen.queryByRole("link", { name: "Admin" })).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Action Items" })).toHaveAttribute("href", "/action-items");
+  expect(screen.getByRole("link", { name: "Search saved meetings" })).toHaveAttribute("href", "/search");
 });

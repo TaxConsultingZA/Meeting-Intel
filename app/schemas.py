@@ -6,6 +6,14 @@ from pydantic import BaseModel, Field, StrictBool, field_validator
 from .models import Confidence, ProcessingState
 
 
+class MeetingSearchOut(BaseModel):
+    id: UUID
+    title: str | None
+    recorded_at: datetime | None
+    matched_summary: bool
+    matched_action_items: bool
+
+
 class AuditEventOut(BaseModel):
     id: UUID
     occurred_at: datetime

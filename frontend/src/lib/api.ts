@@ -16,6 +16,11 @@ export function getApprovedActionItems(token: string, filters: ActionItemFilters
   return apiFetch(`/action-items?${params}`, token, { signal, cache: "no-store" });
 }
 
+export function searchSavedMeetings(token: string, keyword: string, signal?: AbortSignal): Promise<import("./types").MeetingSearchResult[]> {
+  const params = new URLSearchParams({ q: keyword });
+  return apiFetch(`/reviews/search?${params}`, token, { signal, cache: "no-store" });
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,

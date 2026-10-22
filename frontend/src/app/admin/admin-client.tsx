@@ -37,6 +37,14 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
   const [syncErrors, setSyncErrors] = useState<Record<string, string>>({});
   const [busyJob, setBusyJob] = useState<{ id: string; action: "reprocess" | "cleanup" } | null>(null);
   const jobsInFlight = useRef(new Set<string>());
+  const failedJobs = jobs.filter((job) => job.status === "failed");
+  const jobCounts = [
+    ["Queued", jobs.filter((job) => job.status === "pending").length],
+    ["Processing / Transcribing", jobs.filter((job) => job.status === "processing").length],
+    ["Completed", jobs.filter((job) => job.status === "completed").length],
+    ["Failed", failedJobs.length],
+    ["Cancelled", jobs.filter((job) => job.status === "cancelled").length],
+  ] as const;
 
   const refreshRequests = useCallback(async (active: () => boolean = () => true) => {
     setRequestsLoading(true);
@@ -146,7 +154,21 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
   }
 
   async function refreshJobs() {
-    setJobs(await getRecordingJobs(accessToken, undefined, 200));
+    sectionsInFlight.current.add("jobs");
+    setLoaded((current) => ({ ...current, jobs: false }));
+    setLoading((current) => ({ ...current, jobs: true }));
+    setError(null);
+    try {
+      setJobs(await getRecordingJobs(accessToken, undefined, 200));
+      setLoaded((current) => ({ ...current, jobs: true }));
+    } catch {
+      const message = "Recording jobs could not be loaded. Close and reopen Processing Jobs to try again.";
+      setError(message);
+      throw new Error(message);
+    } finally {
+      sectionsInFlight.current.delete("jobs");
+      setLoading((current) => ({ ...current, jobs: false }));
+    }
   }
 
   async function handleReprocess(job: RecordingJobOut) {
@@ -257,14 +279,35 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
       <details onToggle={(event) => event.currentTarget.open && void loadSection("jobs")} className="group mb-3 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
         <SectionHeader id="admin-jobs" label="Processing Jobs" count={loaded.jobs ? jobs.length : undefined} />
         <div className="px-4 pb-4">
-        <p className="text-xs text-[#6b7280] mb-3">Jobs across all registered users.</p>
+        <p className="text-xs text-[#6b7280] mb-3">{loaded.jobs ? `Latest ${jobs.length} job records (up to 200)` : "Latest job records (up to 200)"}, across all users, visible to administrators. Counts describe this loaded list, not all system jobs. A job record may include automatic retries; counts are not execution-attempt totals.</p>
         {loading.jobs && <LoadingSpinner label="Recording jobs loading" />}
         {loaded.jobs && <>
+        <section aria-label="Processing job statistics" className="mb-4 rounded-md border border-[#dde1e8] bg-slate-50 p-3">
+          <h2 className="text-sm font-semibold text-[#003366]">Processing status counts</h2>
+          <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
+            {jobCounts.map(([label, count]) => <div key={label} className="rounded border border-[#dde1e8] bg-white p-3">
+              <dt className="text-xs text-[#6b7280]">{label}</dt>
+              <dd className="mt-1 text-xl font-semibold text-[#003366]">{count}</dd>
+            </div>)}
+          </dl>
+          <p className="mt-2 text-xs text-[#6b7280]">Processing / Transcribing includes downloading, transcription, extraction, and pending cancellation. Completed means processing finished; it does not confirm note approval or email delivery.</p>
+        </section>
+        <section aria-label="Failed recordings" className="mb-4 min-w-0 break-words rounded-md border border-red-200 bg-red-50/30 p-3">
+          <h2 className="text-sm font-semibold text-[#003366]">Failed recordings ({failedJobs.length})</h2>
+          <p className="mt-1 text-xs text-[#6b7280]">Failed attempts among the latest {jobs.length} jobs (up to 200), across all users. Earlier failures may be outside this list; a later attempt may have succeeded.</p>
+          {failedJobs.length === 0 && <p className="mt-2 text-sm">No failed recording attempts in these jobs.</p>}
+          {failedJobs.map((job) => <div key={job.job_id} className="mt-2 border-t border-red-100 pt-2 text-sm">
+            {job.meeting_id
+              ? <Link href={`/meetings/${job.meeting_id}`} className="font-medium text-[#003366] underline">{job.title || "Untitled meeting"}</Link>
+              : <p className="font-medium">{job.title || "Recording"} · Meeting not yet available</p>}
+            <p className="mt-1 text-xs">{recordingStatusMessage(job)}</p>
+          </div>)}
+        </section>
         {jobs.length === 0 && <p className="text-sm text-[#9ca3af]">No recording jobs yet. Jobs appear here once recordings are queued for processing.</p>}
         {jobs.map((job) => (
           <div key={job.job_id} className="border-t py-3 text-sm space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium">{job.title}</span>
+              <span className="min-w-0 break-words font-medium">{job.title}</span>
               <StateBadge state={job.processing_status} />
             </div>
             <p className="text-xs text-[#6b7280]">Owner: {job.owner_upn ?? "Unknown"}</p>

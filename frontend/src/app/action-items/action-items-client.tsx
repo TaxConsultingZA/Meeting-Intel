@@ -6,6 +6,7 @@ import { ApiError, getApprovedActionItems } from "@/lib/api";
 import type { ActionItemFilters, ApprovedActionItemsPage } from "@/lib/types";
 import TaskCompletionControl from "@/components/task-completion";
 import LoadingSpinner from "@/components/loading-spinner";
+import { getActionItemReminders } from "@/lib/action-item-reminders";
 
 const initial: ActionItemFilters = { view: "all", meeting: "", owner: "", deadline: "", offset: 0 };
 const controlBase = "rounded-md border px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-[#003366]";
@@ -53,6 +54,7 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
   function change(next: ActionItemFilters) { setLoading(true); setFilters(next); }
 
   const hasAppliedFilters = [filters.meeting, filters.owner, filters.deadline].some(value => value.trim());
+  const reminders = result && !loading && !error ? getActionItemReminders(result.items, result.viewer_upn) : { overdue: [], dueSoon: [] };
   const emptyTitle = filters.offset > 0
     ? "No actions on this page"
     : hasAppliedFilters
@@ -97,6 +99,16 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
           : !hasAppliedFilters && <Link className="mt-4 inline-block text-sm font-semibold text-[#003366] underline" href="/">View meetings on Dashboard</Link>}
       </div>}
       {result && result.items.length > 0 && <>
+        {(reminders.overdue.length > 0 || reminders.dueSoon.length > 0) && <aside aria-label="Personal action item due reminders" className="mb-4 grid min-w-0 grid-cols-1 gap-3 break-words sm:grid-cols-2">
+          {reminders.overdue.length > 0 && <section role="status" className="rounded-lg border border-red-300 bg-red-50 p-4 text-red-900">
+            <h2 className="font-semibold">Overdue ({reminders.overdue.length})</h2>
+            <ul className="mt-2 list-inside list-disc text-sm">{reminders.overdue.map(item => <li key={item.id}>{item.task} — due {item.deadline_iso}</li>)}</ul>
+          </section>}
+          {reminders.dueSoon.length > 0 && <section role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-950">
+            <h2 className="font-semibold">Due within 7 days ({reminders.dueSoon.length})</h2>
+            <ul className="mt-2 list-inside list-disc text-sm">{reminders.dueSoon.map(item => <li key={item.id}>{item.task} — due {item.deadline_iso}</li>)}</ul>
+          </section>}
+        </aside>}
         <p role="status" className="mb-3 text-sm text-gray-600">Showing {displayedOffset + 1}–{displayedOffset + result.items.length}</p>
         <div className="overflow-x-auto rounded-lg border"><table className="w-full min-w-[760px] text-left text-sm">
           <caption className="sr-only">Approved action items and source evidence</caption>

@@ -183,3 +183,34 @@ async def test_acquired_calendar_with_existing_job_is_visible_without_changing_j
     assert "meeting_id" not in rows[0]
     assert before == (job.status, job.attempts, job.updated_at, request.status)
     assert not ctx.session.dirty and not ctx.session.new
+
+
+async def test_cached_oct22_offline_event_is_in_complete_catalog(catalog, monkeypatch):
+    """Synthetic data only: mirror the incident's time, not its live identity."""
+    ctx = catalog
+    discover = AsyncMock(side_effect=AssertionError("Catalog reads must stay cache-only"))
+    monkeypatch.setattr(service, "discover", discover)
+    start = datetime(2026, 10, 22, 6, 30, tzinfo=UTC)
+    end = datetime(2026, 10, 22, 7, 0, tzinfo=UTC)
+    event_id = "offline-oct22-calendar"
+    ctx.session.add(SyncedCalendarEvent(
+        user_upn=ctx.user.upn, event_id=event_id, starts_at=start, ends_at=end,
+        raw={
+            "id": event_id, "subject": "Offline Oct 22 calendar fixture",
+            "start": {"dateTime": start.isoformat(), "timeZone": "UTC"},
+            "end": {"dateTime": end.isoformat(), "timeZone": "UTC"},
+            "organizer": {"emailAddress": {"address": ctx.user.upn}},
+            "attendees": [], "isOnlineMeeting": False,
+            "onlineMeetingProvider": "unknown", "isCancelled": False,
+        },
+    ))
+    ctx.session.commit()
+    rows = await calendar.recent_meetings(db=ctx.db, upn=ctx.user.upn, all_available=True)
+    assert len(rows) == 1
+    assert rows[0]["event_id"] == event_id
+    assert rows[0]["start"] == "2026-10-22T06:30:00Z"
+    assert rows[0]["end"] == "2026-10-22T07:00:00Z"
+    assert rows[0]["action"] == "no_recording"
+    assert "meeting_id" not in rows[0]
+    discover.assert_not_awaited()
+    assert not ctx.session.dirty and not ctx.session.new

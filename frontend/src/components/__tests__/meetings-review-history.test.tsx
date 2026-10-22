@@ -166,3 +166,46 @@ it("applies existing time, recording and organiser filters to stored review meet
   fireEvent.change(screen.getByRole("combobox", { name: "Recording" }), { target: { value: "without" } });
   expect(screen.queryByText("Older review")).not.toBeInTheDocument();
 });
+
+it("deduplicates calendar aliases bound to one Meeting ID", async () => {
+  const date = new Date().toISOString();
+  const event: RecentMeeting = { event_id: "alias-one", meeting_id: "same-meeting", subject: "One meeting",
+    start: date, end: date, start_tz: "UTC", status: "ended", action: "view",
+    organizer_email: "host@external.example", organizer_name: "Host", attendees: [], attendee_count: 0,
+    platform: "Teams", location: null };
+  vi.mocked(api.getRecentMeetings).mockResolvedValue([event, { ...event, event_id: "alias-two" }]);
+  render(<RecentMeetings token="offline-token" isSubscribed />);
+  showAll();
+  expect(await screen.findAllByRole("heading", { name: "One meeting" })).toHaveLength(1);
+  expect(screen.getAllByRole("link", { name: "View" })).toHaveLength(1);
+});
+
+it("shows card skeletons until calendar data settles, without hiding authorised records", async () => {
+  let resolve!: (events: RecentMeeting[]) => void;
+  vi.mocked(api.getRecentMeetings).mockReturnValue(new Promise(done => { resolve = done; }));
+  const { rerender } = render(<RecentMeetings token="offline-token" isSubscribed />);
+  expect(screen.getByRole("status", { name: "Recent meetings loading" }).children).toHaveLength(3);
+  rerender(<RecentMeetings token="offline-token" isSubscribed accessibleMeetings={[meeting("ready", "Ready review", new Date().toISOString())]} />);
+  expect(screen.getByRole("heading", { name: "Ready review" })).toBeVisible();
+  expect(screen.queryByRole("status", { name: "Recent meetings loading" })).not.toBeInTheDocument();
+  resolve([]);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
+});
+
+it("shows the cached Oct 22 14:30-15:00 China-time event without a recording under all three All filters", async () => {
+  // Synthetic identity and content; this does not verify the public calendar.
+  const event: RecentMeeting = {
+    event_id: "offline-oct22-calendar", subject: "Offline Oct 22 calendar fixture",
+    start: "2026-10-22T06:30:00Z", end: "2026-10-22T07:00:00Z", start_tz: "UTC",
+    status: "ended", action: "no_recording", platform: "unknown", location: null,
+    organizer_email: "attendee@example.test", organizer_name: "Fixture organiser",
+    attendees: [], attendee_count: 0,
+  };
+  vi.mocked(api.getRecentMeetings).mockResolvedValue([event]);
+  render(<RecentMeetings token="offline-token" cacheIdentity="attendee@example.test" isSubscribed />);
+  showAll();
+  expect(await screen.findByRole("heading", { name: event.subject })).toBeVisible();
+  expect(api.getRecentMeetings).toHaveBeenCalledExactlyOnceWith("offline-token", true);
+  expect(screen.queryByRole("link", { name: "View" })).not.toBeInTheDocument();
+  expect(api.syncCalendarsNow).not.toHaveBeenCalled();
+});

@@ -69,7 +69,7 @@ it("revalidates after calendar sync without resetting the selected filters", asy
 function event(action: RecentMeeting["action"]): RecentMeeting {
   return { event_id: action, subject: action, action, status: "ended", start: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
     end: new Date(Date.now() - 23 * 60 * 60 * 1000).toISOString(), start_tz: "UTC", organizer_name: "Organizer", organizer_email: "org@example.test",
-    attendees: [], attendee_count: 0, platform: "Teams", location: null, meeting_id: "meeting", processing_status: "pending" };
+    attendees: [], attendee_count: 0, platform: "Teams", location: null, meeting_id: action === "view" ? "meeting" : undefined, processing_status: "pending" };
 }
 
 function request(can_decide = true): RecordingProcessingRequest {
@@ -107,6 +107,7 @@ it("renders distinct View/Edit request eligibility and pending card states", asy
 
   fireEvent.click(await screen.findByRole("button", { name: "Request View" }));
   await waitFor(() => expect(requestAccess).toHaveBeenCalledWith("eligible", "view"));
+  await waitFor(() => expect(screen.getAllByRole("button", { name: "Request Edit" })[0]).toBeEnabled());
   fireEvent.click(screen.getAllByRole("button", { name: "Request Edit" })[0]);
   await waitFor(() => expect(requestAccess).toHaveBeenCalledWith("eligible", "edit"));
   fireEvent.click(screen.getAllByRole("button", { name: "Request Edit" })[1]);

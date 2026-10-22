@@ -153,7 +153,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
   const meetingIds = new Set(accessibleIds);
   const eventIds = new Set<string>();
   const recentOnly = events.filter((event) => {
-    if (eventIds.has(event.event_id) || (event.meeting_id && accessibleIds.has(event.meeting_id))) return false;
+    if (eventIds.has(event.event_id) || (event.meeting_id && meetingIds.has(event.meeting_id))) return false;
     eventIds.add(event.event_id);
     if (event.meeting_id) meetingIds.add(event.meeting_id);
     return true;
@@ -189,7 +189,14 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
         </button>
       </div>
       {error && <p role="alert" className="mb-4 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{error}</p>}
-      {loading && <LoadingSpinner label="Recent meetings loading" />}
+      {loading && rows.length === 0 && <div role="status" aria-label="Recent meetings loading" className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {[0, 1, 2].map((card) => <div key={card} aria-hidden="true" className="min-h-40 space-y-4 rounded-lg border border-[#dde1e8] bg-white p-4 motion-safe:animate-pulse">
+          <div className="h-4 w-3/4 rounded bg-[#e5eaf2]" />
+          <div className="h-3 w-2/3 rounded bg-[#eef1f6]" />
+          <div className="h-3 w-1/2 rounded bg-[#eef1f6]" />
+          <div className="h-8 w-20 rounded bg-[#e5eaf2]" />
+        </div>)}
+      </div>}
       {refreshing && <LoadingSpinner label="Recent meetings refreshing" />}
       {!isSubscribed && <p className="mb-4 text-sm">Subscribe to discover recent Calendar meetings and recordings.</p>}
       <div className="mb-5 flex flex-wrap gap-3">

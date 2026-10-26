@@ -33,3 +33,15 @@ async def test_expired_delta_restarts_once_and_foreign_cursor_never_receives_tok
     assert complete and cursor==base+"fresh" and calls==2
     with pytest.raises(RuntimeError,match="Invalid"):
         await client.recording_delta("owned","folder","https://untrusted.example/token")
+
+
+@respx.mock
+async def test_incremental_roots_include_previously_supported_nested_recordings():
+    base=f"{client.settings.graph_base}/drives/owned/"
+    for path in ("Recordings","Documents/Recordings"):
+        respx.get(base+f"root:/{path}?$select=id,folder").mock(return_value=httpx.Response(404))
+    respx.get(base+"root/children?$select=id,name,folder").mock(return_value=httpx.Response(200,json={
+        "value":[{"id":"organized","name":"Personal project files","folder":{}}]}))
+    respx.get(base+"items/organized/children?$select=id,name,folder").mock(return_value=httpx.Response(200,json={
+        "value":[{"id":"nested-recordings","name":"Recordings","folder":{}}]}))
+    assert await client.recording_roots("owned")==["nested-recordings"]

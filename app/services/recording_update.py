@@ -5,6 +5,7 @@ meeting results, review history or participant access are rewritten.
 """
 from datetime import datetime, timedelta, timezone
 from copy import deepcopy
+import asyncio
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
@@ -13,7 +14,6 @@ from app.graph import client as graph
 from app.models import RegisteredUser, UserSyncState, ProcessedItem, SyncedCalendarEvent, RecordingJob
 from app.services.meeting_matching import recording_datetime, match_calendar_event, event_people
 from app.services.recording_identity import event_snapshot
-from app.workers.sync_microsoft import store_calendar_events
 from app.utils.timezones import parse_graph_datetime, utc_iso
 
 STAGES = ("calendar", "discovery", "matching")
@@ -21,6 +21,26 @@ MAX_DELTA_PAGES = 12
 MAX_HISTORICAL_WINDOWS = 4
 MAX_METADATA_READS = 12
 COOLDOWN = timedelta(seconds=60)
+
+
+async def store_events_batched(db, upn, events):
+    """One cache lookup per window, not a database round-trip per calendar item."""
+    unique = {e["id"]: e for e in events if e.get("id")}
+    existing = {r.event_id:r for r in await db.scalars(select(SyncedCalendarEvent).where(
+        SyncedCalendarEvent.user_upn==upn, SyncedCalendarEvent.event_id.in_(list(unique))))}
+    created = 0
+    for event_id,raw in unique.items():
+        row=existing.get(event_id)
+        if row is None:
+            row=SyncedCalendarEvent(user_upn=upn,event_id=event_id,raw=raw)
+            db.add(row);created+=1
+        row.subject=raw.get("subject")
+        row.starts_at=parse_graph_datetime(raw.get("start"))
+        row.ends_at=parse_graph_datetime(raw.get("end"))
+        row.raw=raw
+        row.last_synced_at=datetime.now(timezone.utc)
+    await db.flush()
+    return created,len(unique)-created
 
 
 async def state_for(db, upn, stage):
@@ -52,7 +72,7 @@ async def get_status(db, upn):
             for s in STAGES]
 
 
-async def update_file(db, drive_id, item):
+async def update_file(db, drive_id, item, *, records=None, flush=True):
     if (item.get("deleted") is not None or item.get("folder") is not None or item.get("remoteItem")
             or not str(item.get("name","")).lower().endswith(".mp4")):
         return False
@@ -60,11 +80,13 @@ async def update_file(db, drive_id, item):
     parent = item.get("parentReference") or {}
     if not item_id or (parent.get("driveId") and parent["driveId"] != drive_id):
         return False
-    ledger = await db.scalar(select(ProcessedItem).where(ProcessedItem.drive_item_id == item_id))
+    ledger = records.get(item_id) if records is not None else await db.scalar(select(ProcessedItem).where(ProcessedItem.drive_item_id == item_id))
     created = ledger is None
     if ledger is None:
         ledger = ProcessedItem(drive_item_id=item_id, drive_id=drive_id, source="recording_update")
         db.add(ledger)
+        if records is not None:
+            records[item_id]=ledger
     elif ledger.drive_id != drive_id:
         raise RuntimeError("Recording drive identity conflict")
     identity = dict(ledger.identity_json or {})
@@ -74,7 +96,8 @@ async def update_file(db, drive_id, item):
                      "folder_id":parent.get("id"), "metadata_status":"available"})
     identity.setdefault("status", "unmatched")
     ledger.identity_json = identity
-    await db.flush()
+    if flush:
+        await db.flush()
     return created
 
 
@@ -116,7 +139,7 @@ async def run_stage(db, user, stage):
     try:
         if stage == "calendar":
             events = await graph.get_calendar_window(user.upn,now-timedelta(days=30),now+timedelta(days=14),max_pages=6)
-            created, updated = await store_calendar_events(db,user.upn,events,commit=False)
+            created, updated = await store_events_batched(db,user.upn,events)
             counts, complete = {"events":len(events),"created":created,"updated":updated}, True
         elif stage == "discovery":
             drive_id = await graph.get_user_drive_id(user.upn)
@@ -124,9 +147,9 @@ async def run_stage(db, user, stage):
                 details = {"drive_id":drive_id}
             roots = details.get("roots")
             checked = parse_graph_datetime(details.get("roots_checked_at"))
-            if roots is None or checked is None or now-checked > timedelta(days=1):
+            if roots is None or details.get("roots_version") != 2 or checked is None or now-checked > timedelta(days=1):
                 roots = await graph.recording_roots(drive_id)
-                details.update(roots=roots, roots_checked_at=now.isoformat())
+                details.update(roots=roots, roots_checked_at=now.isoformat(), roots_version=2)
             cursors = dict(details.get("cursors",{}))
             found = changed = pages = 0
             complete = True
@@ -136,9 +159,12 @@ async def run_stage(db, user, stage):
                     break
                 items, cursor, done, calls = await graph.recording_delta(
                     drive_id, folder, cursors.get(folder), MAX_DELTA_PAGES-pages)
+                records={r.drive_item_id:r for r in await db.scalars(select(ProcessedItem).where(
+                    ProcessedItem.drive_item_id.in_([item["id"] for item in items if item.get("id")])))}
                 for item in items:
-                    found += int(await update_file(db, drive_id, item))
+                    found += int(await update_file(db, drive_id, item,records=records,flush=False))
                     changed += int(str(item.get("name","")).lower().endswith(".mp4") and item.get("deleted") is None)
+                await db.flush()
                 # Cursor and file writes commit in the same transaction.
                 cursors[folder], pages = cursor, pages+calls
                 complete = complete and done
@@ -173,17 +199,28 @@ async def run_stage(db, user, stage):
                     start = (instant-timedelta(days=instant.weekday())).replace(hour=0,minute=0,second=0,microsecond=0)
                     weeks[start.isoformat()] = start
             coverage = dict(details.get("coverage",{}))
-            windows = 0
+            windows = failed_windows = 0
+            pending = []
             for key,start in sorted(weeks.items()):
                 last = parse_graph_datetime(coverage.get(key))
                 if last and now-last < timedelta(days=1):
                     continue
-                if windows >= MAX_HISTORICAL_WINDOWS:
+                if len(pending) >= MAX_HISTORICAL_WINDOWS:
                     break
-                events = await graph.get_calendar_window(user.upn,start-timedelta(hours=3),start+timedelta(days=7,hours=3),max_pages=6)
-                await store_calendar_events(db,user.upn,events,commit=False)
-                coverage[key] = now.isoformat()
-                windows += 1
+                pending.append((key,start))
+            semaphore=asyncio.Semaphore(2)
+            async def read_window(start):
+                async with semaphore:
+                    return await graph.get_calendar_window(user.upn,start-timedelta(hours=3),
+                        start+timedelta(days=7,hours=3),max_pages=6)
+            window_results=await asyncio.gather(*(read_window(start) for _,start in pending),return_exceptions=True)
+            failed_keys=set()
+            for (key,_),response in zip(pending,window_results):
+                if isinstance(response,BaseException):
+                    failed_windows+=1;failed_keys.add(key)
+                    continue
+                await store_events_batched(db,user.upn,response)
+                coverage[key]=now.isoformat();windows+=1
             details["coverage"] = coverage
             events = [r.raw for r in await db.scalars(select(SyncedCalendarEvent).where(SyncedCalendarEvent.user_upn==user.upn))]
             active = set(await db.scalars(select(RecordingJob.drive_item_id).where(
@@ -193,6 +230,12 @@ async def run_stage(db, user, stage):
                 if ledger.drive_item_id in active:
                     continue
                 meta = dict(ledger.identity_json or {})
+                instant=parse_graph_datetime(meta.get("recorded_at"))
+                week=(instant-timedelta(days=instant.weekday())).replace(hour=0,minute=0,second=0,microsecond=0).isoformat() if instant else None
+                if week in failed_keys:
+                    linked+=int(meta.get("status")=="linked")
+                    unresolved+=int(meta.get("status")!="linked")
+                    continue
                 if meta.get("decided_by"):  # Preserve prior explicit owner decisions.
                     linked += int(meta.get("status")=="linked")
                     unresolved += int(meta.get("status")!="linked")
@@ -204,8 +247,9 @@ async def run_stage(db, user, stage):
                 linked += int(match is not None)
                 unresolved += int(match is None)
             counts = {"linked":linked,"unresolved":unresolved,"metadata_repaired":repaired,
-                      "metadata_unavailable":unavailable,"calendar_windows":windows,"active_skipped":len(active)}
-            complete = all(coverage.get(key) for key in weeks) and not unavailable and not any(
+                      "metadata_unavailable":unavailable,"calendar_windows":windows,
+                      "calendar_windows_failed":failed_windows,"active_skipped":len(active)}
+            complete = all(coverage.get(key) for key in weeks) and not unavailable and not failed_windows and not any(
                 not r.filename or not (r.identity_json or {}).get("recorded_at") for r in ledgers)
         state.details_json = dict(details, counts=counts)
         state.status, state.last_attempted_at = "success" if complete else "partial", now

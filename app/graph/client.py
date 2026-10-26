@@ -321,6 +321,33 @@ async def recording_roots(drive_id: str) -> list[str]:
             item = response.json()
             if item.get("folder") is not None and item.get("id"):
                 roots.append(item["id"])
+        # Preserve the previous bounded two-level discovery scope, including
+        # user-organized folders. Cache the resulting IDs; delta handles changes.
+        prefix = f"{settings.graph_base}/drives/{drive_id}/"
+        queue = [(prefix+"root/children?$select=id,name,folder",0)]
+        requests, seen_folders = 0, set()
+        while queue:
+            url, depth = queue.pop(0)
+            pages = set()
+            while url:
+                if url in pages or not url.startswith(prefix):
+                    raise RuntimeError("Invalid recording folder pagination")
+                if requests >= RECORDINGS_TRAVERSAL_MAX_REQUESTS:
+                    raise RuntimeError("Recording folder discovery incomplete")
+                pages.add(url)
+                requests += 1
+                response = await client.get(url,headers=await asyncio.to_thread(_headers))
+                response.raise_for_status()
+                data = response.json()
+                for item in data.get("value",[]):
+                    if item.get("folder") is None or not item.get("id"):
+                        continue
+                    if item["name"].casefold()=="recordings":
+                        roots.append(item["id"])
+                    elif depth+1 < RECORDINGS_TRAVERSAL_MAX_DEPTH and item["id"] not in seen_folders:
+                        seen_folders.add(item["id"])
+                        queue.append((prefix+f"items/{item['id']}/children?$select=id,name,folder",depth+1))
+                url=data.get("@odata.nextLink")
     return list(dict.fromkeys(roots))
 
 

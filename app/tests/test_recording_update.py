@@ -91,3 +91,13 @@ def test_strong_match_requires_exact_title_stable_id_owner_and_unique_occurrence
     other=deepcopy(ctx.event);other["id"]="another";other["iCalUId"]="another"
     assert update.strong_match(ctx.item["name"],instant,[ctx.event,other],ctx.owner.upn) is None
     assert update.strong_match(ctx.item["name"],instant,[ctx.event],ctx.outsider.upn) is None
+
+
+async def test_historical_read_failure_saves_metadata_but_does_not_guess_calendar(ctx,io,monkeypatch):
+    await update.run_stage(ctx.db,ctx.owner,"discovery")
+    monkeypatch.setattr(update.graph,"get_calendar_window",AsyncMock(side_effect=RuntimeError("SECRET")))
+    result=await update.run_stage(ctx.db,ctx.owner,"matching")
+    assert result["status"]=="partial"
+    assert result["counts"]["calendar_windows_failed"]==1
+    row=(await available_recordings(ctx.db,ctx.owner.upn))[0]
+    assert row["name"]==ctx.item["name"] and row["created_at"] and not row["calendar_matched"]

@@ -1,7 +1,7 @@
 # Unified meeting and recording update
 
 Scope: current authenticated subscribed user, within the existing OneDrive
-Recordings and Documents/Recordings locations. No tenant-wide user/file scan,
+Recordings locations (including bounded two-level folder discovery). No tenant-wide user/file scan,
 permission expansion, transcription, email, review or task mutation.
 
 The dashboard replaces Calendar-only sync with 更新会议和录音. It sequentially
@@ -17,7 +17,7 @@ At most 12 delta pages are read per step; remaining pages resume on the next
 update. A 410 resets the cursor once. File writes and cursor commit together.
 The first synchronization enumerates current files; later calls read changes.
 Calendar reads are capped at six pages per window. Historical backfill reads
-at most four weekly windows per pass and caches coverage for 24 hours. Exact
+at most four weekly windows per pass, with concurrency two, and caches coverage for 24 hours. Calendar and file caches use batched database reads/writes. Initial folder discovery retains the prior two-level/100-request bound and is cached for one day. Exact
 legacy metadata reads are capped at 12 per matching step.
 
 Matching requires exact normalized title, unique occurrence, stable event ID

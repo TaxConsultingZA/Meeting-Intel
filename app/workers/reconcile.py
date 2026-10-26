@@ -1,5 +1,4 @@
-"""Scheduled job — walks the Recordings folder of every *subscribed* domain user,
-finds new recordings, and processes them inline (transcribe + extract + email).
+"""Scheduled job — discovers recordings for explicitly subscribed users.
 Run on a schedule (e.g. every 15 minutes) or manually."""
 import asyncio
 import sys
@@ -63,30 +62,50 @@ async def reconcile() -> int:
                     continue
                 subscriber.graph_drive_id = drive_id
                 await db.commit()
-            recordings = await graph.list_recordings_folder(drive_id)
+            recordings = await graph.list_recordings_folder(drive_id, strict=True)
         except Exception as e:
-            print(f"  Skipping {upn}: {e}")
+            print(f"  Discovery failed ({type(e).__name__})")
+            response = getattr(e, "response", None)
+            status = getattr(response, "status_code", None)
+            diagnostic = f"OneDrive discovery failed: {type(e).__name__}"
+            if status is not None:
+                diagnostic += f" HTTP {status}"
+            elif isinstance(e, RuntimeError) and str(e) in {
+                "OneDrive discovery incomplete",
+                "OneDrive recording-folder traversal incomplete",
+                "Invalid OneDrive pagination",
+            }:
+                diagnostic += f" ({e})"
             async with SessionLocal() as db:
-                await record_sync_result(db, user_upn=upn, source="onedrive", error=e)
+                await record_sync_result(db, user_upn=upn, source="onedrive",
+                                         error=RuntimeError(diagnostic))
             continue
 
-        async with SessionLocal() as db:
-            await record_sync_result(db, user_upn=upn, source="onedrive")
-
+        failed = 0
         for item in recordings:
-            drive_item_id = item["id"]
-            etag = item.get("eTag")
-
-            async with SessionLocal() as db:
-                discovered = await claim_item(
-                    db,
-                    drive_item_id, drive_id, etag, "reconcile",
-                    filename=item.get("name"),
-                )
-
+            try:
+                drive_item_id = item["id"]
+                async with SessionLocal() as db:
+                    discovered = await claim_item(
+                        db,
+                        drive_item_id, drive_id, item.get("eTag"), "reconcile",
+                        filename=item.get("name"),
+                    )
+            except Exception as exc:
+                failed += 1
+                # Stable file identity, never raw exception URLs/bodies/tokens.
+                print(f"  Recording persistence failed: item={item.get('id', 'missing')} "
+                      f"error={type(exc).__name__}")
+                continue
             if discovered:
-                print(f"  Discovered: {item['name']} (owner: {upn})")
                 found += 1
+
+        async with SessionLocal() as db:
+            await record_sync_result(
+                db, user_upn=upn, source="onedrive",
+                error=RuntimeError(f"Recording persistence incomplete: {failed} file(s) failed")
+                if failed else None,
+            )
 
     return found
 

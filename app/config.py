@@ -2,6 +2,7 @@ from functools import lru_cache
 from typing import Literal
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from .database import normalize_database_url
 
 
 class Settings(BaseSettings):
@@ -69,12 +70,7 @@ class Settings(BaseSettings):
 
         Accepts both ``postgres://`` (Railway default) and ``postgresql://`` prefixes.
         """
-        url = self.database_url
-        for prefix in ("postgres://", "postgresql://"):
-            if url.startswith(prefix):
-                url = "postgresql+asyncpg://" + url[len(prefix):]
-                break
-        return url
+        return normalize_database_url(self.database_url)
 
     # --- AI layer ---
     graph_impl: str = "microsoft"          # microsoft | mock

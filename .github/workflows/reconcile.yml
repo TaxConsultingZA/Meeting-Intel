@@ -1,22 +1,77 @@
 name: Reconcile Recordings
 
 on:
+  schedule:
+    - cron: "*/15 * * * *"   # Preserve production cadence; staging is manual-only below.
   workflow_dispatch:           # allow manual trigger from GitHub UI
+
+permissions: {}
+
+concurrency:
+  group: reconcile-recordings
+  cancel-in-progress: false
 
 jobs:
   reconcile:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 2
     steps:
-      - name: Trigger reconciliation
+      - name: Determine whether to trigger
+        id: target
+        env:
+          APP_URL: ${{ secrets.RAILWAY_APP_URL }}
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
         run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" \
+          if [ -z "$APP_URL" ]; then
+            echo "::error::RAILWAY_APP_URL is not configured. No request was sent."
+            exit 1
+          fi
+          # This is the staging domain verified in the resource audit. Match the
+          # hostname rather than the URL spelling (port, case, trailing slash).
+          host=$(python -c 'import os, urllib.parse; print(urllib.parse.urlsplit(os.environ["APP_URL"]).hostname or "")')
+          if [ "$EVENT_NAME" = "schedule" ] && [ "$host" = "meeting-intel-api-production.up.railway.app" ]; then
+            echo "trigger=false" >> "$GITHUB_OUTPUT"
+            echo "Staging reconciliation is manual-only; no Railway request was sent." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "trigger=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Trigger reconciliation
+        if: steps.target.outputs.trigger == 'true'
+        env:
+          APP_URL: ${{ secrets.RAILWAY_APP_URL }}
+          RECONCILE_SECRET: ${{ secrets.RECONCILE_SECRET }}
+        shell: bash
+        run: |
+          if [ -z "$RECONCILE_SECRET" ]; then
+            echo "::error::RECONCILE_SECRET is not configured. No request was sent."
+            exit 1
+          fi
+          # One POST only: retries or a health probe could cause extra wakeups.
+          # Do not print URLs, headers, or bodies that may contain sensitive data.
+          curl_exit=0
+          response=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+            --connect-timeout 10 --max-time 45 \
             -X POST \
-            -H "x-reconcile-secret: ${{ secrets.RECONCILE_SECRET }}" \
-            "${{ secrets.RAILWAY_APP_URL }}/reconcile")
-          echo "Response: $response"
+            -H "x-reconcile-secret: $RECONCILE_SECRET" \
+            "${APP_URL%/}/reconcile") || curl_exit=$?
+          echo "HTTP status: $response; curl exit code: $curl_exit"
+          if [ "$curl_exit" -ne 0 ]; then
+            echo "::error::Request failed (curl exit $curl_exit; HTTP $response). No retry was attempted."
+            echo "Reconciliation request failed: curl exit $curl_exit; HTTP $response. No retry attempted." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           if [ "$response" != "200" ]; then
-            echo "Reconciliation trigger failed with status $response"
+            case "$response" in
+              404) reason="Endpoint unavailable: check the configured service URL, deployment, and route." ;;
+              401|403) reason="Authentication rejected: check existing secret configuration." ;;
+              429) reason="Rate limited: retry manually after the service recovers." ;;
+              5??) reason="Server or gateway failure: check Railway deployment and service logs." ;;
+              *) reason="Unexpected response: check service logs." ;;
+            esac
+            echo "::error::Reconciliation trigger failed: HTTP $response. $reason"
+            echo "Reconciliation trigger failed: HTTP $response. $reason No retry attempted." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           echo "Reconciliation started successfully"
+          echo "Reconciliation trigger accepted (HTTP 200). Background completion is not verified by this workflow." >> "$GITHUB_STEP_SUMMARY"

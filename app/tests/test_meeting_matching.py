@@ -116,6 +116,22 @@ def test_equal_title_and_time_with_distinct_meetings_is_ambiguous_in_either_orde
     assert match_calendar_event("Review.mp4", RECORDED_AT, [first, copy]) is first
 
 
+def test_repeated_title_nearby_occurrences_are_not_disambiguated_by_file_upload_time():
+    first = {"id": "first", "iCalUId": "first", **_event(
+        "Test", "2026-09-01T08:00:00Z", "2026-09-01T08:30:00Z")}
+    second = {"id": "second", "iCalUId": "second", **_event(
+        "Test", "2026-09-01T08:30:00Z", "2026-09-01T09:00:00Z")}
+    for events in ([first, second], [second, first]):
+        assert match_calendar_event("Test-20260901_164158-会议记录.mp4", RECORDED_AT, events) is None
+
+
+def test_localised_recording_suffix_keeps_distinct_non_latin_meeting_titles():
+    from app.services.meeting_matching import clean_recording_title
+    assert clean_recording_title("项目评审-20260901_164158-会议记录.mp4") == "项目评审"
+    unrelated = _event("预算讨论", "2026-09-01T08:00:00Z", "2026-09-01T09:00:00Z")
+    assert match_calendar_event("项目评审-20260901_164158-会议记录.mp4", RECORDED_AT, [unrelated]) is None
+
+
 async def test_external_creator_calendar_failure_uses_authorised_attendee_copy(monkeypatch):
     event = {"id": "attendee-copy", **_event(
         "Review", "2026-09-01T08:00:00Z", "2026-09-01T09:00:00Z"),

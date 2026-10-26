@@ -263,13 +263,42 @@ it("renders the dashboard frame while slow dashboard data loads asynchronously",
     isSubscribed={true} syncStates={[]} loadErrors={[]} deferInitialLoad />);
 
   expect(screen.getByRole("heading", { name: "Meeting Intelligence" })).toBeInTheDocument();
-  expect(screen.getByRole("status", { name: "Dashboard loading" })).toHaveAccessibleName("Dashboard loading");
+  expect(screen.getByRole("status", { name: "Upcoming meetings loading" })).toBeInTheDocument();
+  expect(screen.getByRole("status", { name: "Upcoming count loading" })).toBeInTheDocument();
   expect(getUpcomingMeetings).toHaveBeenCalledWith("offline-test-token");
   expect(getHistoricalMeetings).not.toHaveBeenCalled();
 
   finishUpcoming([calendarEvent({ subject: "Loaded later" })]);
   expect(await screen.findByText("Loaded later")).toBeInTheDocument();
   await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+});
+
+it("shows review and recording-request skeletons independently and replaces each as it resolves", async () => {
+  let finishMeetings!: (meetings: MeetingOut[]) => void;
+  let finishRequests!: (requests: RecordingProcessingRequest[]) => void;
+  vi.mocked(getAllMeetings).mockReturnValue(new Promise((resolve) => { finishMeetings = resolve; }));
+  vi.mocked(getSyncStatus).mockReturnValue(new Promise(() => {}));
+  vi.mocked(getRecordingJobs).mockReturnValue(new Promise(() => {}));
+  vi.mocked(getUpcomingMeetings).mockReturnValue(new Promise(() => {}));
+  vi.mocked(getProcessingRequests).mockReturnValue(new Promise((resolve) => { finishRequests = resolve; }));
+
+  render(<DashboardClient meetings={[]} recordingJobs={[]} upcoming={[]} historical={[]}
+    upn="reviewer@example.test" accessToken="offline-test-token"
+    isSubscribed={true} syncStates={[]} loadErrors={[]} deferInitialLoad />);
+
+  expect(screen.getByRole("heading", { name: "Meeting Intelligence" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Awaiting Review" }));
+  expect(screen.getByRole("status", { name: "Meeting reviews loading" })).toBeInTheDocument();
+  expect(screen.getByRole("status", { name: "Recording requests loading" })).toBeInTheDocument();
+
+  await act(async () => { finishMeetings([processedMeeting({ title: "Review loaded" })]); });
+  expect(screen.getByText("Review loaded")).toBeVisible();
+  expect(screen.queryByRole("status", { name: "Meeting reviews loading" })).not.toBeInTheDocument();
+  expect(screen.getByRole("status", { name: "Recording requests loading" })).toBeInTheDocument();
+
+  await act(async () => { finishRequests([]); });
+  expect(screen.queryByRole("status", { name: "Recording requests loading" })).not.toBeInTheDocument();
+  expect(screen.getByText("No recording processing requests are awaiting approval.")).toBeInTheDocument();
 });
 
 it("shows a calendar failure without waiting for unrelated recording status", async () => {
@@ -285,9 +314,10 @@ it("shows a calendar failure without waiting for unrelated recording status", as
 
   expect(await screen.findByText("Calendar sync failed: Calendar unavailable")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Meeting Intelligence" })).toBeInTheDocument();
-  expect(screen.getByRole("status", { name: "Dashboard loading" })).toHaveAccessibleName("Dashboard loading");
+  expect(screen.getByRole("status", { name: "In Progress count loading" })).toBeInTheDocument();
   expect(screen.queryByRole("status", { name: "Calendar meetings loading" })).not.toBeInTheDocument();
   expect(screen.queryByText("No upcoming meetings")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Retry calendar display" })).toBeInTheDocument();
 });
 
 it.each(["meetings", "sync", "jobs"] as const)("finishes an empty calendar while %s is still loading", async (pendingSource) => {
@@ -306,8 +336,8 @@ it.each(["meetings", "sync", "jobs"] as const)("finishes an empty calendar while
     isSubscribed={true} syncStates={[]} loadErrors={[]} deferInitialLoad />);
 
   expect(await screen.findByText("No upcoming meetings")).toBeVisible();
-  expect(screen.queryByRole("status", { name: "Calendar meetings loading" })).not.toBeInTheDocument();
-  expect(screen.getAllByRole("status", { name: "Dashboard loading" })).toHaveLength(1);
+  expect(screen.queryByRole("status", { name: "Upcoming meetings loading" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("status", { name: "Dashboard loading" })).not.toBeInTheDocument();
   if (pendingSource === "meetings") {
     fireEvent.click(screen.getByRole("button", { name: "Old Meetings" }));
     expect(screen.queryByText("No completed meetings yet")).not.toBeInTheDocument();
@@ -331,7 +361,7 @@ it("shows returned reviews and recording jobs while calendar and sync status rem
   fireEvent.click(screen.getByRole("button", { name: /^In Progress/ }));
   expect(screen.getByText("Queued recording")).toBeVisible();
   expect(screen.queryByRole("status", { name: "Recording status loading" })).not.toBeInTheDocument();
-  expect(screen.getAllByRole("status", { name: "Dashboard loading" })).toHaveLength(1);
+  expect(screen.queryByRole("status", { name: "Dashboard loading" })).not.toBeInTheDocument();
 });
 
 it.each(["meetings", "sync", "jobs"] as const)("keeps calendar results visible when %s fails independently", async (failureSource) => {
@@ -355,6 +385,7 @@ it.each(["meetings", "sync", "jobs"] as const)("keeps calendar results visible w
     jobs: "Recording status is temporarily unavailable",
   }[failureSource];
   expect(screen.getByText(heading)).toBeVisible();
+  expect(screen.getByRole("button", { name: failureSource === "meetings" ? "Retry meeting data" : failureSource === "jobs" ? "Retry recording status" : "Retry sync status" })).toBeInTheDocument();
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
 });
 
@@ -388,7 +419,7 @@ it("loads historical meetings once when Old Meetings is first opened and preserv
 
   fireEvent.click(screen.getByRole("button", { name: "Old Meetings" }));
   expect(getHistoricalMeetings).toHaveBeenCalledTimes(1);
-  expect(screen.getByRole("status")).toHaveAccessibleName("Dashboard loading");
+  expect(screen.getByRole("status", { name: "Historical meetings loading" })).toBeInTheDocument();
   await waitFor(() => expect(screen.queryByText("Loading historical meetings…")).not.toBeInTheDocument());
 
   fireEvent.click(screen.getByRole("button", { name: "Meetings" }));
@@ -677,14 +708,14 @@ it("shows only the sync button spinner while sync and ordinary reads are pending
   const { container } = render(<DashboardClient meetings={[]} upcoming={[calendarEvent({ subject: "Previously loaded calendar" })]}
     historical={[]} syncStates={[]} loadErrors={[]} accessToken="offline" upn="admin@example.test" isSubscribed isAdmin deferInitialLoad />);
   await act(async () => {});
-  expect(screen.getAllByRole("status", { name: "Dashboard loading" })).toHaveLength(1);
-  expect(container.querySelectorAll(".border-r-transparent")).toHaveLength(1);
+  expect(screen.getByRole("status", { name: "Upcoming count loading" })).toBeInTheDocument();
+  expect(container.querySelectorAll(".border-r-transparent")).toHaveLength(0);
   fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" }));
   const button = screen.getByRole("button", { name: "Syncing calendars…" });
   expect(button).toBeDisabled();
   expect(button.querySelectorAll(".border-r-transparent")).toHaveLength(1);
   expect(container.querySelectorAll(".border-r-transparent")).toHaveLength(1);
-  expect(screen.queryByRole("status", { name: "Dashboard loading" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("status", { name: "Upcoming meetings loading" })).not.toBeInTheDocument();
   expect(screen.getByText("Previously loaded calendar")).toBeVisible();
   expect(syncCalendarsNow).toHaveBeenCalledOnce();
 });

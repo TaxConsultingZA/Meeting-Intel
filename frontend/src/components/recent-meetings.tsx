@@ -80,6 +80,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
   const [timeFilter, setTimeFilter] = useState<TimeFilter>("7");
   const [recordingFilter, setRecordingFilter] = useState<RecordingFilter>("with");
   const [organizerFilter, setOrganizerFilter] = useState<OrganizerFilter>("all");
+  const [search, setSearch] = useState("");
   const [choosingAccessFor, setChoosingAccessFor] = useState<string | null>(null);
   const controlledRequests = processingRequests !== undefined;
   const processingRequestsRef = useRef(processingRequests);
@@ -176,7 +177,13 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     if (recordingFilter === "with" && !row.hasRecording) return false;
     if (recordingFilter === "without" && row.hasRecording) return false;
     const organizedByMe = normalized(row.organizer) === normalized(cacheIdentity);
-    return organizerFilter === "all" || (organizerFilter === "me" ? organizedByMe : !organizedByMe);
+    if (organizerFilter !== "all" && (organizerFilter === "me" ? !organizedByMe : organizedByMe)) return false;
+    const query = normalized(search);
+    if (!query) return true;
+    const searchable = row.kind === "recent"
+      ? [row.event.subject, ...row.event.attendees]
+      : [row.meeting.title, row.meeting.summary, ...row.meeting.calendar_participants.map((participant) => participant.name)];
+    return searchable.some((value) => normalized(value).includes(query));
   }).sort((a, b) => (b.date ? Date.parse(b.date) : 0) - (a.date ? Date.parse(a.date) : 0));
 
   const buttonClass = "rounded-md bg-[#003366] px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50";
@@ -184,9 +191,6 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     <section aria-label="Meetings">
       <div className="mb-4 flex items-center justify-between gap-3">
         <p className="text-sm text-[#6b7280]">Meetings you participated in, including available historical meetings.</p>
-        <button type="button" className={buttonClass} disabled={busy || loading || refreshing} onClick={() => void refresh()}>
-          {refreshing ? "Refreshing…" : "Refresh"}
-        </button>
       </div>
       {error && <p role="alert" className="mb-4 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{error}</p>}
       {loading && rows.length === 0 && <div role="status" aria-label="Recent meetings loading" className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -199,24 +203,33 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
       </div>}
       {refreshing && <LoadingSpinner label="Recent meetings refreshing" />}
       {!isSubscribed && <p className="mb-4 text-sm">Subscribe to discover recent Calendar meetings and recordings.</p>}
-      <div className="mb-5 flex flex-wrap gap-3">
-        <label className="text-sm font-medium text-[#374151]">Time
-          <select aria-label="Time" className="ml-2 rounded-md border border-[#dde1e8] bg-white px-2 py-1.5" value={timeFilter} onChange={(e) => setTimeFilter(e.target.value as TimeFilter)}>
+      <div className="mb-5 grid grid-cols-1 items-end gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(220px,2fr)_repeat(3,minmax(135px,1fr))_auto]">
+        <div className="flex min-w-0 flex-col gap-1 text-sm font-medium text-[#374151]">Search meetings
+          <div className="flex min-w-0 gap-2">
+            <input aria-label="Search meetings" type="search" className="min-w-0 flex-1 rounded-md border border-[#dde1e8] bg-white px-3 py-2 font-normal" placeholder="Title, summary, or participant" value={search} onChange={(event) => setSearch(event.target.value)} />
+            {search && <button type="button" className="shrink-0 rounded-md border border-[#dde1e8] bg-white px-3 py-2 text-sm" onClick={() => setSearch("")}>Clear search</button>}
+          </div>
+        </div>
+        <label className="flex min-w-0 flex-col gap-1 text-sm font-medium text-[#374151]">Time
+          <select aria-label="Time" className="w-full rounded-md border border-[#dde1e8] bg-white px-2 py-2" value={timeFilter} onChange={(e) => setTimeFilter(e.target.value as TimeFilter)}>
             <option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="all">All available history</option>
           </select>
         </label>
-        <label className="text-sm font-medium text-[#374151]">Recording
-          <select aria-label="Recording" className="ml-2 rounded-md border border-[#dde1e8] bg-white px-2 py-1.5" value={recordingFilter} onChange={(e) => setRecordingFilter(e.target.value as RecordingFilter)}>
+        <label className="flex min-w-0 flex-col gap-1 text-sm font-medium text-[#374151]">Recording
+          <select aria-label="Recording" className="w-full rounded-md border border-[#dde1e8] bg-white px-2 py-2" value={recordingFilter} onChange={(e) => setRecordingFilter(e.target.value as RecordingFilter)}>
             <option value="with">With Recording</option><option value="without">No Recording</option><option value="all">All</option>
           </select>
         </label>
-        <label className="text-sm font-medium text-[#374151]">Organizer
-          <select aria-label="Organizer" className="ml-2 rounded-md border border-[#dde1e8] bg-white px-2 py-1.5" value={organizerFilter} onChange={(e) => setOrganizerFilter(e.target.value as OrganizerFilter)}>
+        <label className="flex min-w-0 flex-col gap-1 text-sm font-medium text-[#374151]">Organizer
+          <select aria-label="Organizer" className="w-full rounded-md border border-[#dde1e8] bg-white px-2 py-2" value={organizerFilter} onChange={(e) => setOrganizerFilter(e.target.value as OrganizerFilter)}>
             <option value="all">All</option><option value="me">Organized by me</option><option value="others">Organized by others</option>
           </select>
         </label>
+        <button type="button" className={`${buttonClass} min-h-10`} disabled={busy || loading || refreshing} onClick={() => void refresh()}>
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
       </div>
-      {!loading && !error && isSubscribed && rows.length === 0 && <p>No meetings match these filters.</p>}
+      {!loading && !error && isSubscribed && rows.length === 0 && <p>{search.trim() ? "No meetings match this search and the selected filters." : "No meetings match these filters."}</p>}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {rows.map((row) => row.kind === "recent" ? (() => { const event = row.event; return (
           <article key={`recent:${event.event_id}`} className="rounded-lg border border-[#dde1e8] bg-white p-4">

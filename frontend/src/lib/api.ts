@@ -92,13 +92,14 @@ async function apiFetch<T>(
   path: string,
   accessToken: string,
   init?: RequestInit,
+  timeoutMs: number | null = API_TIMEOUT_MS,
 ): Promise<T> {
   const controller = new AbortController();
   let timedOut = false;
-  const timeout = setTimeout(() => {
+  const timeout = timeoutMs === null ? undefined : setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, API_TIMEOUT_MS);
+  }, timeoutMs);
   const forwardAbort = () => controller.abort();
   if (init?.signal) {
     if (init.signal.aborted) controller.abort();
@@ -292,7 +293,7 @@ export function processRecentMeeting(eventId: string, token: string): Promise<{ 
 
 /** List MP4 files in the user's OneDrive Recordings folder with their current import status. */
 export async function getAvailableRecordings(upn: string): Promise<AvailableRecording[]> {
-  return apiFetch<AvailableRecording[]>("/recordings/available", upn);
+  return apiFetch<AvailableRecording[]>("/recordings/available?resolve_filenames=true", upn);
 }
 
 /** Trigger the full pipeline for a new recording. Returns 409 if already imported. */

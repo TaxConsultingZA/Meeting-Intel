@@ -1,6 +1,5 @@
 "use client";
 import Link from "next/link";
-import LoadingSpinner from "@/components/loading-spinner";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Calendar, Users, ChevronRight, Upload, Mic, Video, Share2, Power } from "lucide-react";
@@ -68,6 +67,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const [meetings, setMeetings] = useState(initialMeetings);
   const [recordingJobs, setRecordingJobs] = useState(initialRecordingJobs);
   const [processingRequests, setProcessingRequests] = useState<RecordingProcessingRequest[]>([]);
+  const [processingRequestsLoading, setProcessingRequestsLoading] = useState(true);
   const [processingRequestsError, setProcessingRequestsError] = useState("");
   const [processingRequestBusy, setProcessingRequestBusy] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("upcoming");
@@ -231,11 +231,14 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   }, [hasActiveProcessing, refreshProcessing, showImport]);
 
   const refreshProcessingRequests = useCallback(async () => {
+    setProcessingRequestsLoading(true);
     try {
       setProcessingRequests(await getProcessingRequests(accessToken));
       setProcessingRequestsError("");
     } catch {
       setProcessingRequestsError("Recording processing requests are temporarily unavailable.");
+    } finally {
+      setProcessingRequestsLoading(false);
     }
   }, [accessToken]);
 
@@ -247,12 +250,42 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       setProcessingRequestsError("");
     }).catch(() => {
       if (active) setProcessingRequestsError("Recording processing requests are temporarily unavailable.");
+    }).finally(() => {
+      if (active) setProcessingRequestsLoading(false);
     });
     return () => { active = false; };
   }, [accessToken]);
 
   async function refreshRecordingJobs() {
     await refreshProcessing();
+  }
+
+  async function retryDashboardRead(source: "meetings" | "recordingJobs" | "calendar" | "sync") {
+    const labels = {
+      meetings: "Meeting records could not be loaded",
+      recordingJobs: "Recording status could not be loaded. Refresh to try again.",
+      calendar: "Calendar sync failed",
+      sync: "Sync status could not be loaded",
+    };
+    const setErrors = {
+      meetings: setMeetingLoadErrors,
+      recordingJobs: setRecordingJobLoadErrors,
+      calendar: setCalendarLoadErrors,
+      sync: setSyncLoadErrors,
+    }[source];
+    setErrors([]);
+    setLoading((current) => ({ ...current, [source]: true }));
+    try {
+      if (source === "meetings") setMeetings(await getAllMeetings(accessToken));
+      else if (source === "recordingJobs") setRecordingJobs(await getRecordingJobs(accessToken, undefined, 20));
+      else if (source === "calendar") setUpcoming(await getUpcomingMeetings(accessToken));
+      else setSyncStates(await getSyncStatus(accessToken));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "Unknown error";
+      setErrors([`${labels[source]}: ${detail}`]);
+    } finally {
+      setLoading((current) => ({ ...current, [source]: false }));
+    }
   }
 
   async function handleCalendarSync() {
@@ -385,13 +418,12 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   }
 
   const calendarLoading = isSubscribed && loading.calendar;
-  const inProgressIncomplete = calendarLoading || loading.recordingJobs || loading.meetings
-    || calendarLoadErrors.length > 0 || recordingJobLoadErrors.length > 0 || meetingLoadErrors.length > 0;
+  const inProgressLoading = calendarLoading || loading.recordingJobs || loading.meetings;
   const meetingsIncomplete = loading.meetings || meetingLoadErrors.length > 0;
   const stats: { icon: string; num: number; label: string; color: string; tab: Tab; loading: boolean }[] = [
     { icon: "📅", num: upcomingEvents.length,                  label: "Upcoming",         color: "bg-blue-50",   tab: "upcoming", loading: calendarLoading },
     { icon: "⚙️", num: inProgressEvents.length + activeRecordingJobs.length + pipelineActive.length, label: "In Progress", color: "bg-indigo-50", tab: "in_progress", loading: loading.meetings || loading.recordingJobs || calendarLoading },
-    { icon: "📋", num: pendingReview.length + pendingProcessingRequests.length, label: "Awaiting Review", color: "bg-amber-50", tab: "review", loading: loading.meetings },
+    { icon: "📋", num: pendingReview.length + pendingProcessingRequests.length, label: "Awaiting Review", color: "bg-amber-50", tab: "review", loading: loading.meetings || processingRequestsLoading },
     { icon: "✅", num: oldMeetings.length,                     label: "Completed",        color: "bg-green-50",  tab: "old_meetings", loading: loading.meetings },
   ];
 
@@ -410,20 +442,24 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
         <div role="alert" className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
           <p className="font-semibold">Meeting data is temporarily unavailable</p>
           <ul className="mt-1 list-disc space-y-1 pl-5 text-xs">{meetingLoadErrors.map((error) => <li key={error}>{error}</li>)}</ul>
+          <button type="button" className="mt-2 rounded border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold" onClick={() => void retryDashboardRead("meetings")}>Retry meeting data</button>
         </div>
       )}
       {recordingJobLoadErrors.length > 0 && (
         <div role="alert" className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           <p className="font-semibold">Recording status is temporarily unavailable</p>
           <ul className="mt-1 list-disc space-y-1 pl-5 text-xs">{recordingJobLoadErrors.map((error) => <li key={error}>{error}</li>)}</ul>
+          <button type="button" className="mt-2 rounded border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold" onClick={() => void retryDashboardRead("recordingJobs")}>Retry recording status</button>
         </div>
       )}
       {syncErrors.length > 0 && (
         <div role="alert" className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           <p className="font-semibold">Sync status is temporarily unavailable</p>
           <ul className="mt-1 list-disc space-y-1 pl-5 text-xs">{syncErrors.map((error) => <li key={error}>{error}</li>)}</ul>
+          {syncLoadErrors.length > 0 && <button type="button" className="mt-2 rounded border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold" onClick={() => void retryDashboardRead("sync")}>Retry sync status</button>}
         </div>
       )}
+      {calendarLoadErrors.length > 0 && <button type="button" className="mb-5 rounded border border-red-300 bg-white px-3 py-2 text-sm font-semibold text-red-800" onClick={() => void retryDashboardRead("calendar")}>Retry calendar display</button>}
       {pollingError && <div role="status" aria-live="polite" aria-label="Dashboard refresh status" className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
         <p className="min-w-0 flex-1">{pollingError}</p>
         <button type="button" disabled={refreshingProcessing} onClick={() => { void refreshProcessing().catch(() => {}); }}
@@ -505,7 +541,9 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
               {s.icon}
             </div>
             <div>
-              <div className="text-[22px] font-bold text-[#003366] leading-none" aria-busy={s.loading}>{s.num}</div>
+              <div className="text-[22px] font-bold text-[#003366] leading-none" aria-busy={s.loading}>
+                {s.loading ? <span role="status" aria-label={`${s.label} count loading`} className="inline-block h-5 w-10 animate-pulse rounded bg-[#e5eaf2] align-middle" /> : s.num}
+              </div>
               <div className="text-[12px] text-[#6b7280] mt-0.5">{s.label}</div>
             </div>
           </button>
@@ -542,13 +580,10 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
         ))}
       </div>
 
-      {!calendarSyncing && (Object.values(loading).some(Boolean) || historicalLoading) && (
-        <LoadingSpinner label="Dashboard loading" />
-      )}
       {/* Upcoming Meetings */}
       {hasOpenedRecent && (
         <div hidden={tab !== "recent"}>
-          {historicalLoading && <LoadingSpinner label="Historical meetings loading" />}
+          {historicalLoading && historical.length === 0 && <DashboardCardSkeleton label="Historical meetings loading" />}
           {historicalError && <p role="alert" className="mb-3 text-sm text-amber-900">{historicalError}</p>}
           <RecentMeetings
             token={accessToken}
@@ -566,7 +601,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       )}
       {tab === "upcoming" && (
         calendarLoading && upcomingEvents.length === 0
-          ? null
+          ? <DashboardCardSkeleton label="Upcoming meetings loading" />
           : upcomingEvents.length === 0
           ? calendarLoadErrors.length === 0 && <EmptyState
               icon="📅"
@@ -583,7 +618,9 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       {/* In Progress */}
       {tab === "in_progress" && (
         inProgressEvents.length === 0 && activeRecordingJobs.length === 0 && pipelineActive.length === 0
-          ? !inProgressIncomplete && <EmptyState icon="⚙️" title="Nothing in progress" sub="Meetings currently happening or being processed will appear here." />
+          ? inProgressLoading
+            ? <DashboardCardSkeleton label="In progress items loading" />
+            : <EmptyState icon="⚙️" title="Nothing in progress" sub="Meetings currently happening or being processed will appear here." />
           : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {inProgressEvents.map((ev) => <CalendarCard key={ev.event_id} event={ev} inProgress />)}
               {activeRecordingJobs.map((job) => <RecordingJobCard key={job.job_id} job={job} token={accessToken} onChanged={refreshRecordingJobs} />)}
@@ -593,13 +630,13 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
 
       {/* Awaiting Review */}
       {tab === "review" && (
-        pendingReview.length === 0 && pendingProcessingRequests.length === 0 && !processingRequestsError && !meetingsIncomplete
+        pendingReview.length === 0 && pendingProcessingRequests.length === 0 && !processingRequestsError && !meetingsIncomplete && !processingRequestsLoading
           ? <EmptyState icon="📭" title="All caught up" sub="No meetings are awaiting your review." />
           : <div className="space-y-7">
               <section aria-labelledby="ai-notes-reviews-heading">
                 <h2 id="ai-notes-reviews-heading" className="mb-3 text-base font-semibold text-[#003366]">Existing AI Notes Reviews</h2>
                 {pendingReview.length === 0
-                  ? !meetingsIncomplete && <p className="text-sm text-[#6b7280]">No AI notes are awaiting review.</p>
+                  ? loading.meetings ? <DashboardCardSkeleton label="Meeting reviews loading" count={2} /> : !meetingLoadErrors.length && <p className="text-sm text-[#6b7280]">No AI notes are awaiting review.</p>
                   : <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                       {pendingReview.map((m) => <MeetingCard key={m.id} meeting={m} />)}
                     </div>}
@@ -607,8 +644,10 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
               <section aria-labelledby="recording-processing-requests-heading">
                 <h2 id="recording-processing-requests-heading" className="mb-3 text-base font-semibold text-[#003366]">Recording Processing Requests</h2>
                 {processingRequestsError && <p role="alert" className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{processingRequestsError}</p>}
+                {processingRequestsLoading && pendingProcessingRequests.length === 0 && <DashboardCardSkeleton label="Recording requests loading" count={2} />}
+                {processingRequestsError && <button type="button" className="mb-3 rounded border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold" onClick={() => void refreshProcessingRequests()}>Retry recording requests</button>}
                 {pendingProcessingRequests.length === 0
-                  ? !processingRequestsError && <p className="text-sm text-[#6b7280]">No recording processing requests are awaiting approval.</p>
+                  ? !processingRequestsError && !processingRequestsLoading && <p className="text-sm text-[#6b7280]">No recording processing requests are awaiting approval.</p>
                   : <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                       {pendingProcessingRequests.map((request) => (
                         <article key={request.id} className="rounded-lg border border-[#dde1e8] bg-white p-4 shadow-sm">
@@ -641,9 +680,15 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       {/* Old Meetings */}
       {tab === "old_meetings" && (
         <>
-          {historicalError && <p role="alert" className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{historicalError}</p>}
+          {historicalError && <div role="alert" className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900">
+            <p>{historicalError}</p>
+            <button type="button" className="mt-2 rounded border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold" onClick={() => selectTab("old_meetings")}>Retry historical meetings</button>
+          </div>}
+          {historicalLoading && oldMeetings.length === 0 && <DashboardTableSkeleton label="Historical meetings loading" />}
           {oldMeetings.length === 0
-          ? !meetingsIncomplete && <EmptyState icon="📂" title="No completed meetings yet" sub="Approved and sent meetings will appear here." />
+          ? loading.meetings
+            ? <DashboardTableSkeleton label="Completed meetings loading" />
+            : !meetingsIncomplete && <EmptyState icon="📂" title="No completed meetings yet" sub="Approved and sent meetings will appear here." />
           : <div className="overflow-x-auto rounded-lg">
             <div className="min-w-[760px] bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
               <table className="w-full text-sm">
@@ -706,7 +751,9 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       {/* Cancelled */}
       {tab === "cancelled" && (
         cancelled.length === 0
-          ? !meetingsIncomplete && <EmptyState icon="🚫" title="No failed or cancelled recordings" sub="Failed and explicitly cancelled recordings appear here." />
+          ? loading.meetings
+            ? <DashboardCardSkeleton label="Failed meetings loading" count={2} />
+            : !meetingsIncomplete && <EmptyState icon="🚫" title="No failed or cancelled recordings" sub="Failed and explicitly cancelled recordings appear here." />
           : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {cancelled.map((m) => <MeetingCard key={m.id} meeting={m} />)}
             </div>
@@ -723,6 +770,28 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       )}
     </main>
   );
+}
+
+function DashboardCardSkeleton({ label, count = 3 }: { label: string; count?: number }) {
+  return <div role="status" aria-label={label} className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    {Array.from({ length: count }, (_, index) => <div key={index} aria-hidden="true" className="min-h-36 rounded-lg border border-[#dde1e8] bg-white p-4 shadow-sm motion-safe:animate-pulse">
+      <div className="h-4 w-2/3 rounded bg-[#e5eaf2]" />
+      <div className="mt-4 h-3 w-1/2 rounded bg-[#eef1f6]" />
+      <div className="mt-3 h-3 w-full rounded bg-[#eef1f6]" />
+      <div className="mt-5 h-8 w-24 rounded bg-[#e5eaf2]" />
+    </div>)}
+  </div>;
+}
+
+function DashboardTableSkeleton({ label }: { label: string }) {
+  return <div role="status" aria-label={label} className="overflow-hidden rounded-lg border border-[#dde1e8] bg-white">
+    <div aria-hidden="true" className="motion-safe:animate-pulse">
+      <div className="grid grid-cols-6 gap-3 bg-[#003366] px-4 py-3">{Array.from({ length: 6 }, (_, index) => <div key={index} className="h-3 rounded bg-white/25" />)}</div>
+      {Array.from({ length: 4 }, (_, row) => <div key={row} className="grid grid-cols-6 gap-3 border-t border-[#dde1e8] px-4 py-4">
+        {Array.from({ length: 6 }, (_, column) => <div key={column} className={`h-3 rounded bg-[#e9edf3] ${column === 0 ? "w-4/5" : "w-full"}`} />)}
+      </div>)}
+    </div>
+  </div>;
 }
 
 function RecordingJobCard({ job, token, onChanged }: { job: RecordingJobOut; token: string; onChanged: () => Promise<void> }) {

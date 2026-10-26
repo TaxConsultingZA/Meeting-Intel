@@ -122,7 +122,6 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
     ) -> None:
         queue: list[tuple[str, int]] = [(initial_url, 0)]
         seen_folder_ids: set[str] = set()
-        requests = 0
         while queue:
             first_url, depth = queue.pop(0)
             url: str | None = first_url
@@ -130,11 +129,8 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
             while url:
                 if url in seen_urls:
                     raise RuntimeError("Invalid OneDrive pagination")
-                if requests >= RECORDINGS_TRAVERSAL_MAX_REQUESTS:
-                    if strict:
-                        raise RuntimeError("OneDrive recording-folder traversal incomplete")
-                    return
-                requests += 1
+                # A folder's page count is not a traversal budget. Follow every
+                # nextLink; the cycle check above still rejects broken cursors.
                 seen_urls.add(url)
                 response = await graph_get(client, url)
                 if response.status_code == 404:
@@ -146,8 +142,14 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
                 data = response.json()
                 for item in data.get("value", []):
                     item_id = item.get("id")
-                    if item.get("name", "").lower().endswith(".mp4") and item_id:
+                    if (item.get("folder") is None and not item.get("deleted")
+                            and item.get("name", "").lower().endswith(".mp4") and item_id):
                         recordings_by_id[item_id] = item
+                    elif (strict and recursive and item.get("folder") is not None
+                          and item_id and item_id not in seen_folder_ids
+                          and (depth >= RECORDINGS_TRAVERSAL_MAX_DEPTH
+                               or len(seen_folder_ids) >= RECORDINGS_TRAVERSAL_MAX_FOLDERS)):
+                        raise RuntimeError("OneDrive recording-folder traversal incomplete")
                     elif (recursive and item.get("folder") is not None and item_id
                           and depth < RECORDINGS_TRAVERSAL_MAX_DEPTH
                           and len(seen_folder_ids) < RECORDINGS_TRAVERSAL_MAX_FOLDERS
@@ -323,7 +325,7 @@ async def get_drive_item(drive_id: str, item_id: str) -> dict:
 
     url = f"{settings.graph_base}/drives/{drive_id}/items/{item_id}"
     async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.get(url, headers=_headers())
+        r = await c.get(url, headers=await asyncio.to_thread(_headers))
         r.raise_for_status()
         return r.json()
 

@@ -24,6 +24,18 @@ const cachedRecording = {
   meeting_id: null, meeting_state: null, meeting_error: null,
 };
 
+it("shows the original recording filename separately from the saved calendar title", () => {
+  const filename = "Test-20260901_164158-会议记录.mp4";
+  render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()}
+    initialRecordings={[{ ...cachedRecording, name: "Unrelated calendar title", original_filename: filename,
+      already_imported: true, meeting_id: "existing-review", meeting_state: "awaiting_review", calendar_matched: true }]} />);
+  expect(screen.getByText("Unrelated calendar title")).toBeInTheDocument();
+  expect(screen.getByText(`Original file: ${filename}`)).toHaveAttribute("title", filename);
+  expect(screen.getByRole("link", { name: "View" })).toHaveAttribute("href", "/meetings/existing-review");
+  expect(importRecording).not.toHaveBeenCalled();
+  expect(reprocessRecording).not.toHaveBeenCalled();
+});
+
 it("labels a recording without a calendar link and keeps Transcribe available", () => {
   render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()}
     initialRecordings={[{ ...cachedRecording, calendar_matched: false }]} />);

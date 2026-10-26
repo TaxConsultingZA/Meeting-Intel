@@ -232,6 +232,7 @@ async def test_available_recordings_uses_reconciled_rows_without_graph(ctx):
         "drive_item_id": "persisted-item",
         "drive_id": "drive:requester",
         "name": "Persisted recording.mp4",
+        "original_filename": None,
         "calendar_matched": False,
         "size": None,
         "created_at": meeting.recorded_at.isoformat(),
@@ -258,6 +259,46 @@ async def test_available_recordings_falls_back_to_persisted_filename(ctx):
     assert result[0]["name"] == "test03.mp4"
     assert result[0]["meeting_id"] is None
     assert result[0]["already_imported"] is False
+
+
+async def test_original_filename_is_independent_of_legacy_calendar_title_without_writes(ctx, monkeypatch):
+    ctx.requester.graph_drive_id = "drive:requester"
+    ledger = ProcessedItem(drive_item_id="legacy-test", drive_id="drive:requester", source="manual")
+    meeting = Meeting(drive_item_id="legacy-test", title="Unrelated calendar title",
+        state=ProcessingState.awaiting_review, transcript="Existing transcript", summary="Existing notes",
+        extracted_json={"outlook_event_id": "legacy-event"})
+    ctx.session.add_all([ledger, meeting]); ctx.session.commit()
+    metadata = AsyncMock(return_value={"id": "legacy-test", "name": "Test-20260901_164158-会议记录.mp4"})
+    monkeypatch.setattr(recordings.graph, "get_drive_item", metadata)
+    rows = await recordings.available_recordings(ctx.db, ctx.requester.upn, resolve_filenames=True)
+    assert rows[0]["original_filename"] == "Test-20260901_164158-会议记录.mp4"
+    assert rows[0]["name"] == "Unrelated calendar title"
+    assert rows[0]["calendar_matched"] is True
+    assert rows[0]["meeting_id"] == str(meeting.id)
+    assert ledger.filename is None
+    assert (meeting.transcript, meeting.summary, meeting.extracted_json) == (
+        "Existing transcript", "Existing notes", {"outlook_event_id": "legacy-event"})
+    assert not ctx.session.dirty
+    metadata.assert_awaited_once_with("drive:requester", "legacy-test")
+    assert await recordings.available_recordings(ctx.db, ctx.outsider.upn, resolve_filenames=True) == []
+    assert metadata.await_count == 1
+
+
+@pytest.mark.parametrize("metadata", [
+    {"id": "different", "name": "wrong.mp4"},
+    {"id": "legacy", "name": "wrong.mp4", "parentReference": {"driveId": "other-drive"}},
+    {"id": "legacy", "name": "wrong.mp4", "remoteItem": {"id": "shared"}},
+    None,
+])
+async def test_optional_filename_failure_does_not_hide_saved_recordings(ctx, monkeypatch, metadata):
+    ctx.requester.graph_drive_id = "drive:requester"
+    ctx.session.add(ProcessedItem(drive_item_id="legacy", drive_id="drive:requester", source="manual"))
+    ctx.session.commit()
+    read = AsyncMock(return_value=metadata) if metadata else AsyncMock(side_effect=RuntimeError("unavailable"))
+    monkeypatch.setattr(recordings.graph, "get_drive_item", read)
+    rows = await recordings.available_recordings(ctx.db, ctx.requester.upn, resolve_filenames=True)
+    assert len(rows) == 1 and rows[0]["original_filename"] is None
+    assert rows[0]["name"] == "Unknown"
 
 
 async def test_discover_scans_independent_non_requester_owners_concurrently(ctx, monkeypatch):

@@ -3,13 +3,13 @@ import os
 import sys
 from logging.config import fileConfig
 
-from sqlalchemy.ext.asyncio import create_async_engine
 from alembic import context
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app.models import Base
 from app.config import get_settings
+from app.database import create_database_engine
 
 config = context.config
 if config.config_file_name is not None:
@@ -56,7 +56,7 @@ def _do_migrations(connection):
 
 
 async def run_migrations_online() -> None:
-    engine = create_async_engine(_db_url())
+    engine = create_database_engine(_db_url())
     async with engine.begin() as conn:
         await conn.run_sync(_do_migrations)
     await engine.dispose()

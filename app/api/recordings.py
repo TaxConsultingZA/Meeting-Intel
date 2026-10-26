@@ -5,6 +5,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID, uuid4
 import logging
+import asyncio
 
 from ..config import get_settings
 from ..db import get_db
@@ -54,6 +55,7 @@ async def _verify_owned_drive_item(upn: str, drive_id: str, drive_item_id: str) 
 async def available_recordings(
     db: AsyncSession = Depends(get_db),
     upn: str = Depends(require_subscribed),
+    resolve_filenames: bool = False,
 ):
     """List recordings from the durable OneDrive reconciliation state."""
     user = await db.scalar(select(RegisteredUser).where(RegisteredUser.upn == upn))
@@ -95,6 +97,7 @@ async def available_recordings(
             "drive_item_id": iid,
             "drive_id": ledger.drive_id,
             "name": name,
+            "original_filename": ledger.filename,
             "calendar_matched": calendar_matched,
             "size": None,
             "created_at": m.recorded_at.isoformat() if m and m.recorded_at else None,
@@ -103,6 +106,37 @@ async def available_recordings(
             "meeting_state": m.state if m else None,
             "meeting_error": public_job_error(m.error) if m else None,
         })
+    if resolve_filenames:
+        # Legacy ledger rows may predate filename persistence. Exact metadata
+        # GETs enrich this response only; never rewrite reviews, links or jobs.
+        semaphore = asyncio.Semaphore(4)
+
+        async def resolve(row):
+            if row["original_filename"] or not row["drive_id"]:
+                return
+            try:
+                async with semaphore:
+                    item = await graph.get_drive_item(row["drive_id"], row["drive_item_id"])
+                parent_drive = (item.get("parentReference") or {}).get("driveId")
+                name = item.get("name")
+                if (item.get("id") == row["drive_item_id"] and not item.get("remoteItem")
+                        and not item.get("folder") and not item.get("deleted")
+                        and (not parent_drive or parent_drive == row["drive_id"])
+                        and isinstance(name, str) and name.lower().endswith(".mp4")):
+                    row["original_filename"] = name
+            except Exception:
+                # Metadata is optional: retain saved rows and recovery controls.
+                pass
+
+        tasks = [asyncio.create_task(resolve(row)) for row in result if not row["original_filename"]]
+        if tasks:
+            try:
+                await asyncio.wait(tasks, timeout=8)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
     return result
 
 

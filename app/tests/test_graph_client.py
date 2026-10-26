@@ -14,6 +14,62 @@ def _mock_token():
 
 
 class TestListRecordingsFolder:
+    @respx.mock
+    async def test_file_pages_do_not_consume_folder_traversal_budget(self, monkeypatch):
+        from app.graph import client
+        monkeypatch.setattr(client, "RECORDINGS_TRAVERSAL_MAX_REQUESTS", 1)
+        root = self._root_path("many-pages")
+        for page in range(105):
+            url = root if page == 0 else f"{_BASE}/drives/many-pages/items/recordings/children?page={page}"
+            payload = {"value": [{"id": f"item-{page}", "name": f"meeting-{page}.MP4"}]}
+            if page < 104:
+                payload["@odata.nextLink"] = f"{_BASE}/drives/many-pages/items/recordings/children?page={page + 1}"
+            respx.get(url).mock(return_value=httpx.Response(200, json=payload))
+        respx.get(self._documents_path("many-pages")).mock(return_value=httpx.Response(404))
+        respx.get(self._root_traversal("many-pages")).mock(return_value=httpx.Response(200, json={"value": []}))
+        with _mock_token():
+            rows = await client.list_recordings_folder("many-pages", strict=True)
+        assert len(rows) == 105
+        assert rows[-1]["id"] == "item-104"
+
+    @respx.mock
+    async def test_strict_scan_rejects_inaccessible_optional_branch(self):
+        from app.graph import client
+        respx.get(self._root_path("denied")).mock(return_value=httpx.Response(200, json={"value": []}))
+        respx.get(self._documents_path("denied")).mock(return_value=httpx.Response(403))
+        respx.get(self._root_traversal("denied")).mock(return_value=httpx.Response(200, json={"value": []}))
+        with _mock_token(), pytest.raises(httpx.HTTPStatusError) as error:
+            await client.list_recordings_folder("denied", strict=True)
+        assert error.value.response.status_code == 403
+
+    @respx.mock
+    async def test_strict_scan_reports_unvisited_recording_subfolder(self, monkeypatch):
+        from app.graph import client
+        monkeypatch.setattr(client, "RECORDINGS_TRAVERSAL_MAX_DEPTH", 0)
+        respx.get(self._root_path("deep")).mock(return_value=httpx.Response(200, json={"value": [
+            {"id": "nested", "name": "archive.mp4", "folder": {}},
+        ]}))
+        respx.get(self._documents_path("deep")).mock(return_value=httpx.Response(404))
+        respx.get(self._root_traversal("deep")).mock(return_value=httpx.Response(200, json={"value": []}))
+        with _mock_token(), pytest.raises(RuntimeError, match="traversal incomplete"):
+            await client.list_recordings_folder("deep", strict=True)
+
+    @respx.mock
+    async def test_excludes_deleted_items_and_folders_named_mp4(self):
+        from app.graph import client
+        respx.get(self._root_path("filter")).mock(return_value=httpx.Response(200, json={"value": [
+            {"id": "yes", "name": "meeting.MP4"},
+            {"id": "text", "name": "meeting.txt"},
+            {"id": "deleted", "name": "old.mp4", "deleted": {"state": "deleted"}},
+            {"id": "folder", "name": "archive.mp4", "folder": {}},
+        ]}))
+        respx.get(f"{_BASE}/drives/filter/items/folder/children").mock(return_value=httpx.Response(200, json={"value": []}))
+        respx.get(self._documents_path("filter")).mock(return_value=httpx.Response(404))
+        respx.get(self._root_traversal("filter")).mock(return_value=httpx.Response(200, json={"value": []}))
+        with _mock_token():
+            rows = await client.list_recordings_folder("filter", strict=True)
+        assert [row["id"] for row in rows] == ["yes"]
+
     @pytest.mark.parametrize("branch", ["files", "folders"])
     @pytest.mark.parametrize("problem", ["cycle", "foreign"])
     @pytest.mark.parametrize("strict", [False, True])

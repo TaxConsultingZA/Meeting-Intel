@@ -145,7 +145,7 @@ it("deduplicates stable IDs without merging distinct meetings with identical tit
   expect(screen.getByRole("button", { name: "Request Access" })).toBeInTheDocument();
 });
 
-it("applies existing time, recording and organiser filters to stored review meetings", async () => {
+it("applies existing time, recording, organiser and search filters to stored review meetings", async () => {
   const recent = new Date(Date.now() - 86400000).toISOString();
   const older = new Date(Date.now() - 15 * 86400000).toISOString();
   render(<RecentMeetings token="offline-token" cacheIdentity="attendee@example.test" isSubscribed
@@ -165,7 +165,12 @@ it("applies existing time, recording and organiser filters to stored review meet
   expect(screen.queryByText("My review")).not.toBeInTheDocument();
   fireEvent.change(screen.getByRole("combobox", { name: "Recording" }), { target: { value: "without" } });
   expect(screen.queryByText("Older review")).not.toBeInTheDocument();
+  showAll();
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search meetings" }), { target: { value: "OLDER" } });
+  expect(screen.getByText("Older review")).toBeInTheDocument();
+  expect(screen.queryByText("My review")).not.toBeInTheDocument();
 });
+
 
 it("deduplicates calendar aliases bound to one Meeting ID", async () => {
   const date = new Date().toISOString();

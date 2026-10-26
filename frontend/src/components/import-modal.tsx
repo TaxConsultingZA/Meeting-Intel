@@ -284,6 +284,11 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
                       <span className="block truncate text-[13px]" title={rec.name}>
                         {rec.name.replace(/\.mp4$/i, "")}
                       </span>
+                      {rec.original_filename && (
+                        <span className="mt-0.5 block break-all text-[11px] font-normal text-[#6b7280]" title={rec.original_filename}>
+                          Original file: {rec.original_filename}
+                        </span>
+                      )}
                       {rec.calendar_matched === false && (
                         <span className="mt-0.5 block text-[11px] font-normal text-[#6b7280]">No calendar meeting linked</span>
                       )}

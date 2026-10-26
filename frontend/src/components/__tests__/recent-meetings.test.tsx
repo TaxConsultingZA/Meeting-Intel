@@ -52,6 +52,49 @@ it("defaults to the last 7 days with recordings", () => {
   expect(screen.getByRole("combobox", { name: "Recording" })).toHaveValue("with");
 });
 
+it("searches loaded meeting titles, summaries, and participant names case-insensitively", async () => {
+  vi.mocked(api.getRecentMeetings).mockResolvedValue([
+    { ...event("view"), event_id: "recent-title", subject: "Quarterly Budget" },
+    { ...event("view"), event_id: "recent-person", meeting_id: "planning", subject: "Planning", attendees: ["Sam Example"] },
+  ]);
+  const historical = [
+    { ...historicalMeeting("summary", "Old notes"), summary: "Launch readiness review" },
+    { ...historicalMeeting("participant", "Old meeting"), calendar_participants: [{ name: "Taylor Example", email: "taylor@example.test", is_organizer: false }] },
+  ];
+  render(<RecentMeetings token="token" cacheIdentity="reviewer@example.test" isSubscribed historical={historical} />);
+  await screen.findByText("Quarterly Budget");
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search meetings" }), { target: { value: "QUARTERLY" } });
+  expect(screen.getByText("Quarterly Budget")).toBeInTheDocument();
+  expect(screen.queryByText("Planning")).not.toBeInTheDocument();
+
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search meetings" }), { target: { value: "LAUNCH READINESS" } });
+  expect(screen.getByText("Old notes")).toBeInTheDocument();
+  expect(screen.queryByText("Quarterly Budget")).not.toBeInTheDocument();
+
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search meetings" }), { target: { value: "taylor example" } });
+  expect(screen.getByText("Old meeting")).toBeInTheDocument();
+  expect(screen.queryByText("Old notes")).not.toBeInTheDocument();
+
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search meetings" }), { target: { value: "sam example" } });
+  expect(screen.getByText("Planning")).toBeInTheDocument();
+  expect(screen.queryByText("Old meeting")).not.toBeInTheDocument();
+});
+
+it("shows no-result feedback, clears search, and searches only loaded authorized data", async () => {
+  vi.mocked(api.getRecentMeetings).mockResolvedValue([{ ...event("view"), subject: "Accessible meeting" }]);
+  render(<RecentMeetings token="token" isSubscribed />);
+  await screen.findByText("Accessible meeting");
+  const search = screen.getByRole("searchbox", { name: "Search meetings" });
+  fireEvent.change(search, { target: { value: "not loaded or accessible" } });
+  expect(screen.getByText("No meetings match this search and the selected filters.")).toBeInTheDocument();
+  expect(api.getRecentMeetings).toHaveBeenCalledOnce();
+  expect(screen.queryByText("An inaccessible meeting")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+  expect(screen.getByText("Accessible meeting")).toBeInTheDocument();
+  expect(search).toHaveValue("");
+  expect(api.getRecentMeetings).toHaveBeenCalledOnce();
+});
+
 it("revalidates after calendar sync without resetting the selected filters", async () => {
   vi.mocked(api.getRecentMeetings).mockResolvedValueOnce([event("view")]);
   const view = render(<RecentMeetings token="token" isSubscribed refreshKey={0} />);

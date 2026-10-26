@@ -16,12 +16,12 @@ const CONFIG: Record<ProcessingState, { label: string; cls: string; dot: string 
   completed:       { label: "Completed",       cls: "bg-green-50 text-green-800", dot: "bg-green-500" },
 };
 
-export default function StateBadge({ state }: { state: ProcessingState }) {
+export default function StateBadge({ state, className, compact = false }: { state: ProcessingState; className?: string; compact?: boolean }) {
   const c = CONFIG[state] ?? { label: "Status unavailable", cls: "bg-gray-100 text-gray-700", dot: "bg-gray-400" };
   return (
-    <span className={cn("inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11.5px] font-semibold", c.cls)}>
+    <span title={compact ? c.label : undefined} className={cn("inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11.5px] font-semibold", c.cls, className)}>
       <span className={cn("w-1.5 h-1.5 rounded-full", c.dot)} />
-      {c.label}
+      {compact && state==="sent" ? "Submitted" : compact && state==="cancel_requested" ? "Cancelling" : c.label}
     </span>
   );
 }

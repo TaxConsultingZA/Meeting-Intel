@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ImportModal from "../import-modal";
-import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording, discoverOwnRecordings } from "@/lib/api";
+import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   getAvailableRecordings: vi.fn(),
@@ -32,6 +32,7 @@ it("keeps date and size in separate columns and exposes an easy fixed close cont
   const date=screen.getByText("01 Sept 2026, 10:41").closest("td");
   const size=screen.getByText("531 KB").closest("td");
   expect(date).not.toBe(size);
+  expect(screen.queryByText(/The transcript and AI notes will appear/)).not.toBeInTheDocument();
   expect(screen.getByRole("button",{name:"Close recording dialog"})).toHaveClass("h-11","w-11");
 });
 
@@ -77,7 +78,7 @@ it.each(["pending", "completed"] as const)("keeps %s recording actions separate 
 
 it("describes an empty saved list without claiming Refresh scans OneDrive", () => {
   render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()} initialRecordings={[]} />);
-  expect(screen.getByText(/Use 更新会议和录音/)).toBeInTheDocument();
+  expect(screen.getByText(/Use Update meetings and recordings/)).toBeInTheDocument();
   expect(screen.queryByText(/No MP4 recordings were found in your OneDrive/)).not.toBeInTheDocument();
 });
 

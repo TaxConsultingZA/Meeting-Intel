@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import DashboardClient from "../dashboard-client";
 import type { CalendarEvent, MeetingOut, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
-import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecentMeetings, getRecordingJobs, getSyncStatus, getUpcomingMeetings, syncCalendarsNow, getCalendarSyncRun, waitForCalendarSync, runRecordingUpdateStage, getAvailableRecordings } from "@/lib/api";
+import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecentMeetings, getRecordingJobs, getSyncStatus, getUpcomingMeetings, runRecordingUpdateStage, getAvailableRecordings } from "@/lib/api";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("@/lib/api", async (importOriginal) => ({
@@ -39,7 +39,7 @@ it("offers one current-user update action and removes the calendar-only button",
   vi.mocked(getProcessingRequests).mockResolvedValue([]);
   render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} upn="owner@example.test"
     accessToken="offline" isSubscribed syncStates={[]} loadErrors={[]} />);
-  expect(screen.getByRole("button",{name:"更新会议和录音"})).toBeEnabled();
+  expect(screen.getByRole("button",{name:"Update meetings and recordings"})).toBeEnabled();
   expect(screen.queryByRole("button",{name:"Sync calendar now"})).not.toBeInTheDocument();
 });
 
@@ -60,9 +60,9 @@ it("merges cancelled task status into the list prefetched by the unified update"
   }]);
   render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} upn="owner@example.test"
     accessToken="offline" isSubscribed syncStates={[]} loadErrors={[]}/>);
-  fireEvent.click(screen.getByRole("button",{name:"更新会议和录音"}));
+  fireEvent.click(screen.getByRole("button",{name:"Update meetings and recordings"}));
   await waitFor(()=>expect(getAvailableRecordings).toHaveBeenCalledOnce());
-  await waitFor(()=>expect(screen.getByRole("button",{name:"更新会议和录音"})).toBeEnabled());
+  await waitFor(()=>expect(screen.getByRole("button",{name:"Update meetings and recordings"})).toBeEnabled());
   fireEvent.click(screen.getByRole("button",{name:"Process Past Recording"}));
   expect(screen.getByText("Test.mp4 cancelled")).toBeInTheDocument();
 });

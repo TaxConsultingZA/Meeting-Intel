@@ -1,0 +1,2 @@
+export const RECORDING_ACTION_CLASS = "inline-flex h-8 min-h-8 min-w-14 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-[#003366] transition-colors hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#003366] disabled:cursor-not-allowed disabled:opacity-50";
+export const RECORDING_BADGE_CLASS = "inline-flex h-6 items-center justify-center gap-1 whitespace-nowrap rounded-full px-2 text-[10.5px] font-semibold";

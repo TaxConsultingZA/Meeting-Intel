@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
 import LocalDateTime from "./local-date-time";
 import StateBadge from "./state-badge";
+import { RECORDING_ACTION_CLASS, RECORDING_BADGE_CLASS } from "./recording-ui";
 import { JobControls, recordingStatusMessage } from "./recording-jobs";
 import type { AvailableRecording, ProcessingState, RecordingJobOut } from "@/lib/types";
 
@@ -145,14 +146,14 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
     }
 
     if (rec.job) {
-      return <div className="flex items-center justify-end gap-2.5">
-        <JobControls job={rec.job} token={upn} onChanged={refreshJobs} />
+      return <div className="flex items-center justify-end gap-2">
+        <JobControls job={rec.job} token={upn} onChanged={refreshJobs} buttonClassName={RECORDING_ACTION_CLASS} />
         {rec.job.can_reprocess && <button
           type="button"
           onClick={() => handleReprocess(rec)}
-          className="inline-flex h-8 items-center rounded-md px-2 text-xs font-semibold text-blue-800 hover:bg-blue-50"
+          className={RECORDING_ACTION_CLASS}
         >Reprocess</button>}
-        {rec.job.meeting_id && <Link href={`/meetings/${rec.job.meeting_id}`} onClick={onClose} className="inline-flex h-8 items-center rounded-md px-2 text-xs font-semibold text-blue-800 hover:bg-blue-50">View</Link>}
+        {rec.job.meeting_id && <Link href={`/meetings/${rec.job.meeting_id}`} onClick={onClose} className={RECORDING_ACTION_CLASS}>View</Link>}
       </div>;
     }
 
@@ -161,7 +162,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
         <button
           type="button"
           onClick={() => handleImport(rec)}
-          className="inline-flex h-8 items-center gap-1.5 rounded bg-[#003366] px-3 text-[12.5px] font-semibold text-white transition-colors hover:bg-[#0a4a8c]"
+          className={RECORDING_ACTION_CLASS}
         >
           <Download size={13} /> Transcribe
         </button>
@@ -173,7 +174,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
         <Link
           href={`/meetings/${rec.meeting_id}`}
           onClick={onClose}
-          className="inline-flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white text-[12.5px] font-semibold px-3 py-1.5 rounded transition-colors"
+          className={RECORDING_ACTION_CLASS}
         >
           <ExternalLink size={13} /> View
         </Link>
@@ -258,15 +259,15 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
             <div className="flex flex-col items-center justify-center py-16 text-[#6b7280]">
               <FolderOpen size={36} className="mb-3 text-[#dde1e8]" />
               <p className="text-[13.5px] font-semibold text-[#1a1a2e] mb-1">No discovered recordings</p>
-              <p className="text-[12.5px]">Use 更新会议和录音 on the dashboard to update this list.</p>
+              <p className="text-[12.5px]">Use Update meetings and recordings on the dashboard to update this list.</p>
             </div>
           )}
 
           {hasLoaded && recordings.length > 0 && (
             <table className="w-full min-w-[920px] table-fixed text-sm">
               <colgroup>
-                <col className="w-[30%]" /><col className="w-[20%]" /><col className="w-[8%]" />
-                <col className="w-[12%]" /><col className="w-[13%]" /><col className="w-[17%]" />
+                <col className="w-[26%]" /><col className="w-[20%]" /><col className="w-[8%]" />
+                <col className="w-[13%]" /><col className="w-[15%]" /><col className="w-[18%]" />
               </colgroup>
               <thead>
                 <tr>
@@ -303,16 +304,14 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
                       {formatBytes(rec.size)}
                     </td>
                     <td className="px-4 py-3 border-b border-[#dde1e8] text-[12.5px]">
-                      {rec.job ? <span title={recordingStatusMessage(rec.job)}><StateBadge state={rec.job.processing_status} /></span> : rec.meeting_state ? (
-                        <span className={`font-medium ${rec.meeting_state === "failed" ? "text-red-600" : rec.meeting_state === "awaiting_review" ? "text-amber-600" : "text-[#6b7280]"}`}>
-                          {(["awaiting_review", "approved", "sent"] as ProcessingState[]).includes(rec.meeting_state) ? "Completed" : STATE_LABEL[rec.meeting_state]}
-                        </span>
-                      ) : "Not started"}
+                      {rec.job ? <span title={recordingStatusMessage(rec.job)}><StateBadge state={rec.job.processing_status} compact className={RECORDING_BADGE_CLASS} /></span> : rec.meeting_state ? (
+                        <StateBadge state={(["awaiting_review", "approved", "sent"] as ProcessingState[]).includes(rec.meeting_state) ? "completed" : rec.meeting_state} compact className={RECORDING_BADGE_CLASS} />
+                      ) : <span className={RECORDING_BADGE_CLASS+" bg-slate-100 text-slate-600"}>Not started</span>}
                     </td>
                     <td className="px-4 py-3 border-b border-[#dde1e8] text-[12.5px]">
-                      {rec.job?.review_status ? <StateBadge state={rec.job.review_status} />
+                      {rec.job?.review_status ? <StateBadge state={rec.job.review_status} compact className={RECORDING_BADGE_CLASS} />
                         : rec.meeting_state && (["awaiting_review", "approved", "sent"] as ProcessingState[]).includes(rec.meeting_state)
-                          ? <StateBadge state={rec.meeting_state} /> : "—"}
+                          ? <StateBadge state={rec.meeting_state} compact className={RECORDING_BADGE_CLASS} /> : "—"}
                     </td>
                     <td className="px-4 py-3 pr-6 border-b border-[#dde1e8] text-right whitespace-nowrap">
                       {renderAction(rec)}
@@ -324,15 +323,12 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-[#dde1e8] flex items-center justify-between bg-[#f8fafc]">
-          <p className="text-[12px] text-[#6b7280]">
-            The transcript and AI notes will appear for organiser review once processing finishes.
-          </p>
-          <div className="flex items-center gap-4">
-            <button type="button" onClick={() => void load()} disabled={refreshing} className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-[13px] font-semibold text-[#003366] hover:bg-[#eaf0f6] disabled:cursor-not-allowed disabled:opacity-50">
+        <div className="px-6 py-4 border-t border-[#dde1e8] flex items-center justify-end bg-[#f8fafc]">
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => void load()} disabled={refreshing} className={RECORDING_ACTION_CLASS}>
               {refreshing && <Loader2 size={13} className="animate-spin" />}{refreshing ? "Refreshing…" : "Refresh"}
             </button>
-            <button type="button" onClick={onClose} className="inline-flex h-8 items-center rounded-md px-2 text-[13px] font-semibold text-[#003366] hover:bg-[#eaf0f6]">
+            <button type="button" onClick={onClose} className={RECORDING_ACTION_CLASS}>
               Close
             </button>
           </div>

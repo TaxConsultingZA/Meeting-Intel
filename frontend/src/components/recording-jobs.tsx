@@ -7,6 +7,7 @@ import { cancelRecordingJob, getRecordingJobs, reprocessRecordingJob, retryRecor
 import type { ProcessingFailure, RecordingJobOut, RecordingProcessingStatus } from "@/lib/types";
 import StateBadge from "./state-badge";
 import LoadingSpinner from "./loading-spinner";
+import { cn } from "@/lib/utils";
 
 function lifecycleStatus(status: RecordingProcessingStatus): RecordingProcessingStatus {
   return status === "downloading" || status === "extracting" || status === "cancel_requested"
@@ -56,7 +57,7 @@ export function recordingStatusMessage(job: RecordingJobOut): string {
   }
 }
 
-export function JobControls({ job, token, onChanged, showReprocess = false }: { job: RecordingJobOut; token: string; onChanged: () => void | Promise<void>; showReprocess?: boolean }) {
+export function JobControls({ job, token, onChanged, showReprocess = false, buttonClassName }: { job: RecordingJobOut; token: string; onChanged: () => void | Promise<void>; showReprocess?: boolean; buttonClassName?: string }) {
   const [activeAction, setActiveAction] = useState<"retry" | "cancel" | "reprocess" | null>(null);
   const busy = activeAction !== null;
   const busyRef = useRef(false);
@@ -81,9 +82,9 @@ export function JobControls({ job, token, onChanged, showReprocess = false }: { 
     finally { busyRef.current = false; setActiveAction(null); }
   }
   return <div className="flex flex-wrap items-center gap-2 text-xs font-semibold" aria-busy={busy} aria-live="polite">
-    {job.can_retry && <button type="button" disabled={busy} onClick={() => act("retry")} className="inline-flex min-h-8 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-blue-800 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50">{activeAction === "retry" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />} {activeAction === "retry" ? "Queuing retry…" : "Retry"}</button>}
-    {job.can_cancel && <button type="button" disabled={busy} onClick={() => act("cancel")} className="inline-flex min-h-8 items-center gap-1 rounded-md border border-red-200 px-2.5 py-1.5 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">{activeAction === "cancel" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />} {activeAction === "cancel" ? "Requesting cancellation…" : "Cancel"}</button>}
-    {showReprocess && job.can_reprocess && <button type="button" disabled={busy} onClick={() => act("reprocess")} className="inline-flex min-h-8 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-blue-800 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50">{activeAction === "reprocess" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />} {activeAction === "reprocess" ? "Queuing reprocess…" : "Reprocess"}</button>}
+    {job.can_retry && <button type="button" disabled={busy} onClick={() => act("retry")} className={cn("inline-flex min-h-8 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-blue-800 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50", buttonClassName)}>{activeAction === "retry" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />} {activeAction === "retry" ? "Queuing retry…" : "Retry"}</button>}
+    {job.can_cancel && <button type="button" disabled={busy} onClick={() => act("cancel")} className={cn("inline-flex min-h-8 items-center gap-1 rounded-md border border-red-200 px-2.5 py-1.5 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50", buttonClassName)}>{activeAction === "cancel" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />} {activeAction === "cancel" ? "Requesting cancellation…" : "Cancel"}</button>}
+    {showReprocess && job.can_reprocess && <button type="button" disabled={busy} onClick={() => act("reprocess")} className={cn("inline-flex min-h-8 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-blue-800 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50", buttonClassName)}>{activeAction === "reprocess" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />} {activeAction === "reprocess" ? "Queuing reprocess…" : "Reprocess"}</button>}
   </div>;
 }
 

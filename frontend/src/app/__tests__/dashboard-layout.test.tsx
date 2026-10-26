@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import DashboardClient from "../dashboard-client";
 import type { CalendarEvent, MeetingOut, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
-import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecentMeetings, getRecordingJobs, getSyncStatus, getUpcomingMeetings, syncCalendarsNow, getCalendarSyncRun, waitForCalendarSync } from "@/lib/api";
+import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecentMeetings, getRecordingJobs, getSyncStatus, getUpcomingMeetings, syncCalendarsNow, getCalendarSyncRun, waitForCalendarSync, runRecordingUpdateStage, getAvailableRecordings } from "@/lib/api";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("@/lib/api", async (importOriginal) => ({
@@ -25,7 +25,7 @@ vi.mock("@/components/recording-jobs", () => ({
   recordingStatusMessage: () => "Recording processing status",
 }));
 vi.mock("@/components/import-modal", () => ({
-  default: () => <div role="dialog" aria-label="Process Past Recording">Recording import</div>,
+  default: ({initialRecordings}:{initialRecordings?:import("@/lib/types").AvailableRecording[]|null}) => <div role="dialog" aria-label="Process Past Recording">Recording import{initialRecordings?.map(r=><p key={r.drive_item_id}>{r.name} {r.job?.status}</p>)}</div>,
 }));
 
 afterEach(() => {
@@ -41,6 +41,30 @@ it("offers one current-user update action and removes the calendar-only button",
     accessToken="offline" isSubscribed syncStates={[]} loadErrors={[]} />);
   expect(screen.getByRole("button",{name:"更新会议和录音"})).toBeEnabled();
   expect(screen.queryByRole("button",{name:"Sync calendar now"})).not.toBeInTheDocument();
+});
+
+it("merges cancelled task status into the list prefetched by the unified update",async()=>{
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  vi.mocked(getUpcomingMeetings).mockResolvedValue([]);
+  vi.mocked(getSyncStatus).mockResolvedValue([]);
+  vi.mocked(getAllMeetings).mockResolvedValue([]);
+  vi.mocked(runRecordingUpdateStage).mockImplementation(async(token,stage)=>({
+    stage,status:"success",counts:{},error:null,last_attempted_at:null,last_succeeded_at:null
+  }));
+  vi.mocked(getRecordingJobs).mockResolvedValue([recordingJob({
+    drive_item_id:"specific-item",status:"cancelled",processing_status:"cancelled"
+  })]);
+  vi.mocked(getAvailableRecordings).mockResolvedValue([{
+    drive_item_id:"specific-item",drive_id:"owned",name:"Test.mp4",created_at:null,size:544023,
+    already_imported:true,meeting_id:"old-review",meeting_state:"awaiting_review",meeting_error:null
+  }]);
+  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} upn="owner@example.test"
+    accessToken="offline" isSubscribed syncStates={[]} loadErrors={[]}/>);
+  fireEvent.click(screen.getByRole("button",{name:"更新会议和录音"}));
+  await waitFor(()=>expect(getAvailableRecordings).toHaveBeenCalledOnce());
+  await waitFor(()=>expect(screen.getByRole("button",{name:"更新会议和录音"})).toBeEnabled());
+  fireEvent.click(screen.getByRole("button",{name:"Process Past Recording"}));
+  expect(screen.getByText("Test.mp4 cancelled")).toBeInTheDocument();
 });
 
 function processingRequest(overrides: Partial<RecordingProcessingRequest> = {}): RecordingProcessingRequest {

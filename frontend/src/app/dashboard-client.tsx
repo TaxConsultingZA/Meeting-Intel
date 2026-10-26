@@ -137,11 +137,12 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     setRefreshingProcessing(true);
     try {
       const results = await Promise.allSettled([
-        getRecordingJobs(accessToken).then(setRecordingJobs),
+        getRecordingJobs(accessToken).then((jobs)=>{setRecordingJobs(jobs);return jobs;}),
         getAllMeetings(accessToken).then(setMeetings),
       ]);
       if (results.some((result) => result.status === "rejected")) throw new Error("Refresh incomplete");
       setPollingError("");
+      return results[0].status==="fulfilled" ? results[0].value : undefined;
     } catch (error) {
       setPollingError("Live updates are temporarily unavailable. Your last loaded meeting and recording information is still shown.");
       throw error;
@@ -360,7 +361,10 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
             const outcomes=await Promise.allSettled([getUpcomingMeetings(accessToken),getSyncStatus(accessToken),refreshProcessing(),getAvailableRecordings(accessToken)]);
             if(outcomes[0].status==="fulfilled")setUpcoming(outcomes[0].value);
             if(outcomes[1].status==="fulfilled")setSyncStates(outcomes[1].value);
-            if(outcomes[3].status==="fulfilled")setAvailableRecordings(outcomes[3].value);
+            if(outcomes[3].status==="fulfilled" && outcomes[2].status==="fulfilled" && outcomes[2].value) {
+              const jobs=outcomes[2].value;
+              setAvailableRecordings(outcomes[3].value.map(rec=>({...rec,job:jobs.find(job=>job.drive_item_id===rec.drive_item_id)})));
+            }
             if(outcomes.some(result=>result.status==="rejected"))throw new Error("Refresh incomplete");
           }} />}
           {isSubscribed && (

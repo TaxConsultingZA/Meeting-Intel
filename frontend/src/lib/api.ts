@@ -293,7 +293,7 @@ export function processRecentMeeting(eventId: string, token: string): Promise<{ 
 
 /** List MP4 files in the user's OneDrive Recordings folder with their current import status. */
 export async function getAvailableRecordings(upn: string): Promise<AvailableRecording[]> {
-  return apiFetch<AvailableRecording[]>("/recordings/available?resolve_filenames=true", upn);
+  return apiFetch<AvailableRecording[]>("/recordings/available", upn, {cache:"no-store"});
 }
 
 export interface RecordingCalendarChoice {
@@ -303,6 +303,22 @@ export interface RecordingCalendarChoice {
   start: { dateTime: string; timeZone: string };
   end: { dateTime: string; timeZone: string };
   isCancelled: boolean;
+}
+
+export type RecordingUpdateStage = "calendar" | "discovery" | "matching";
+export interface RecordingUpdateResult {
+  stage: RecordingUpdateStage;
+  status: "never" | "success" | "partial" | "failed";
+  counts: Record<string, number>;
+  error: string | null;
+  last_attempted_at: string | null;
+  last_succeeded_at: string | null;
+}
+export function getRecordingUpdateStatus(token: string) {
+  return apiFetch<RecordingUpdateResult[]>("/recordings/update",token,{cache:"no-store"});
+}
+export function runRecordingUpdateStage(token: string, stage: RecordingUpdateStage) {
+  return apiFetch<RecordingUpdateResult>(`/recordings/update/${stage}`,token,{method:"POST"},100000);
 }
 
 export function discoverOwnRecordings(token: string) {

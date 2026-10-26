@@ -216,6 +216,7 @@ async def test_available_recordings_uses_reconciled_rows_without_graph(ctx):
     ctx.session.add_all([
         ProcessedItem(
             drive_item_id="persisted-item", drive_id="drive:requester",
+            filename="Persisted recording.mp4",
             source="reconcile",
         ),
         RecordingJob(
@@ -232,11 +233,12 @@ async def test_available_recordings_uses_reconciled_rows_without_graph(ctx):
         "drive_item_id": "persisted-item",
         "drive_id": "drive:requester",
         "name": "Persisted recording.mp4",
-        "original_filename": None,
+        "original_filename": "Persisted recording.mp4",
         "calendar_matched": False,
         "association_status": "unmatched",
+        "calendar_title": None,
         "size": None,
-        "created_at": meeting.recorded_at.isoformat(),
+        "created_at": meeting.recorded_at.isoformat().replace("+00:00","Z"),
         "already_imported": True,
         "meeting_id": str(meeting.id),
         "meeting_state": ProcessingState.awaiting_review,
@@ -273,7 +275,7 @@ async def test_original_filename_is_independent_of_legacy_calendar_title_without
     monkeypatch.setattr(recordings.graph, "get_drive_item", metadata)
     rows = await recordings.available_recordings(ctx.db, ctx.requester.upn, resolve_filenames=True)
     assert rows[0]["original_filename"] == "Test-20260901_164158-会议记录.mp4"
-    assert rows[0]["name"] == "Unrelated calendar title"
+    assert rows[0]["name"] == "Test-20260901_164158-会议记录.mp4"
     assert rows[0]["calendar_matched"] is True
     assert rows[0]["meeting_id"] == str(meeting.id)
     assert ledger.filename is None
@@ -299,7 +301,7 @@ async def test_optional_filename_failure_does_not_hide_saved_recordings(ctx, mon
     monkeypatch.setattr(recordings.graph, "get_drive_item", read)
     rows = await recordings.available_recordings(ctx.db, ctx.requester.upn, resolve_filenames=True)
     assert len(rows) == 1 and rows[0]["original_filename"] is None
-    assert rows[0]["name"] == "Unknown"
+    assert rows[0]["name"].startswith("Recording metadata unavailable")
 
 
 async def test_discover_scans_independent_non_requester_owners_concurrently(ctx, monkeypatch):
@@ -353,7 +355,7 @@ async def test_unnamed_recording_rediscovery_repairs_available_name_without_proc
         filename=None, source="webhook"))
     ctx.session.commit()
     rows = await recordings.available_recordings(ctx.db, ctx.requester.upn)
-    assert rows[0]["name"] == "Unknown"
+    assert rows[0]["name"].startswith("Recording metadata unavailable")
     assert not await claim_item(ctx.db, "unnamed", "drive:requester", None,
         "reconcile", filename="Review.mp4")
     rows = await recordings.available_recordings(ctx.db, ctx.requester.upn)
@@ -405,9 +407,9 @@ async def test_recording_label_fallback_never_invents_or_overrides_verified_cale
     ])
     ctx.session.commit()
     rows = {row["drive_item_id"]: row for row in await recordings.available_recordings(ctx.db, ctx.requester.upn)}
-    assert rows["no-metadata"]["name"] == "Unknown"
+    assert rows["no-metadata"]["name"].startswith("Recording metadata unavailable")
     assert rows["no-metadata"]["calendar_matched"] is False
-    assert rows["verified-title"]["name"] == "Unknown"
+    assert rows["verified-title"]["name"] == "Original filename.mp4"
     assert rows["verified-title"]["calendar_matched"] is True
 
 
@@ -445,7 +447,7 @@ async def test_external_calendar_binding_is_reported_without_forcing_ambiguous_r
         assert row["name"] == ctx.item["name"]
     else:
         assert meeting.extracted_json["outlook_event_id"] == event["id"]
-        assert row["name"] == "Project Review"
+        assert row["name"] == ctx.item["name"]
     assert not (await all_meetings(ctx.db, ctx.requester.upn))[0].is_organizer
     assert await all_meetings(ctx.db, ctx.outsider.upn) == []
 

@@ -5,14 +5,12 @@ import { X, FolderOpen, Loader2, CheckCircle2, Download, AlertCircle, ExternalLi
 import { toast } from "sonner";
 import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
 import LocalDateTime from "./local-date-time";
-import RecordingAssociation from "./recording-association";
-import { discoverOwnRecordings } from "@/lib/api";
 import StateBadge from "./state-badge";
 import { JobControls, recordingStatusMessage } from "./recording-jobs";
 import type { AvailableRecording, ProcessingState, RecordingJobOut } from "@/lib/types";
 
 function formatBytes(bytes: number | null): string {
-  if (!bytes) return "—";
+  if (bytes === null) return "—";
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
@@ -44,7 +42,6 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
   const [hasLoaded, setHasLoaded] = useState(initialRecordings !== null);
   const [refreshing, setRefreshing] = useState(initialRecordings === null);
   const [error, setError] = useState<string | null>(null);
-  const [discovering, setDiscovering] = useState(false);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const jobsInFlight = useRef<Promise<RecordingJobOut[]> | null>(null);
   const actionInFlight = useRef(new Set<string>());
@@ -108,7 +105,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
     setBusy((prev) => new Set(prev).add(rec.drive_item_id));
     try {
       await importRecording(rec.drive_item_id, rec.drive_id, upn);
-      toast.success(`"${rec.name.replace(/\.mp4$/i, "")}" queued for processing`);
+      toast.success(`"${rec.original_filename || rec.name}" queued for processing`);
       await load();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Import failed");
@@ -125,7 +122,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
     setBusy((prev) => new Set(prev).add(rec.drive_item_id));
     try {
       await reprocessRecording(rec.drive_item_id, rec.drive_id, upn);
-      toast.success(`"${rec.name.replace(/\.mp4$/i, "")}" requeued for processing`);
+      toast.success(`"${rec.original_filename || rec.name}" requeued for processing`);
       await load();
     } catch {
       toast.error("We could not confirm the reprocess request. Refresh recordings to check the status before trying again.");
@@ -204,35 +201,21 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
         role="dialog"
         aria-modal="true"
         aria-labelledby="import-recording-title"
-        className="w-full max-w-5xl overflow-hidden rounded-lg bg-white shadow-xl"
+        className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
       >
-        <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-6 py-5 flex items-center justify-between">
+        <div className="sticky top-0 z-10 flex shrink-0 items-center justify-between border-b bg-[#003366] px-6 py-4">
           <div>
             <h2 id="import-recording-title" className="text-white font-semibold text-[15px]">Process a Past Recording</h2>
             <p className="text-white/60 text-[13px] mt-0.5">
-              View or process MP4 recordings from your OneDrive Recordings folder
+              Recordings · Africa/Johannesburg (UTC+02:00)
             </p>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="text-white/60 hover:text-white transition-colors">
+          <button type="button" onClick={onClose} aria-label="Close recording dialog" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-white hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-white">
             <X size={20} />
           </button>
         </div>
 
-        <div className="flex items-center justify-between gap-3 border-b px-6 py-3 text-xs">
-          <span>Discover files checks your OneDrive. Calendar sync updates calendar events only.</span>
-          <button type="button" disabled={discovering || refreshing} className="whitespace-nowrap text-blue-700 underline disabled:opacity-50"
-            onClick={async () => {
-              if (actionInFlight.current.has("discover")) return;
-              actionInFlight.current.add("discover"); setDiscovering(true); setError(null);
-              try {
-                const result = await discoverOwnRecordings(upn);
-                await load();
-                if (result.failed) setError("Some recordings could not be saved. Discover files again to retry.");
-              } catch { setError("Recording discovery incomplete. Check your OneDrive access and retry."); }
-              finally { actionInFlight.current.delete("discover"); setDiscovering(false); }
-            }}>{discovering ? "Discovering files…" : "Discover files"}</button>
-        </div>
-        <div className="max-h-[60vh] overflow-auto">
+        <div className="min-h-0 flex-1 overflow-auto">
           {refreshing && !hasLoaded && (
             <div role="status" aria-label="Loading recordings" className="min-h-72 animate-pulse" aria-live="polite">
               <span className="sr-only">Loading recordings…</span>
@@ -275,15 +258,15 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
             <div className="flex flex-col items-center justify-center py-16 text-[#6b7280]">
               <FolderOpen size={36} className="mb-3 text-[#dde1e8]" />
               <p className="text-[13.5px] font-semibold text-[#1a1a2e] mb-1">No discovered recordings</p>
-              <p className="text-[12.5px]">No MP4 recordings are available in the saved list. Refreshing this list does not scan OneDrive.</p>
+              <p className="text-[12.5px]">Use 更新会议和录音 on the dashboard to update this list.</p>
             </div>
           )}
 
           {hasLoaded && recordings.length > 0 && (
             <table className="w-full min-w-[920px] table-fixed text-sm">
               <colgroup>
-                <col className="w-[28%]" /><col className="w-[15%]" /><col className="w-[8%]" />
-                <col className="w-[13%]" /><col className="w-[13%]" /><col className="w-[23%]" />
+                <col className="w-[30%]" /><col className="w-[20%]" /><col className="w-[8%]" />
+                <col className="w-[12%]" /><col className="w-[13%]" /><col className="w-[17%]" />
               </colgroup>
               <thead>
                 <tr>
@@ -297,21 +280,16 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
               <tbody>
                 {recordings.map((rec, i) => (
                   <tr key={rec.drive_item_id} className={i % 2 === 1 ? "bg-[#f8fafc]" : ""}>
-                    <td className="px-4 py-3 pl-6 border-b border-[#dde1e8] font-medium text-[#1a1a2e] max-w-50">
-                      <span className="block truncate text-[13px]" title={rec.name}>
-                        {rec.name.replace(/\.mp4$/i, "")}
+                    <td className="px-4 py-3 pl-6 border-b border-[#dde1e8] font-medium text-[#1a1a2e] min-w-0">
+                      <span tabIndex={0} className="block truncate text-[13px] focus:whitespace-normal focus:break-all hover:whitespace-normal hover:break-all" title={rec.original_filename || rec.name}>
+                        {rec.original_filename || rec.name}
                       </span>
-                      {rec.original_filename && (
-                        <span className="mt-0.5 block break-all text-[11px] font-normal text-[#6b7280]" title={rec.original_filename}>
-                          Original file: {rec.original_filename}
-                        </span>
-                      )}
                       {rec.calendar_matched === false && (
                         <span className="mt-0.5 block text-[11px] font-normal text-[#6b7280]">No calendar meeting linked</span>
                       )}
-                      {rec.association_status === "needs_review" && <span className="block text-xs text-amber-800">Previous calendar association needs review. Existing results are preserved.</span>}
+                      {rec.calendar_matched && rec.calendar_title && <span className="mt-0.5 block truncate text-[11px] font-normal text-[#6b7280]" title={rec.calendar_title}>Matched meeting: {rec.calendar_title}</span>}
+                      {rec.association_status === "needs_review" && <span className="block text-xs text-amber-800">Previous association requires verification. Results are preserved.</span>}
                       {rec.association_status === "independent" && <span className="block text-xs text-[#6b7280]">Independent recording</span>}
-                      <RecordingAssociation recording={rec} token={upn} onSaved={load} />
                       {rec.meeting_error && (
                         <span className="block text-[11px] text-red-500 truncate mt-0.5" title="Processing could not finish. Open the meeting for recovery options.">
                           Processing could not finish. Open the meeting for recovery options.
@@ -319,7 +297,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
                       )}
                     </td>
                     <td className="px-4 py-3 border-b border-[#dde1e8] text-[#6b7280] text-[12.5px] whitespace-nowrap">
-                      <LocalDateTime value={rec.created_at} />
+                      <LocalDateTime value={rec.created_at} unavailable="Recording date unavailable" />
                     </td>
                     <td className="px-4 py-3 border-b border-[#dde1e8] text-[#6b7280] text-[12.5px] whitespace-nowrap">
                       {formatBytes(rec.size)}

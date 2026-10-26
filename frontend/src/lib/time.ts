@@ -15,6 +15,7 @@ export function resolveTimeZone(profileZone?: string | null, browserZone?: strin
 }
 
 export function parseInstant(value: string | null | undefined): Date | null {
+  value = value?.trim().replace(/^(\d{4}-\d{2}-\d{2})\s+(?=\d{2}:\d{2})/, "$1T");
   if (!value || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) return null;
   // API dates are UTC ISO strings. Legacy naive UTC strings get Z exactly once;
   // explicit Z/offset strings are never shifted by appending another offset.

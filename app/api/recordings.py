@@ -23,6 +23,9 @@ from .deps import registered_user, require_subscribed
 from ..services.recording_identity import calendar_choices, choose_association
 from ..services.ledger import claim_item
 from ..services.sync_state import record_sync_result
+from ..services import recording_update
+from ..utils.timezones import utc_iso
+from typing import Literal
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -36,6 +39,29 @@ class ImportRequest(BaseModel):
 
 class AssociationRequest(ImportRequest):
     event_id: str | None = None
+
+
+@router.get("/recordings/update")
+async def recording_update_status(db: AsyncSession = Depends(get_db),
+                                   upn: str = Depends(require_subscribed)):
+    return await recording_update.get_status(db,upn)
+
+
+@router.post("/recordings/update/{stage}")
+async def recording_update_step(stage: Literal["calendar","discovery","matching"],
+                                db: AsyncSession = Depends(get_db),
+                                user: RegisteredUser = Depends(registered_user)):
+    if not user.is_subscribed:
+        raise HTTPException(403,"Subscribe before updating meetings and recordings")
+    upn = user.upn
+    try:
+        async with asyncio.timeout(90):
+            return await recording_update.run_stage(db,user,stage)
+    except TimeoutError:
+        await db.rollback()
+        await record_sync_result(db,user_upn=upn,source=f"recording_{stage}",
+                                 error="Update step timed out. Saved data is retained; retry safely.")
+        raise HTTPException(504,"Update step timed out. Previous saved data is retained; retry safely.") from None
 
 
 @router.post("/recordings/discover")
@@ -160,6 +186,10 @@ async def available_recordings(
             name = (ledger.filename or "").strip() or name or "Unknown"
         if identity:
             name = ((identity.get("event") or {}).get("subject") if calendar_matched else ledger.filename) or ledger.filename or name
+        # File identity is primary even when a verified calendar subject differs.
+        name = (ledger.filename or "").strip() or f"Recording metadata unavailable ({iid})"
+        if name.casefold() == "unknown":
+            name = f"Recording metadata unavailable ({iid})"
         result.append({
             "drive_item_id": iid,
             "drive_id": ledger.drive_id,
@@ -167,8 +197,10 @@ async def available_recordings(
             "original_filename": ledger.filename,
             "calendar_matched": calendar_matched,
             "association_status": identity.get("status", "linked" if calendar_matched else "unmatched"),
+            "calendar_title": (identity.get("event") or {}).get("subject") if calendar_matched else None,
             "size": identity.get("size"),
-            "created_at": identity.get("recorded_at") or (m.recorded_at.isoformat() if m and m.recorded_at else None),
+            "created_at": (utc_iso(identity.get("recorded_at")) if "recorded_at" in identity else
+                           (utc_iso(m.recorded_at.isoformat()) if m and m.recorded_at and not calendar_matched else None)),
             "already_imported": iid in job_item_ids or m is not None,
             "meeting_id": str(m.id) if m else None,
             "meeting_state": m.state if m else None,
@@ -180,7 +212,7 @@ async def available_recordings(
         semaphore = asyncio.Semaphore(4)
 
         async def resolve(row):
-            if row["original_filename"] or not row["drive_id"]:
+            if (row["original_filename"] and row["created_at"] and row["size"] is not None) or not row["drive_id"]:
                 return
             try:
                 async with semaphore:
@@ -192,8 +224,7 @@ async def available_recordings(
                         and (not parent_drive or parent_drive == row["drive_id"])
                         and isinstance(name, str) and name.lower().endswith(".mp4")):
                     row["original_filename"] = name
-                    if row["name"].casefold() == "unknown":
-                        row["name"] = name
+                    row["name"] = name
                     from ..services.meeting_matching import recording_datetime
                     instant = recording_datetime(name, item)
                     if instant and not row["created_at"]:

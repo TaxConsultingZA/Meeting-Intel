@@ -305,6 +305,64 @@ async def list_recordings_folder(drive_id: str, *, strict: bool = False) -> list
     return list(recordings_by_id.values())
 
 
+async def recording_roots(drive_id: str) -> list[str]:
+    """Resolve the existing supported OneDrive recording locations, not tenant sites."""
+    if _mock_enabled():
+        return ["mock-recordings"]
+    roots = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        for path in ("Recordings", "Documents/Recordings"):
+            response = await client.get(
+                f"{settings.graph_base}/drives/{drive_id}/root:/{path}?$select=id,folder",
+                headers=await asyncio.to_thread(_headers))
+            if response.status_code == 404:
+                continue
+            response.raise_for_status()
+            item = response.json()
+            if item.get("folder") is not None and item.get("id"):
+                roots.append(item["id"])
+    return list(dict.fromkeys(roots))
+
+
+async def recording_delta(drive_id: str, folder_id: str, cursor: str | None = None,
+                          max_pages: int = 12) -> tuple[list[dict], str, bool, int]:
+    """Checkpoint bounded pages. Persist a cursor only with its durable file metadata."""
+    if _mock_enabled():
+        return await list_recordings_folder(drive_id), "mock-delta", True, 1
+    prefix = f"{settings.graph_base}/drives/{drive_id}/"
+    initial = (f"{prefix}items/{folder_id}/delta?"
+               "$select=id,name,parentReference,file,folder,deleted,remoteItem,"
+               "createdDateTime,lastModifiedDateTime,fileSystemInfo,size,eTag&$top=200")
+    url = cursor or initial
+    items, seen, reset = {}, set(), False
+    async with httpx.AsyncClient(timeout=30) as client:
+        for count in range(1, max_pages + 1):
+            if not url.startswith(prefix) or url in seen:
+                raise RuntimeError("Invalid recording delta cursor")
+            seen.add(url)
+            response = await client.get(url, headers=await asyncio.to_thread(_headers))
+            if response.status_code == 410 and not reset:
+                reset, url = True, initial
+                seen.clear()
+                continue
+            response.raise_for_status()
+            data = response.json()
+            for item in data.get("value", []):
+                if item.get("id"):
+                    items[item["id"]] = item
+            next_url, delta = data.get("@odata.nextLink"), data.get("@odata.deltaLink")
+            if delta:
+                if not delta.startswith(prefix):
+                    raise RuntimeError("Invalid recording delta cursor")
+                return list(items.values()), delta, True, count
+            if not next_url:
+                raise RuntimeError("Recording delta response has no checkpoint")
+            url = next_url
+    if not url.startswith(prefix):
+        raise RuntimeError("Invalid recording delta cursor")
+    return list(items.values()), url, False, max_pages
+
+
 async def get_drive_item(drive_id: str, item_id: str) -> dict:
     """Fetch a single OneDrive item's metadata (name, size, createdBy, etc.)."""
     if _mock_enabled():
@@ -411,11 +469,13 @@ async def get_upcoming_calendar_events(upn: str, days: int = 7, *, include_offli
     return events if include_offline else [e for e in events if e.get("isOnlineMeeting")]
 
 
-async def _calendar_pages(url: str) -> list[dict]:
+async def _calendar_pages(url: str, max_pages: int | None = None) -> list[dict]:
     events: list[dict] = []
     seen: set[str] = set()
     async with httpx.AsyncClient(timeout=30) as c:
         while url:
+            if max_pages is not None and len(seen) >= max_pages:
+                raise RuntimeError("Calendar pagination incomplete: request budget reached")
             if url in seen or not url.startswith(settings.graph_base.rstrip("/") + "/"):
                 raise RuntimeError("Invalid Calendar pagination")
             seen.add(url)
@@ -442,13 +502,14 @@ async def get_calendar_event(upn: str, event_id: str) -> dict:
         return r.json()
 
 
-async def get_calendar_window(upn: str, start: datetime, end: datetime) -> list[dict]:
+async def get_calendar_window(upn: str, start: datetime, end: datetime, *, max_pages: int | None = None) -> list[dict]:
     if _mock_enabled():
         return await get_upcoming_calendar_events(upn, include_offline=True)
     return await _calendar_pages(
         f"{settings.graph_base}/users/{quote(upn, safe='')}/calendarView"
         f"?startDateTime={quote(start.isoformat())}&endDateTime={quote(end.isoformat())}"
-        "&$select=id,iCalUId,isCancelled,subject,start,end,organizer,attendees&$top=100"
+        "&$select=id,iCalUId,isCancelled,subject,start,end,organizer,attendees&$top=100",
+        max_pages=max_pages,
     )
 
 

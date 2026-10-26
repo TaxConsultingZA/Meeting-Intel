@@ -152,6 +152,7 @@ class UserSyncState(Base):
     last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 # --- Dedupe ledger -------------------------------------------------------

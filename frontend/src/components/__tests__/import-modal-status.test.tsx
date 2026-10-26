@@ -25,25 +25,25 @@ const cachedRecording = {
   meeting_id: null, meeting_state: null, meeting_error: null,
 };
 
-it("discovers owner files explicitly without starting transcription",async()=>{
-  vi.mocked(discoverOwnRecordings).mockResolvedValue({discovered:1,failed:0,status:"success"});
-  vi.mocked(getAvailableRecordings).mockResolvedValue([cachedRecording]);
-  vi.mocked(getRecordingJobs).mockResolvedValue([]);
-  render(<ImportModal upn="signed-token" onClose={vi.fn()} initialRecordings={[]}/>);
-  expect(discoverOwnRecordings).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button",{name:"Discover files"}));
-  await waitFor(()=>expect(discoverOwnRecordings).toHaveBeenCalledWith("signed-token"));
-  expect(await screen.findByText("cached")).toBeInTheDocument();
-  expect(importRecording).not.toHaveBeenCalled();
+it("keeps date and size in separate columns and exposes an easy fixed close control",()=>{
+  render(<ImportModal upn="offline" onClose={vi.fn()} initialRecordings={[{
+    ...cachedRecording,created_at:"2026-09-01 08:41:58+00:00",size:544023
+  }]}/>);
+  const date=screen.getByText("01 Sept 2026, 10:41").closest("td");
+  const size=screen.getByText("531 KB").closest("td");
+  expect(date).not.toBe(size);
+  expect(screen.getByRole("button",{name:"Close recording dialog"})).toHaveClass("h-11","w-11");
 });
 
-it("shows the original recording filename separately from the saved calendar title", () => {
+it("shows the actual file identity without per-row association actions", () => {
   const filename = "Test-20260901_164158-会议记录.mp4";
   render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()}
     initialRecordings={[{ ...cachedRecording, name: "Unrelated calendar title", original_filename: filename,
       already_imported: true, meeting_id: "existing-review", meeting_state: "awaiting_review", calendar_matched: true }]} />);
-  expect(screen.getByText("Unrelated calendar title")).toBeInTheDocument();
-  expect(screen.getByText(`Original file: ${filename}`)).toHaveAttribute("title", filename);
+
+  expect(screen.getByText(filename)).toHaveAttribute("title", filename);
+  expect(screen.queryByRole("button",{name:"Manage calendar link"})).not.toBeInTheDocument();
+  expect(screen.queryByRole("button",{name:"Discover files"})).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "View" })).toHaveAttribute("href", "/meetings/existing-review");
   expect(importRecording).not.toHaveBeenCalled();
   expect(reprocessRecording).not.toHaveBeenCalled();
@@ -77,7 +77,7 @@ it.each(["pending", "completed"] as const)("keeps %s recording actions separate 
 
 it("describes an empty saved list without claiming Refresh scans OneDrive", () => {
   render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()} initialRecordings={[]} />);
-  expect(screen.getByText(/Refreshing this list does not scan OneDrive/)).toBeInTheDocument();
+  expect(screen.getByText(/Use 更新会议和录音/)).toBeInTheDocument();
   expect(screen.queryByText(/No MP4 recordings were found in your OneDrive/)).not.toBeInTheDocument();
 });
 
@@ -95,7 +95,7 @@ it("opens immediately with a skeleton while recordings load asynchronously", asy
   await waitFor(() => expect(getAvailableRecordings).toHaveBeenCalledOnce());
 
   resolveRecordings([cachedRecording]);
-  expect(await screen.findByText("cached")).toBeInTheDocument();
+  expect(await screen.findByText("cached.mp4")).toBeInTheDocument();
   expect(screen.queryByRole("status", { name: "Loading recordings" })).not.toBeInTheDocument();
 });
 
@@ -172,14 +172,14 @@ it("uses successful recordings supplied by the Dashboard without fetching availa
   const onRecordingsLoaded = vi.fn();
   const first = render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()} onRecordingsLoaded={onRecordingsLoaded} />);
 
-  expect(await screen.findByText("cached")).toBeInTheDocument();
+  expect(await screen.findByText("cached.mp4")).toBeInTheDocument();
   await waitFor(() => expect(onRecordingsLoaded).toHaveBeenCalled());
   const cached = onRecordingsLoaded.mock.calls.at(-1)?.[0];
   expect(getAvailableRecordings).toHaveBeenCalledOnce();
   first.unmount();
 
   render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()} initialRecordings={cached} onRecordingsLoaded={vi.fn()} />);
-  expect(screen.getByText("cached")).toBeInTheDocument();
+  expect(screen.getByText("cached.mp4")).toBeInTheDocument();
   await waitFor(() => expect(getAvailableRecordings).toHaveBeenCalledOnce());
 });
 
@@ -188,11 +188,11 @@ it("keeps cached recordings visible when an explicit refresh fails", async () =>
   vi.mocked(getRecordingJobs).mockResolvedValue([]);
   render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()} initialRecordings={[cachedRecording]} />);
 
-  expect(screen.getByText("cached")).toBeInTheDocument();
+  expect(screen.getByText("cached.mp4")).toBeInTheDocument();
   expect(getAvailableRecordings).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 
   expect(await screen.findByRole("alert")).toHaveTextContent("Showing the previously loaded recordings");
-  expect(screen.getByText("cached")).toBeInTheDocument();
+  expect(screen.getByText("cached.mp4")).toBeInTheDocument();
   expect(getAvailableRecordings).toHaveBeenCalledOnce();
 });

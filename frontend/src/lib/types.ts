@@ -294,6 +294,7 @@ export interface SyncState {
 
 /** A recording file visible in the user's OneDrive, with its current processing state if imported. */
 export interface AvailableRecording {
+  association_status?: "unmatched" | "linked" | "independent" | "needs_review";
   original_filename?: string | null;
   calendar_matched?: boolean;
   job?: RecordingJobOut;

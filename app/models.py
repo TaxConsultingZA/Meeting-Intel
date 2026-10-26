@@ -172,6 +172,7 @@ class ProcessedItem(Base):
     drive_id: Mapped[str | None] = mapped_column(String(255), nullable=True)   # whose OneDrive
     etag: Mapped[str | None] = mapped_column(String(255), nullable=True)
     filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    identity_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     source: Mapped[str] = mapped_column(String(32))  # "webhook" | "reconcile"
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

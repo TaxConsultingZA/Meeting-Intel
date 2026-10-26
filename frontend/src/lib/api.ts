@@ -296,6 +296,30 @@ export async function getAvailableRecordings(upn: string): Promise<AvailableReco
   return apiFetch<AvailableRecording[]>("/recordings/available?resolve_filenames=true", upn);
 }
 
+export interface RecordingCalendarChoice {
+  id: string;
+  iCalUId: string | null;
+  subject: string | null;
+  start: { dateTime: string; timeZone: string };
+  end: { dateTime: string; timeZone: string };
+  isCancelled: boolean;
+}
+
+export function discoverOwnRecordings(token: string) {
+  return apiFetch<{discovered:number;failed:number;status:string}>("/recordings/discover", token, {method:"POST"}, 120000);
+}
+
+export function getRecordingCalendarChoices(token: string, driveId: string, itemId: string) {
+  const params = new URLSearchParams({ drive_id: driveId, drive_item_id: itemId });
+  return apiFetch<RecordingCalendarChoice[]>(`/recordings/calendar-choices?${params}`, token, { cache: "no-store" });
+}
+
+export function setRecordingAssociation(token: string, driveId: string, itemId: string, eventId: string | null) {
+  return apiFetch<{ ok: boolean }>("/recordings/association", token, {
+    method: "PUT", body: JSON.stringify({ drive_id: driveId, drive_item_id: itemId, event_id: eventId }),
+  });
+}
+
 /** Trigger the full pipeline for a new recording. Returns 409 if already imported. */
 export async function importRecording(
   driveItemId: string,

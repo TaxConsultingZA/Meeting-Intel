@@ -386,6 +386,16 @@ async def process_recording(
         await db.refresh(meeting)
 
     owner_upn = normalize_upn(owner_upn)
+    # A recording owner's explicit identity decision survives retries. It does
+    # not grant Calendar attendees access or replace processing/review history.
+    from app.models import ProcessedItem
+    identity_ledger = await db.scalar(select(ProcessedItem).where(
+        ProcessedItem.drive_id == drive_id, ProcessedItem.drive_item_id == drive_item_id))
+    identity = (identity_ledger.identity_json or {}) if identity_ledger else {}
+    if identity:
+        metadata = dict(meeting.extracted_json or {})
+        metadata["recording_identity"] = identity
+        meeting.extracted_json = metadata
     if meeting.organizer_upn:
         meeting.organizer_upn = normalize_upn(meeting.organizer_upn)
 

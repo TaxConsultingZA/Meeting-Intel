@@ -20,6 +20,9 @@ from ..services.reprocessing import (
     is_meeting_organizer,
 )
 from .deps import registered_user, require_subscribed
+from ..services.recording_identity import calendar_choices, choose_association
+from ..services.ledger import claim_item
+from ..services.sync_state import record_sync_result
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -29,6 +32,65 @@ router = APIRouter()
 class ImportRequest(BaseModel):
     drive_item_id: str
     drive_id: str
+
+
+class AssociationRequest(ImportRequest):
+    event_id: str | None = None
+
+
+@router.post("/recordings/discover")
+async def discover_own_recordings(db: AsyncSession = Depends(get_db),
+                                  user: RegisteredUser = Depends(registered_user)):
+    if not user.is_subscribed:
+        raise HTTPException(403, "Subscribe before accessing recordings")
+    try:
+        drive_id = await graph.get_user_drive_id(user.upn)
+        items = await graph.list_recordings_folder(drive_id, strict=True)
+    except Exception:
+        await record_sync_result(db,user_upn=user.upn,source="onedrive",
+                                 error="Recording discovery incomplete. Check Microsoft access and retry.")
+        raise HTTPException(502, "Recording discovery incomplete. Check Microsoft access and retry.") from None
+    user.graph_drive_id = drive_id
+    await db.commit()
+    found = failed = 0
+    for item in items:
+        try:
+            # Each claim is durable; retries repair only missing files and never
+            # enqueue transcription or discard earlier successful discoveries.
+            found += int(await claim_item(db,item["id"],drive_id,item.get("eTag"),
+                                          "manual_discovery",filename=item.get("name")))
+        except Exception:
+            await db.rollback()
+            failed += 1
+            logger.warning("Recording discovery persistence failed item=%s", item.get("id","missing"))
+    await record_sync_result(db,user_upn=user.upn,source="onedrive",
+                             error=f"Recording discovery incomplete: {failed} file(s) failed" if failed else None)
+    return {"discovered":found,"failed":failed,"status":"partial" if failed else "success"}
+
+
+@router.get("/recordings/calendar-choices")
+async def recording_calendar_choices(drive_id: str, drive_item_id: str,
+                                     db: AsyncSession = Depends(get_db),
+                                     user: RegisteredUser = Depends(registered_user)):
+    if not user.is_subscribed:
+        raise HTTPException(403, "Subscribe before accessing recordings")
+    return await calendar_choices(db, user, drive_id, drive_item_id)
+
+
+@router.put("/recordings/association")
+async def recording_association(req: AssociationRequest, db: AsyncSession = Depends(get_db),
+                                user: RegisteredUser = Depends(registered_user)):
+    if not user.is_subscribed:
+        raise HTTPException(403, "Subscribe before accessing recordings")
+    ledger = await choose_association(db, user, req.drive_id, req.drive_item_id, req.event_id)
+    add_audit_event(
+        db, event_type="recording.association", outcome="succeeded",
+        actor_type="user", actor_id=str(user.id), actor_upn=user.upn,
+        actor_entra_oid=user.entra_oid, resource_type="recording",
+        resource_id=ledger.id, metadata={"status": ledger.identity_json["status"]},
+    )
+    await db.commit()
+    return {"ok": True}
 
 
 async def _verify_owned_drive_item(upn: str, drive_id: str, drive_item_id: str) -> dict:
@@ -88,19 +150,25 @@ async def available_recordings(
         m = meetings_by_item.get(iid)
         metadata = (m.extracted_json or {}) if m else {}
         calendar_matched = bool(metadata.get("outlook_event_id") or metadata.get("t5_calendar_event"))
+        identity = ledger.identity_json or {}
+        if identity:
+            calendar_matched = identity.get("status") == "linked"
         name = (m.title or "").strip() if m else ""
         # A legacy placeholder is not a verified meeting title. Prefer the
         # discovered filename for display without rewriting meeting/job data.
         if not name or (name.casefold() == "unknown" and not calendar_matched):
             name = (ledger.filename or "").strip() or name or "Unknown"
+        if identity:
+            name = ((identity.get("event") or {}).get("subject") if calendar_matched else ledger.filename) or ledger.filename or name
         result.append({
             "drive_item_id": iid,
             "drive_id": ledger.drive_id,
             "name": name,
             "original_filename": ledger.filename,
             "calendar_matched": calendar_matched,
-            "size": None,
-            "created_at": m.recorded_at.isoformat() if m and m.recorded_at else None,
+            "association_status": identity.get("status", "linked" if calendar_matched else "unmatched"),
+            "size": identity.get("size"),
+            "created_at": identity.get("recorded_at") or (m.recorded_at.isoformat() if m and m.recorded_at else None),
             "already_imported": iid in job_item_ids or m is not None,
             "meeting_id": str(m.id) if m else None,
             "meeting_state": m.state if m else None,
@@ -124,6 +192,13 @@ async def available_recordings(
                         and (not parent_drive or parent_drive == row["drive_id"])
                         and isinstance(name, str) and name.lower().endswith(".mp4")):
                     row["original_filename"] = name
+                    if row["name"].casefold() == "unknown":
+                        row["name"] = name
+                    from ..services.meeting_matching import recording_datetime
+                    instant = recording_datetime(name, item)
+                    if instant and not row["created_at"]:
+                        row["created_at"] = instant.isoformat()
+                    row["size"] = item.get("size")
             except Exception:
                 # Metadata is optional: retain saved rows and recovery controls.
                 pass

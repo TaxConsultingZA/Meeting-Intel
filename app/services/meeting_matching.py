@@ -29,7 +29,7 @@ def recording_datetime(name: str, metadata: dict | None = None) -> datetime | No
 def clean_recording_title(name: str) -> str:
     title = Path(name or "Recording").stem
     title = _STAMP.sub("", title)
-    title = re.sub(r"[-_ ]*(?:Meeting Recording|会议记录|會議錄製)$", "", title, flags=re.I)
+    title = re.sub(r"[-_ ]*(?:Meeting Recording|会议记录|会议录像|會議錄製)$", "", title, flags=re.I)
     title = re.sub(r"[-_]+", " ", title)
     return re.sub(r"\s+", " ", title).strip(" -_") or "Meeting recording"
 
@@ -46,13 +46,15 @@ def match_calendar_event(
 ) -> dict | None:
     """Return a nearby, title-compatible event or decline to guess."""
     recording_title = _normalise(clean_recording_title(recording_name))
+    if recording_title in {"unknown", "recording", "meeting recording"}:
+        return None
     candidates: list[tuple[float, dict]] = []
     for event in events:
         event_start = parse_graph_datetime(event.get("start"))
         event_end = parse_graph_datetime(event.get("end"))
         event_title = _normalise(event.get("subject") or "")
         title_similarity = SequenceMatcher(None, recording_title, event_title).ratio()
-        if not recording_title or not event_title or title_similarity < 0.5 or not event_start or recorded_at is None:
+        if not recording_title or event_title != recording_title or not event_start or recorded_at is None:
             continue
 
         instant = recorded_at.astimezone(timezone.utc)

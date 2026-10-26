@@ -234,6 +234,7 @@ async def test_available_recordings_uses_reconciled_rows_without_graph(ctx):
         "name": "Persisted recording.mp4",
         "original_filename": None,
         "calendar_matched": False,
+        "association_status": "unmatched",
         "size": None,
         "created_at": meeting.recorded_at.isoformat(),
         "already_imported": True,

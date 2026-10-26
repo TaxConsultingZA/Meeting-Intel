@@ -26,6 +26,13 @@ async def enrich_recording_from_outlook(
     if verified:
         apply_calendar_event(meeting, verified)
         return
+    identity = (meeting.extracted_json or {}).get("recording_identity") or {}
+    if identity:
+        # Manual links are display identity only, never a participant/access grant.
+        if identity.get("status") == "linked":
+            event = identity.get("event") or {}
+            meeting.title = event.get("subject") or meeting.title
+        return
     item = await graph.get_drive_item(drive_id, drive_item_id)
     recorded_at = recording_datetime(item.get("name", ""), item)
     if recorded_at and not meeting.recorded_at:

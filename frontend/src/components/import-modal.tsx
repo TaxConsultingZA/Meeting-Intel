@@ -5,6 +5,8 @@ import { X, FolderOpen, Loader2, CheckCircle2, Download, AlertCircle, ExternalLi
 import { toast } from "sonner";
 import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
 import LocalDateTime from "./local-date-time";
+import RecordingAssociation from "./recording-association";
+import { discoverOwnRecordings } from "@/lib/api";
 import StateBadge from "./state-badge";
 import { JobControls, recordingStatusMessage } from "./recording-jobs";
 import type { AvailableRecording, ProcessingState, RecordingJobOut } from "@/lib/types";
@@ -42,6 +44,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
   const [hasLoaded, setHasLoaded] = useState(initialRecordings !== null);
   const [refreshing, setRefreshing] = useState(initialRecordings === null);
   const [error, setError] = useState<string | null>(null);
+  const [discovering, setDiscovering] = useState(false);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const jobsInFlight = useRef<Promise<RecordingJobOut[]> | null>(null);
   const actionInFlight = useRef(new Set<string>());
@@ -215,6 +218,20 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
           </button>
         </div>
 
+        <div className="flex items-center justify-between gap-3 border-b px-6 py-3 text-xs">
+          <span>Discover files checks your OneDrive. Calendar sync updates calendar events only.</span>
+          <button type="button" disabled={discovering || refreshing} className="whitespace-nowrap text-blue-700 underline disabled:opacity-50"
+            onClick={async () => {
+              if (actionInFlight.current.has("discover")) return;
+              actionInFlight.current.add("discover"); setDiscovering(true); setError(null);
+              try {
+                const result = await discoverOwnRecordings(upn);
+                await load();
+                if (result.failed) setError("Some recordings could not be saved. Discover files again to retry.");
+              } catch { setError("Recording discovery incomplete. Check your OneDrive access and retry."); }
+              finally { actionInFlight.current.delete("discover"); setDiscovering(false); }
+            }}>{discovering ? "Discovering files…" : "Discover files"}</button>
+        </div>
         <div className="max-h-[60vh] overflow-auto">
           {refreshing && !hasLoaded && (
             <div role="status" aria-label="Loading recordings" className="min-h-72 animate-pulse" aria-live="polite">
@@ -292,6 +309,9 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
                       {rec.calendar_matched === false && (
                         <span className="mt-0.5 block text-[11px] font-normal text-[#6b7280]">No calendar meeting linked</span>
                       )}
+                      {rec.association_status === "needs_review" && <span className="block text-xs text-amber-800">Previous calendar association needs review. Existing results are preserved.</span>}
+                      {rec.association_status === "independent" && <span className="block text-xs text-[#6b7280]">Independent recording</span>}
+                      <RecordingAssociation recording={rec} token={upn} onSaved={load} />
                       {rec.meeting_error && (
                         <span className="block text-[11px] text-red-500 truncate mt-0.5" title="Processing could not finish. Open the meeting for recovery options.">
                           Processing could not finish. Open the meeting for recovery options.

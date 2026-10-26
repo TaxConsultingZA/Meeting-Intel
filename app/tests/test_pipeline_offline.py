@@ -13,6 +13,7 @@ from app.models import (
     MeetingParticipant,
     ProcessingState,
     RecordingProcessingRequest,
+    ProcessedItem,
 )
 from app.pipeline import steps
 from app.ai import runtime_bridge
@@ -33,6 +34,8 @@ def pipeline(monkeypatch):
         if entity is Meeting:
             return meeting
         if entity is RecordingProcessingRequest:
+            return None
+        if entity is ProcessedItem:
             return None
         return True
 

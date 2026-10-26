@@ -11,6 +11,23 @@ from app.services.meeting_matching import match_calendar_event
 RECORDED_AT = datetime(2026, 9, 1, 8, 41, 58, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize("name", ["Unknown.mp4", "Recording.mp4", "Meeting Recording.mp4"])
+def test_placeholder_titles_do_not_create_calendar_identity(name):
+    assert match_calendar_event(name, RECORDED_AT, [{
+        "id":"unrelated","subject":"Unknown",
+        "start":{"dateTime":"2026-09-01T08:30:00Z","timeZone":"UTC"},
+        "end":{"dateTime":"2026-09-01T09:00:00Z","timeZone":"UTC"},
+    }]) is None
+
+
+def test_similar_but_different_title_is_not_identity():
+    assert match_calendar_event("Quarterly Tax Review.mp4", RECORDED_AT, [{
+        "id":"different","subject":"Quarterly Team Review",
+        "start":{"dateTime":"2026-09-01T08:30:00Z","timeZone":"UTC"},
+        "end":{"dateTime":"2026-09-01T09:00:00Z","timeZone":"UTC"},
+    }]) is None
+
+
 def _event(subject: str, start: str, end: str) -> dict:
     return {
         "subject": subject,

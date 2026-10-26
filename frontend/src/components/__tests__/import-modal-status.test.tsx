@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ImportModal from "../import-modal";
-import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
+import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording, discoverOwnRecordings } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   getAvailableRecordings: vi.fn(),
@@ -10,6 +10,7 @@ vi.mock("@/lib/api", () => ({
   reprocessRecording: vi.fn(),
   cancelRecordingJob: vi.fn(),
   retryRecordingJob: vi.fn(),
+  discoverOwnRecordings: vi.fn(),
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -23,6 +24,18 @@ const cachedRecording = {
   created_at: "2026-09-02T08:15:00Z", already_imported: false,
   meeting_id: null, meeting_state: null, meeting_error: null,
 };
+
+it("discovers owner files explicitly without starting transcription",async()=>{
+  vi.mocked(discoverOwnRecordings).mockResolvedValue({discovered:1,failed:0,status:"success"});
+  vi.mocked(getAvailableRecordings).mockResolvedValue([cachedRecording]);
+  vi.mocked(getRecordingJobs).mockResolvedValue([]);
+  render(<ImportModal upn="signed-token" onClose={vi.fn()} initialRecordings={[]}/>);
+  expect(discoverOwnRecordings).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button",{name:"Discover files"}));
+  await waitFor(()=>expect(discoverOwnRecordings).toHaveBeenCalledWith("signed-token"));
+  expect(await screen.findByText("cached")).toBeInTheDocument();
+  expect(importRecording).not.toHaveBeenCalled();
+});
 
 it("shows the original recording filename separately from the saved calendar title", () => {
   const filename = "Test-20260901_164158-会议记录.mp4";

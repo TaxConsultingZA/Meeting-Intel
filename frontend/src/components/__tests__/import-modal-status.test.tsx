@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ImportModal from "../import-modal";
 import { discoverOwnRecordings, runRecordingUpdateStage, getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
 
@@ -17,6 +17,7 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -168,7 +169,7 @@ it("shows approved completed recordings as view-only", async () => {
   expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
 });
 
-it("uses successful recordings supplied by the Dashboard without fetching available again", async () => {
+it("renders prefetched recordings immediately then revalidates both saved reads", async () => {
   vi.mocked(getAvailableRecordings).mockResolvedValue([cachedRecording]);
   vi.mocked(getRecordingJobs).mockResolvedValue([]);
   const onRecordingsLoaded = vi.fn();
@@ -182,7 +183,8 @@ it("uses successful recordings supplied by the Dashboard without fetching availa
 
   render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()} initialRecordings={cached} onRecordingsLoaded={vi.fn()} />);
   expect(screen.getByText("cached.mp4")).toBeInTheDocument();
-  await waitFor(() => expect(getAvailableRecordings).toHaveBeenCalledOnce());
+  await waitFor(() => expect(getAvailableRecordings).toHaveBeenCalledTimes(2));
+  expect(screen.getByText("Recording list and task status loaded successfully.")).toBeVisible();
 });
 
 it("keeps cached recordings visible when an explicit refresh fails", async () => {
@@ -191,12 +193,12 @@ it("keeps cached recordings visible when an explicit refresh fails", async () =>
   render(<ImportModal upn="owner@taxconsulting.co.za" onClose={vi.fn()} initialRecordings={[cachedRecording]} />);
 
   expect(screen.getByText("cached.mp4")).toBeInTheDocument();
-  expect(getAvailableRecordings).not.toHaveBeenCalled();
+  await screen.findByRole("alert");
   fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 
   expect(await screen.findByRole("alert")).toHaveTextContent("Showing the previously loaded recordings");
   expect(screen.getByText("cached.mp4")).toBeInTheDocument();
-  expect(getAvailableRecordings).toHaveBeenCalledOnce();
+  await waitFor(() => expect(getAvailableRecordings).toHaveBeenCalledTimes(2));
 });
 
 it("uses SAST and keeps absent recording dates unavailable",()=>{
@@ -237,11 +239,77 @@ it("styles Transcribe as a deep blue primary action and Refresh only reloads sav
  expect(transcribe).not.toHaveClass("bg-white");
  const refresh=screen.getByRole("button",{name:"Refresh"});
  expect(refresh).toHaveAttribute("title","Reload recording list");
+ await screen.findByText("Recording list and task status loaded successfully.");
  fireEvent.click(refresh);
- await waitFor(()=>expect(getAvailableRecordings).toHaveBeenCalledOnce());
- expect(getRecordingJobs).toHaveBeenCalledOnce();
+ await waitFor(()=>expect(getAvailableRecordings).toHaveBeenCalledTimes(2));
+ expect(getRecordingJobs).toHaveBeenCalledTimes(2);
  expect(discoverOwnRecordings).not.toHaveBeenCalled();
  expect(runRecordingUpdateStage).not.toHaveBeenCalled();
  expect(importRecording).not.toHaveBeenCalled();
  expect(reprocessRecording).not.toHaveBeenCalled();
+});
+
+const statusPollJob = {
+ job_id:"poll-job",drive_item_id:cachedRecording.drive_item_id,meeting_id:null,title:"Saved recording",
+ status:"pending" as const,processing_status:"queued" as const,review_status:null,phase:"queued" as const,attempts:0,max_attempts:3,error:null,
+ can_retry:false,can_cancel:false,can_reprocess:false,processing_enabled:false,
+};
+
+it("clears a failed background read only after both list and task status recover",async()=>{
+ vi.useFakeTimers();
+ Object.defineProperty(document,"visibilityState",{configurable:true,value:"visible"});
+ vi.mocked(getAvailableRecordings).mockResolvedValue([cachedRecording]);
+ vi.mocked(getRecordingJobs).mockResolvedValueOnce([statusPollJob]).mockRejectedValueOnce(new Error("Offline")).mockResolvedValue([statusPollJob]);
+ render(<ImportModal upn="token" onClose={vi.fn()}/>);
+ await act(()=>vi.advanceTimersByTimeAsync(0));
+ await act(()=>vi.advanceTimersByTimeAsync(5000));
+ expect(screen.getByRole("alert")).toBeVisible();
+ await act(()=>vi.advanceTimersByTimeAsync(5000));
+ expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+ expect(getAvailableRecordings).toHaveBeenCalledTimes(2);
+ expect(screen.getByText("Recording list and task status loaded successfully.")).toBeVisible();
+ expect(importRecording).not.toHaveBeenCalled();
+ expect(runRecordingUpdateStage).not.toHaveBeenCalled();
+});
+
+it("does not certify a cached list when only the list request succeeds",async()=>{
+ vi.mocked(getAvailableRecordings).mockResolvedValue([{...cachedRecording,name:"Unverified newer file.mp4"}]);
+ vi.mocked(getRecordingJobs).mockRejectedValue(new Error("Status unavailable"));
+ render(<ImportModal upn="token" onClose={vi.fn()} initialRecordings={[cachedRecording]}/>);
+ expect(screen.getByText(/Showing cached recordings/)).toBeVisible();
+ expect(await screen.findByRole("alert")).toBeVisible();
+ expect(screen.queryByText("Recording list and task status loaded successfully.")).not.toBeInTheDocument();
+ expect(screen.getByText("cached.mp4")).toBeVisible();
+ expect(screen.queryByText("Unverified newer file.mp4")).not.toBeInTheDocument();
+});
+
+it("stops background retries after HTTP 401 and asks for a normal login",async()=>{
+ vi.useFakeTimers();
+ Object.defineProperty(document,"visibilityState",{configurable:true,value:"visible"});
+ vi.mocked(getAvailableRecordings).mockResolvedValue([cachedRecording]);
+ vi.mocked(getRecordingJobs).mockResolvedValueOnce([statusPollJob]).mockRejectedValue(Object.assign(new Error("Not signed in"),{status:401}));
+ render(<ImportModal upn="token" onClose={vi.fn()}/>);
+ await act(()=>vi.advanceTimersByTimeAsync(0));
+ await act(()=>vi.advanceTimersByTimeAsync(5000));
+ expect(screen.getByRole("alert")).toHaveTextContent("Your session could not be verified");
+ expect(screen.getByRole("link",{name:"Sign in again"})).toHaveAttribute("href","/login");
+ await act(()=>vi.advanceTimersByTimeAsync(20000));
+ expect(getRecordingJobs).toHaveBeenCalledTimes(2);
+ expect(screen.queryByText("Recording list and task status loaded successfully.")).not.toBeInTheDocument();
+});
+
+it("retains the cached warning if recovery succeeds only for task status",async()=>{
+ vi.useFakeTimers();
+ Object.defineProperty(document,"visibilityState",{configurable:true,value:"visible"});
+ vi.mocked(getAvailableRecordings).mockResolvedValueOnce([cachedRecording]).mockRejectedValueOnce(new Error("List read failed")).mockResolvedValue([cachedRecording]);
+ vi.mocked(getRecordingJobs).mockResolvedValueOnce([statusPollJob]).mockRejectedValueOnce(new Error("Temporary status failure")).mockResolvedValue([statusPollJob]);
+ render(<ImportModal upn="token" onClose={vi.fn()}/>);
+ await act(()=>vi.advanceTimersByTimeAsync(0));
+ await act(()=>vi.advanceTimersByTimeAsync(5000));
+ await act(()=>vi.advanceTimersByTimeAsync(5000));
+ expect(screen.getByRole("alert")).toBeVisible();
+ expect(screen.queryByText("Recording list and task status loaded successfully.")).not.toBeInTheDocument();
+ await act(()=>vi.advanceTimersByTimeAsync(5000));
+ expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+ expect(screen.getByText("Recording list and task status loaded successfully.")).toBeVisible();
 });

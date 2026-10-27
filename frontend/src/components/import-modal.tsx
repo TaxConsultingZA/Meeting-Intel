@@ -46,10 +46,21 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
   const [hasLoaded, setHasLoaded] = useState(initialRecordings !== null);
   const [refreshing, setRefreshing] = useState(initialRecordings === null);
   const [error, setError] = useState<string | null>(null);
+  const [completeRead, setCompleteRead] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const jobsInFlight = useRef<Promise<RecordingJobOut[]> | null>(null);
   const actionInFlight = useRef(new Set<string>());
   const refreshInFlight = useRef(false);
+
+  const readFailed = useCallback((cause: unknown) => {
+    const unauthorized = typeof cause === "object" && cause !== null && "status" in cause && cause.status === 401;
+    setCompleteRead(false);
+    setAuthRequired(unauthorized);
+    setError(unauthorized
+      ? "Your session could not be verified. Sign in again to reload the list and task status."
+      : "The list or task status could not be loaded. Saved data is retained; the latest information is not verified.");
+  }, []);
 
   const loadJobs = useCallback(() => {
     if (jobsInFlight.current) return jobsInFlight.current;
@@ -64,24 +75,28 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
     setRefreshing(true);
-    setError(null);
+    setCompleteRead(false);
     try {
       const [data, jobs] = await Promise.all([getAvailableRecordings(upn), loadJobs()]);
       setRecordings(data.map(rec => ({ ...rec, job: jobs.find(job => job.drive_item_id === rec.drive_item_id) })));
       setHasLoaded(true);
-    } catch {
-      setError("We could not load recordings from OneDrive. Try again. If this continues, check your access with an administrator.");
+      setCompleteRead(true);
+      setAuthRequired(false);
+      setError(null);
+    } catch (cause) {
+      readFailed(cause);
     } finally {
       refreshInFlight.current = false;
       setRefreshing(false);
     }
-  }, [loadJobs, upn]);
+  }, [loadJobs, upn, readFailed]);
 
   useEffect(() => {
-    if (hasLoaded) return;
+    // Prefetched rows are immediately visible, but remain cached until both
+    // saved-list and task-status reads succeed for this opening/session.
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
-  }, [hasLoaded, load]);
+  }, [load]);
 
   useEffect(() => {
     if (hasLoaded) onRecordingsLoaded?.(recordings);
@@ -95,13 +110,16 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
     rec.job.status === "pending" || rec.job.status === "processing" || rec.job.processing_status === "cancel_requested"
   ));
   useEffect(() => {
-    if (!hasActiveJobs) return;
+    if (!hasActiveJobs || authRequired) return;
     const timer = setInterval(() => {
       if (document.visibilityState === "hidden") return;
-      void refreshJobs().catch(() => setError("The latest recording status could not be loaded. Refresh to try again."));
+      if (refreshInFlight.current) return;
+      // A recovered status-only read cannot certify a failed list read.
+      if (!completeRead) { void load(); return; }
+      void refreshJobs().catch(readFailed);
     }, 5000);
     return () => clearInterval(timer);
-  }, [hasActiveJobs, refreshJobs]);
+  }, [hasActiveJobs, authRequired, completeRead, load, refreshJobs, readFailed]);
 
   async function handleImport(rec: AvailableRecording) {
     if (actionInFlight.current.has(rec.drive_item_id)) return;
@@ -241,11 +259,16 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
             </div>
           )}
 
+          {hasLoaded && <p role="status" aria-label="Recording data freshness" className="mx-6 mt-3 text-xs text-[#6b7280]">
+            {completeRead ? "Recording list and task status loaded successfully." : "Showing cached recordings. Latest list and task status are not verified."}
+          </p>}
+
           {error && !hasLoaded && (
-            <div className="flex flex-col items-center justify-center py-16 text-[#6b7280]">
+            <div role="alert" className="flex flex-col items-center justify-center py-16 text-[#6b7280]">
               <AlertCircle size={36} className="mb-3 text-red-400" />
               <p className="text-[13.5px] font-semibold text-[#1a1a2e] mb-1">Could not load recordings</p>
               <p className="text-[12.5px] text-center max-w-xs">{error}</p>
+              {authRequired && <Link href="/login" className="mt-3 text-sm font-semibold text-[#003366] underline">Sign in again</Link>}
               <button type="button" onClick={load} className="mt-4 text-[13px] text-[#003366] hover:underline font-medium">
                 Try again
               </button>
@@ -255,6 +278,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
           {error && hasLoaded && (
             <div role="alert" className="mx-6 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-900">
               Refresh failed. Showing the previously loaded recordings. {error}
+              {authRequired && <Link href="/login" className="ml-2 font-semibold underline">Sign in again</Link>}
             </div>
           )}
 

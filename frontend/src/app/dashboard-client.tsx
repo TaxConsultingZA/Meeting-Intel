@@ -1,4 +1,5 @@
 "use client";
+import { meetingDisplayTitle, meetingIdentityNotice } from "@/lib/recording-identity";
 import { meetingDisplayTime } from "@/lib/time";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -578,8 +579,9 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
                     <tr key={m.id} className={`${i % 2 === 1 ? "bg-[#f8fafc]" : ""} hover:bg-blue-50/30 transition-colors`}>
                       <td className="px-4 py-2.5 border border-[#dde1e8] font-medium">
                         <Link href={`/meetings/${m.id}`} className="hover:text-[#003366] hover:underline">
-                          {m.title ?? "Untitled Meeting"}
+                          {meetingDisplayTitle(m)}
                         </Link>
+                        {meetingIdentityNotice(m) && <span className="block text-xs text-amber-800">{meetingIdentityNotice(m)}</span>}
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px] whitespace-nowrap">
                         {<LocalDateTime value={meetingDisplayTime(m)} />}
@@ -604,7 +606,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
                           {m.organizer_upn?.toLowerCase() === upn.toLowerCase() && (
                             <button
                               type="button"
-                              onClick={() => setShareModal({ meetingId: m.id, title: m.title ?? "Untitled Meeting" })}
+                              onClick={() => setShareModal({ meetingId: m.id, title: meetingDisplayTitle(m) })}
                               className="inline-flex items-center gap-1 text-[11.5px] text-[#003366] hover:text-[#C9A52C] transition-colors"
                               title="Share transcript"
                             >
@@ -693,10 +695,11 @@ function MeetingCard({ meeting: m }: { meeting: MeetingOut }) {
     <Link href={`/meetings/${m.id}`} className="group block bg-white rounded-lg border border-[#dde1e8] shadow-sm hover:border-[#003366] hover:shadow-md transition-all overflow-hidden">
       <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-4 py-3.5">
         <p className="text-white text-[13.5px] font-semibold leading-snug line-clamp-2">
-          {m.title ?? "Untitled Meeting"}
+          {meetingDisplayTitle(m)}
         </p>
       </div>
       <div className="px-4 py-3.5">
+        {meetingIdentityNotice(m) && <p className="mb-2 text-xs text-amber-800">{meetingIdentityNotice(m)}</p>}
         <div className="flex flex-col gap-1.5 mb-3">
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             <span className="flex items-center gap-1 text-[#6b7280] text-[12.5px]">

@@ -1,4 +1,5 @@
 "use client";
+import { meetingDisplayTitle, meetingIdentityNotice } from "@/lib/recording-identity";
 import { meetingDisplayTime } from "@/lib/time";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -383,12 +384,12 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
         <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
           <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-4 py-4">
             <h2 className="text-white text-[14px] font-semibold leading-snug">
-              {meeting.title ?? "Untitled Meeting"}
+              {meetingDisplayTitle(meeting)}
             </h2>
           </div>
           <div className="px-4 py-4 flex flex-col gap-3">
             {meeting.recording_display?.filename && <div><span className="text-xs text-gray-500">Recording file</span><p className="text-sm break-all">{meeting.recording_display.filename}</p></div>}
-            {meeting.recording_display?.identity_reason && <p className="text-xs text-amber-800">{meeting.recording_display.identity_reason}</p>}
+            {(meetingIdentityNotice(meeting) || meeting.recording_display?.identity_reason) && <p className="text-xs text-amber-800">{meetingIdentityNotice(meeting) || meeting.recording_display?.identity_reason}</p>}
             <div><span className="text-xs text-gray-500">Date</span><p className="text-sm"><LocalDateTime value={meetingDisplayTime(meeting)} /></p></div>
             <MetaRow label="Platform"   value={data.platform ?? "Microsoft Teams"} />
             <MetaRow label="Organiser"  value={meeting.organizer_upn ?? "—"} />
@@ -692,7 +693,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             <DialogTitle>Approve Meeting Notes</DialogTitle>
           </DialogHeader>
           <p className="text-[13.5px] text-[#1a1a2e] leading-6">
-            Confirm you have reviewed <strong>{meeting.title ?? "Untitled meeting"}</strong>, then choose
+            Confirm you have reviewed <strong>{meetingDisplayTitle(meeting)}</strong>, then choose
             exactly who should receive the approved notes.
           </p>
           <div className="border border-[#dde1e8] rounded-md max-h-56 overflow-y-auto">
@@ -781,7 +782,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           </DialogHeader>
           <div className="rounded-md border border-[#dde1e8] bg-[#fafbfc] px-4 py-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-[#6b7280]">Meeting</p>
-            <p className="mt-1 text-sm font-medium text-[#1a1a2e]">{meeting.title ?? "Untitled meeting"}</p>
+            <p className="mt-1 text-sm font-medium text-[#1a1a2e]">{meetingDisplayTitle(meeting)}</p>
             <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-[#6b7280]">Recipients ({emailPreview?.recipients.length ?? 0})</p>
             {emailPreview?.recipients.length ? <ul className="mt-1 max-h-28 overflow-y-auto space-y-1 text-sm text-[#374151]">{emailPreview.recipients.map(email => <li key={email} className="break-all">{email}</li>)}</ul> : <p className="mt-1 text-sm text-[#6b7280]">No recipients selected. Approval will not send email.</p>}
             <span className="mt-3 block text-xs font-semibold uppercase tracking-wide text-[#6b7280]">Subject</span>

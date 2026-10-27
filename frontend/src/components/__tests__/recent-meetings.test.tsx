@@ -271,3 +271,15 @@ it("renders SAST and does not use an ambiguous extracted meeting date", async()=
  expect(await screen.findByText("22 Oct 2026, 08:50 SAST")).toBeVisible();
  expect(screen.queryByText(/14:50/)).not.toBeInTheDocument(); expect(screen.getByText("—")).toBeVisible();
 });
+
+it("uses the actual filename for a legacy misassociation without changing a normal matched meeting", async()=>{
+ const legacy={...historicalMeeting("legacy","Trust wrong title"),recorded_at:"2026-09-01T08:00:00Z",recording_display:{filename:"Test-original.mp4",recorded_at:"2026-09-01T08:41:58Z",association_status:"needs_review",calendar_matched:false}};
+ const matched={...historicalMeeting("matched","27 October meeting"),recording_display:{filename:"October-original.mp4",recorded_at:"2026-10-27T07:00:00Z",association_status:"linked",calendar_matched:true}};
+ render(<RecentMeetings token="token" isSubscribed={false} accessibleMeetings={[legacy,matched]}/>);
+ fireEvent.change(screen.getByRole("combobox",{name:"Time"}),{target:{value:"all"}});
+ expect(await screen.findByRole("heading",{name:"Test-original.mp4"})).toBeVisible();
+ expect(screen.getByText("Calendar association unverified. Existing results are preserved.")).toBeVisible();
+ expect(screen.queryByRole("heading",{name:"Trust wrong title"})).not.toBeInTheDocument();
+ expect(screen.getByRole("heading",{name:"27 October meeting"})).toBeVisible();
+ expect(legacy.title).toBe("Trust wrong title");
+});

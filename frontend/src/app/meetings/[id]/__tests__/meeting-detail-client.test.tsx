@@ -592,3 +592,20 @@ it.each([["2026-09-01T08:41:58Z","01 Sept 2026, 10:41 SAST"],[null,"—"]])("use
  expect(within(screen.getByText("Date").parentElement!).getByText(expected!)).toBeVisible();
  expect(screen.getByText("Test-original.mp4")).toBeVisible();
 });
+
+it("shows the same file identity and unverified notice on the old review without rewriting its results",()=>{
+ const meeting={...approvalMeeting,title:"Trust wrong title",summary:"Original retained summary",recording_display:{filename:"Test-original.mp4",recorded_at:"2026-09-01T08:41:58Z",association_status:"needs_review",calendar_matched:false}};
+ const before=JSON.stringify(meeting);
+ render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="token"/>);
+ expect(screen.getByRole("heading",{name:"Test-original.mp4"})).toBeVisible();
+ expect(screen.getByText("Calendar association unverified. Existing results are preserved.")).toBeVisible();
+ expect(screen.queryByRole("heading",{name:"Trust wrong title"})).not.toBeInTheDocument();
+ expect(screen.getByText("Original retained summary")).toBeVisible();
+ expect(JSON.stringify(meeting)).toBe(before);
+});
+
+it("retains a verified matched meeting title on detail",()=>{
+ render(<MeetingDetailClient meeting={{...approvalMeeting,title:"27 October meeting",recording_display:{filename:"October-original.mp4",association_status:"linked",calendar_matched:true}}} upn="owner@example.com" accessToken="token"/>);
+ expect(screen.getByRole("heading",{name:"27 October meeting"})).toBeVisible();
+ expect(screen.queryByText("Calendar association unverified. Existing results are preserved.")).not.toBeInTheDocument();
+});

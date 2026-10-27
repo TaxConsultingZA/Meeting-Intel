@@ -1,4 +1,5 @@
 "use client";
+import { meetingDisplayTitle, meetingIdentityNotice } from "@/lib/recording-identity";
 import { meetingDisplayTime, parseInstant, compareRecordingTimes } from "@/lib/time";
 
 import Link from "next/link";
@@ -183,7 +184,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     if (!query) return true;
     const searchable = row.kind === "recent"
       ? [row.event.subject, ...row.event.attendees]
-      : [row.meeting.title, row.meeting.summary, ...row.meeting.calendar_participants.map((participant) => participant.name)];
+      : [meetingDisplayTitle(row.meeting), row.meeting.summary, ...row.meeting.calendar_participants.map((participant) => participant.name)];
     return searchable.some((value) => normalized(value).includes(query));
   }).sort((a, b) => compareRecordingTimes(a.date, b.date));
 
@@ -251,8 +252,9 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
           </article>
         ); })() : (() => { const meeting = row.meeting; return (
           <article key={`historical:${meeting.id}`} className="rounded-lg border border-[#dde1e8] bg-white p-4">
-            <h3 className="font-semibold text-[#003366]">{meeting.title ?? "Untitled Meeting"}</h3>
+            <h3 className="font-semibold text-[#003366]">{meetingDisplayTitle(meeting)}</h3>
             <p className="my-2 text-sm text-[#6b7280]"><LocalDateTime value={historicalDate(meeting)} /></p>
+            {meetingIdentityNotice(meeting) && <p className="my-2 text-xs text-amber-800">{meetingIdentityNotice(meeting)}</p>}
             <p className="mb-3 text-xs text-[#6b7280]">Organised by {meeting.organizer_upn || "Unknown"}</p>
             <p className="mb-3 text-xs font-semibold text-[#6b7280]">Recording Available</p>
             {row.kind === "accessible" ? (

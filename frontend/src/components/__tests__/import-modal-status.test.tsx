@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ImportModal from "../import-modal";
-import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
+import { discoverOwnRecordings, runRecordingUpdateStage, getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   getAvailableRecordings: vi.fn(),
@@ -11,6 +11,7 @@ vi.mock("@/lib/api", () => ({
   cancelRecordingJob: vi.fn(),
   retryRecordingJob: vi.fn(),
   discoverOwnRecordings: vi.fn(),
+  runRecordingUpdateStage: vi.fn(),
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -217,4 +218,30 @@ it("orders actual instants descending with unknown dates last and separates Team
  expect(rows[1]).toHaveTextContent("new.mp4"); expect(rows[2]).toHaveTextContent("old.mp4"); expect(rows[3]).toHaveTextContent("unknown.mp4");
  expect(rows[1]).toHaveTextContent("Teams meeting verified: Verified Teams");
  expect(rows[1]).toHaveTextContent("No calendar meeting linked");
+});
+
+it("keeps the actual legacy filename and same unverified notice as the meeting views",()=>{
+ render(<ImportModal upn="offline" onClose={vi.fn()} initialRecordings={[{...cachedRecording,name:"Trust wrong title",original_filename:"Test-original.mp4",association_status:"needs_review",calendar_matched:false,calendar_title:"Trust wrong title",identity_reason:"Previous calendar association is unverified; saved results are preserved."}]}/>);
+ expect(screen.getByText("Test-original.mp4")).toBeVisible();
+ expect(screen.getByText("Calendar association unverified. Existing results are preserved.")).toBeVisible();
+ expect(screen.queryByText(/Trust wrong title/)).not.toBeInTheDocument();
+ expect(screen.getByText("No calendar meeting linked")).toBeVisible();
+});
+
+it("styles Transcribe as a deep blue primary action and Refresh only reloads saved lists",async()=>{
+ vi.mocked(getAvailableRecordings).mockResolvedValue([cachedRecording]);
+ vi.mocked(getRecordingJobs).mockResolvedValue([]);
+ render(<ImportModal upn="owner-token" onClose={vi.fn()} initialRecordings={[cachedRecording]}/>);
+ const transcribe=screen.getByRole("button",{name:"Transcribe"});
+ expect(transcribe).toHaveClass("bg-[#003366]","text-white");
+ expect(transcribe).not.toHaveClass("bg-white");
+ const refresh=screen.getByRole("button",{name:"Refresh"});
+ expect(refresh).toHaveAttribute("title","Reload recording list");
+ fireEvent.click(refresh);
+ await waitFor(()=>expect(getAvailableRecordings).toHaveBeenCalledOnce());
+ expect(getRecordingJobs).toHaveBeenCalledOnce();
+ expect(discoverOwnRecordings).not.toHaveBeenCalled();
+ expect(runRecordingUpdateStage).not.toHaveBeenCalled();
+ expect(importRecording).not.toHaveBeenCalled();
+ expect(reprocessRecording).not.toHaveBeenCalled();
 });

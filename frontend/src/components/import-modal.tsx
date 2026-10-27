@@ -5,6 +5,8 @@ import { X, FolderOpen, Loader2, CheckCircle2, Download, AlertCircle, ExternalLi
 import { toast } from "sonner";
 import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
 import LocalDateTime from "./local-date-time";
+import { UNVERIFIED_RECORDING_ASSOCIATION } from "@/lib/recording-identity";
+import { cn } from "@/lib/utils";
 import { compareRecordingTimes } from "@/lib/time";
 import StateBadge from "./state-badge";
 import { RECORDING_ACTION_CLASS, RECORDING_BADGE_CLASS } from "./recording-ui";
@@ -163,7 +165,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
         <button
           type="button"
           onClick={() => handleImport(rec)}
-          className={RECORDING_ACTION_CLASS}
+          className={cn(RECORDING_ACTION_CLASS, "border-[#003366] bg-[#003366] text-white hover:bg-[#002244]")}
         >
           <Download size={13} /> Transcribe
         </button>
@@ -291,8 +293,8 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
                         <span className="mt-0.5 block text-[11px] font-normal text-[#6b7280]">No calendar meeting linked</span>
                       )}
                       {rec.calendar_matched && rec.calendar_title && <span className="mt-0.5 block truncate text-[11px] font-normal text-[#6b7280]" title={rec.calendar_title}>Calendar event linked: {rec.calendar_title}</span>}
-                      {rec.association_status === "needs_review" && <span className="block text-xs text-amber-800">Previous association requires verification. Results are preserved.</span>}
-                      {rec.identity_reason && <span className="block text-xs text-[#6b7280]">{rec.identity_reason}</span>}
+                      {rec.association_status === "needs_review" && <span className="block text-xs text-amber-800">{UNVERIFIED_RECORDING_ASSOCIATION}</span>}
+                      {rec.identity_reason && rec.association_status !== "needs_review" && <span className="block text-xs text-[#6b7280]">{rec.identity_reason}</span>}
                       {rec.association_status === "independent" && <span className="block text-xs text-[#6b7280]">Independent recording</span>}
                       {rec.meeting_error && (
                         <span className="block text-[11px] text-red-500 truncate mt-0.5" title="Processing could not finish. Open the meeting for recovery options.">
@@ -328,7 +330,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
 
         <div className="px-6 py-4 border-t border-[#dde1e8] flex items-center justify-end bg-[#f8fafc]">
           <div className="flex items-center gap-2">
-            <button type="button" onClick={() => void load()} disabled={refreshing} className={RECORDING_ACTION_CLASS}>
+            <button type="button" title="Reload recording list" onClick={() => void load()} disabled={refreshing} className={RECORDING_ACTION_CLASS}>
               {refreshing && <Loader2 size={13} className="animate-spin" />}{refreshing ? "Refreshing…" : "Refresh"}
             </button>
             <button type="button" onClick={onClose} className={RECORDING_ACTION_CLASS}>

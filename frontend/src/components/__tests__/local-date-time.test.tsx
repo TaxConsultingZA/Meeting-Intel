@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import LocalDateTime from "../local-date-time";
-import { formatDateTime, resolveTimeZone } from "@/lib/time";
+import { formatDateTime } from "@/lib/time";
 
 afterEach(cleanup);
 
@@ -22,4 +22,14 @@ it("formats legacy space-separated UTC timestamps instead of showing raw text",(
 it("describes a missing recording date without inventing one",()=>{
   render(<LocalDateTime value={null} unavailable="Recording date unavailable"/>);
   expect(screen.getByText("Recording date unavailable")).toBeVisible();
+});
+
+it.each([
+  ["2026-09-01T08:41:58Z", "01 Sept 2026, 10:41", "01 Sept 2026, 16:41"],
+  ["2026-10-22T06:50:32Z", "22 Oct 2026, 08:50", "22 Oct 2026, 14:50"],
+])("renders Graph instant %s in South Africa rather than the Teams UTC+8 wall clock", (instant, southAfrica, china) => {
+  expect(formatDateTime(instant, "Asia/Shanghai")).toBe(china);
+  render(<LocalDateTime value={instant} />);
+  expect(screen.getByText(southAfrica)).toBeVisible();
+  expect(screen.queryByText(china)).not.toBeInTheDocument();
 });

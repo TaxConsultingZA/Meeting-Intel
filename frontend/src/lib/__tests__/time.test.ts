@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDateTime, formatEventTime, parseInstant, resolveTimeZone } from "../time";
+import { meetingDisplayTime, compareRecordingTimes, meetingTime, formatDateTime, formatEventTime, parseInstant, resolveTimeZone } from "../time";
 
 describe("user timezone rendering", () => {
   it.each([
@@ -37,4 +37,17 @@ describe("user timezone rendering", () => {
     expect(formatDateTime("Date not recorded", "Asia/Shanghai")).toBe("Date not recorded");
     expect(parseInstant("not a date")).toBeNull();
   });
+});
+
+it("rejects ambiguous extracted wall clocks but accepts trusted UTC and explicit offsets", () => {
+ expect(meetingTime(null,"2026-10-22 14:50:32")).toBeNull();
+ expect(meetingTime(null,"Date not recorded")).toBeNull();
+ expect(meetingTime(null,"2026-10-22T14:50:32+08:00")).toBe("2026-10-22T14:50:32+08:00");
+ expect(meetingTime("2026-10-22T06:50:32",null)).toBe("2026-10-22T06:50:32");
+});
+
+it("sorts instants consistently and keeps absent or invalid times last",()=>{
+ const times=[null,"bad","2026-10-22T14:50:32+08:00","2026-09-01 08:41:58+00:00"];
+ expect([...times].sort(compareRecordingTimes)).toEqual([times[2],times[3],null,"bad"]);
+ expect(meetingDisplayTime({recorded_at:"2026-09-01T08:00:00Z",recording_display:{recorded_at:null}})).toBeNull();
 });

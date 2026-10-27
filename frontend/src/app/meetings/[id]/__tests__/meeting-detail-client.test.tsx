@@ -581,3 +581,14 @@ it("ignores a meeting refresh started before approval", async () => {
   expect(sidebar.getByText("Approved")).toBeVisible();
   expect(screen.queryByRole("button", { name: /Approve Meeting Notes/ })).not.toBeInTheDocument();
 });
+
+it.each([["2026-10-22T14:50:32+08:00","22 Oct 2026, 08:50 SAST"],[null,"—"]])("renders detail time %s",(recorded_at,expected)=>{
+ render(<MeetingDetailClient meeting={{...approvalMeeting,recorded_at,extracted_json:{...approvalMeeting.extracted_json,meeting_time:"2026-10-22 14:50:32"}}} upn="owner@example.com" accessToken="token"/>);
+ expect(within(screen.getByText("Date").parentElement!).getByText(expected!)).toBeVisible();
+});
+
+it.each([["2026-09-01T08:41:58Z","01 Sept 2026, 10:41 SAST"],[null,"—"]])("uses file time %s instead of a historical calendar time",(recorded_at,expected)=>{
+ render(<MeetingDetailClient meeting={{...approvalMeeting,recorded_at:"2026-09-01T08:00:00Z",recording_display:{recorded_at,filename:"Test-original.mp4",identity_reason:"Previous calendar association is unverified."}}} upn="owner@example.com" accessToken="token"/>);
+ expect(within(screen.getByText("Date").parentElement!).getByText(expected!)).toBeVisible();
+ expect(screen.getByText("Test-original.mp4")).toBeVisible();
+});

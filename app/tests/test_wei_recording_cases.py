@@ -55,3 +55,11 @@ def test_cancelled_or_ambiguous_occurrences_remain_unmatched(filename, instant, 
     duplicate = event(title, start, end, "second")
     for events in ([candidate, duplicate], [duplicate, candidate]):
         assert strong_match(filename, parsed, events, OWNER) is None
+
+@pytest.mark.parametrize("metadata",[
+ {"lastModifiedDateTime":"2026-10-22T06:52:36Z"},
+ {"createdDateTime":"2026-10-22T14:50:32"},
+ {"first_seen_at":"2026-10-26T08:19:19Z"},
+])
+def test_missing_real_creation_instant_never_uses_modified_discovery_or_filename_time(metadata):
+ assert recording_datetime(CASES[1][0],metadata) is None

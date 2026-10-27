@@ -507,6 +507,29 @@ async def search_meetings(
     return (await db.execute(query)).mappings().all()
 
 
+async def _with_recording_display(db, rows, outputs):
+    """Batch-enrich already authorized results, without changing saved reviews."""
+    from ..services.recording_identity import display_identity
+    from ..utils.timezones import utc_iso
+    item_ids = [m.drive_item_id for m in rows if m.drive_item_id]
+    if not item_ids:
+        return outputs
+    ledgers = {r.drive_item_id: r for r in await db.scalars(select(ProcessedItem).where(
+        ProcessedItem.drive_item_id.in_(item_ids)))}
+    for m, output in zip(rows, outputs):
+        ledger = ledgers.get(m.drive_item_id)
+        if ledger is None:
+            continue
+        identity = ledger.identity_json or {}
+        output.recording_display = {
+            "filename": ledger.filename,
+            "recorded_at": utc_iso(identity.get("recorded_at")),
+            "association_status": identity.get("status", "unmatched"),
+            **display_identity(ledger),
+        }
+    return outputs
+
+
 @router.get("/reviews/all", response_model=list[MeetingOut])
 async def all_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
     """List dashboard summaries; full content remains available from /reviews/{id}."""
@@ -520,6 +543,7 @@ async def all_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(cu
         .options(
             load_only(
                 Meeting.id,
+                Meeting.drive_item_id,
                 Meeting.organizer_upn,
                 Meeting.title,
                 Meeting.recorded_at,
@@ -538,7 +562,7 @@ async def all_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(cu
             ),
         )
     )).unique().all()
-    return [_to_list_out(m, upn) for m in rows]
+    return await _with_recording_display(db, rows, [_to_list_out(m, upn) for m in rows])
 
 
 @router.get("/reviews/pending", response_model=list[MeetingOut])
@@ -557,7 +581,7 @@ async def pending(db: AsyncSession = Depends(get_db), upn: str = Depends(current
         )
         .options(selectinload(Meeting.participants), selectinload(Meeting.action_items))
     )).unique().all()
-    return [_to_out(m, upn) for m in rows]
+    return await _with_recording_display(db, rows, [_to_out(m, upn) for m in rows])
 
 
 @router.get("/reviews/historical", response_model=list[MeetingOut])
@@ -614,7 +638,7 @@ async def get_meeting(meeting_id: str, db: AsyncSession = Depends(get_db),
                       upn: str = Depends(current_user)):
     is_admin = await _is_admin(db, upn)
     m = await _authorize(db, meeting_id, upn, allow_admin=is_admin)
-    return _to_out(m, upn, is_admin=is_admin)
+    return (await _with_recording_display(db, [m], [_to_out(m, upn, is_admin=is_admin)]))[0]
 
 
 def _email_fingerprint(meeting_id, recipients: list[str], subject: str, html: str) -> str:

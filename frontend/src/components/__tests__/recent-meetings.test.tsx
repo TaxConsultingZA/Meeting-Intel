@@ -261,3 +261,13 @@ it("publishes calendar rows while processing requests remain pending", async () 
   expect(await screen.findByRole("link", { name: "View" })).toBeVisible();
   expect(screen.queryByRole("status", { name: "Recent meetings loading" })).not.toBeInTheDocument();
 });
+
+it("renders SAST and does not use an ambiguous extracted meeting date", async()=>{
+ render(<RecentMeetings token="token" isSubscribed={false} accessibleMeetings={[
+ {...historicalMeeting("offset","Offset"),recorded_at:"2026-10-22T14:50:32+08:00"},
+ {...historicalMeeting("missing","Missing"),recorded_at:null,extracted_json:{meeting_time:"2026-10-22 14:50:32"}},
+ ]}/>);
+ fireEvent.change(screen.getByRole("combobox", {name:"Time"}), {target:{value:"all"}});
+ expect(await screen.findByText("22 Oct 2026, 08:50 SAST")).toBeVisible();
+ expect(screen.queryByText(/14:50/)).not.toBeInTheDocument(); expect(screen.getByText("—")).toBeVisible();
+});

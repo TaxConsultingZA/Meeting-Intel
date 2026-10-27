@@ -95,3 +95,68 @@ async def test_owner_discovery_is_idempotent_and_does_not_process_files(ctx,monk
     from sqlalchemy import select
     assert list(await ctx.db.scalars(select(RecordingJob)))==[]
     recordings.graph.list_recordings_folder.assert_awaited_with(f"drive:{ctx.owner.upn}",strict=True)
+
+def test_teams_evidence_does_not_fabricate_calendar_event():
+    row = ProcessedItem(drive_item_id="item", drive_id="owned", source="test", filename="actual.mp4")
+    row.identity_json = {"status":"unmatched", "recorded_at":"2026-10-22T06:50:32Z", "teams_meeting":{
+        "verified":True,"title":"Teams title","meeting_id":"thread-id", "recording_reference":"recording-message-id",
+        "drive_id":"owned","drive_item_id":"item"}}
+    actual = identity.display_identity(row)
+    assert actual["teams_meeting_verified"] is True
+    assert actual["calendar_matched"] is False
+    assert "Outlook event ID" in actual["identity_reason"]
+    row.identity_json["teams_meeting"]["drive_item_id"] = "other-file"
+    assert identity.display_identity(row)["teams_meeting_verified"] is False
+
+
+def test_title_or_status_without_event_id_is_not_a_calendar_link():
+    row = ProcessedItem(drive_item_id="item",drive_id="owned",source="test")
+    row.identity_json={"status":"linked","event":{"subject":"Trust"}}
+    assert identity.display_identity(row)["calendar_matched"] is False
+    row.identity_json={}
+    assert identity.display_identity(row,{"t5_calendar_event":True})["calendar_matched"] is False
+
+
+async def test_list_orders_real_instants_missing_last_and_preserves_owner_scope(ctx):
+    row=ledger(ctx)
+    row.filename="older.mp4"
+    row.identity_json={"recorded_at":"2026-09-01T08:41:58Z"}
+    for item_id,drive,name,instant in [
+        ("latest",row.drive_id,"latest.mp4","2026-10-22T14:50:32+08:00"),
+        ("unknown",row.drive_id,"unknown.mp4",None),
+        ("foreign","unrelated-drive","private.mp4","2026-12-01T08:00:00Z")]:
+        ctx.session.add(ProcessedItem(drive_item_id=item_id,drive_id=drive,filename=name,source="test",identity_json={"recorded_at":instant}))
+    ctx.session.commit()
+    actual=await recordings.available_recordings(ctx.db,ctx.owner.upn)
+    assert [r["drive_item_id"] for r in actual]==["latest","item","unknown"]
+    assert actual[0]["created_at"]=="2026-10-22T06:50:32Z"
+    assert actual[-1]["created_at"] is None
+
+async def test_authorized_review_uses_file_display_time_and_preserves_old_results(ctx):
+    from app.api.reviews import _with_recording_display
+    from app.schemas import MeetingOut
+    from datetime import datetime, timezone
+    row=ledger(ctx)
+    row.filename="Test-20260901_164158.mp4"
+    row.identity_json={"status":"needs_review","recorded_at":"2026-09-01T08:41:58Z"}
+    meeting=Meeting(drive_item_id="item",title="Trust",recorded_at=datetime(2026,9,1,8,tzinfo=timezone.utc),state=ProcessingState.awaiting_review,transcript="retained",summary="retained")
+    ctx.session.add(meeting);ctx.session.commit()
+    output=MeetingOut(id=str(meeting.id),title=meeting.title,state=meeting.state,summary=meeting.summary,recorded_at=meeting.recorded_at,action_items=[])
+    result=(await _with_recording_display(ctx.db,[meeting],[output]))[0]
+    assert result.recording_display["recorded_at"]=="2026-09-01T08:41:58Z"
+    assert result.recording_display["calendar_matched"] is False
+    assert meeting.title=="Trust" and meeting.transcript=="retained" and meeting.summary=="retained"
+    assert meeting.recorded_at.hour==8 and meeting.recorded_at.minute==0
+
+async def test_teams_verification_reaches_owner_list_without_calendar_link_or_history_writes(ctx):
+ row=ledger(ctx)
+ row.filename="actual.mp4"
+ row.identity_json={"status":"unmatched","recorded_at":"2026-10-22T06:50:32Z","teams_meeting":{
+  "verified":True,"title":"Teams actual","meeting_id":"thread-id","recording_reference":"message-id",
+  "drive_id":row.drive_id,"drive_item_id":row.drive_item_id}}
+ ctx.session.commit()
+ before=deepcopy(row.identity_json)
+ actual=(await recordings.available_recordings(ctx.db,ctx.owner.upn))[0]
+ assert actual["teams_meeting_verified"] and actual["teams_meeting_title"]=="Teams actual"
+ assert actual["calendar_matched"] is False and actual["original_filename"]=="actual.mp4"
+ assert row.identity_json==before

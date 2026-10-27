@@ -20,7 +20,7 @@ from ..services.reprocessing import (
     is_meeting_organizer,
 )
 from .deps import registered_user, require_subscribed
-from ..services.recording_identity import calendar_choices, choose_association
+from ..services.recording_identity import calendar_choices, choose_association, display_identity
 from ..services.ledger import claim_item
 from ..services.sync_state import record_sync_result
 from ..services import recording_update
@@ -175,17 +175,9 @@ async def available_recordings(
         iid = ledger.drive_item_id
         m = meetings_by_item.get(iid)
         metadata = (m.extracted_json or {}) if m else {}
-        calendar_matched = bool(metadata.get("outlook_event_id") or metadata.get("t5_calendar_event"))
         identity = ledger.identity_json or {}
-        if identity:
-            calendar_matched = identity.get("status") == "linked"
-        name = (m.title or "").strip() if m else ""
-        # A legacy placeholder is not a verified meeting title. Prefer the
-        # discovered filename for display without rewriting meeting/job data.
-        if not name or (name.casefold() == "unknown" and not calendar_matched):
-            name = (ledger.filename or "").strip() or name or "Unknown"
-        if identity:
-            name = ((identity.get("event") or {}).get("subject") if calendar_matched else ledger.filename) or ledger.filename or name
+        display = display_identity(ledger, metadata, m.recorded_at if m else None)
+        calendar_matched = display["calendar_matched"]
         # File identity is primary even when a verified calendar subject differs.
         name = (ledger.filename or "").strip() or f"Recording metadata unavailable ({iid})"
         if name.casefold() == "unknown":
@@ -196,6 +188,9 @@ async def available_recordings(
             "name": name,
             "original_filename": ledger.filename,
             "calendar_matched": calendar_matched,
+            "teams_meeting_verified": display["teams_meeting_verified"],
+            "teams_meeting_title": display["teams_meeting_title"],
+            "identity_reason": display["identity_reason"],
             "association_status": identity.get("status", "linked" if calendar_matched else "unmatched"),
             "calendar_title": (identity.get("event") or {}).get("subject") if calendar_matched else None,
             "size": identity.get("size"),
@@ -234,7 +229,8 @@ async def available_recordings(
                 # Metadata is optional: retain saved rows and recovery controls.
                 pass
 
-        tasks = [asyncio.create_task(resolve(row)) for row in result if not row["original_filename"]]
+        tasks = [asyncio.create_task(resolve(row)) for row in result
+                 if not row["original_filename"] or not row["created_at"] or row["size"] is None]
         if tasks:
             try:
                 await asyncio.wait(tasks, timeout=8)
@@ -243,6 +239,12 @@ async def available_recordings(
                     if not task.done():
                         task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
+    # Sort the actual recording instant, never discovery time or filename clocks.
+    from ..utils.timezones import parse_graph_datetime
+    result.sort(key=lambda row: (
+        -(parse_graph_datetime(row["created_at"]).timestamp()) if row["created_at"] and parse_graph_datetime(row["created_at"]) else float("inf"),
+        row["drive_id"], row["drive_item_id"],
+    ))
     return result
 
 

@@ -51,3 +51,27 @@ export function formatEventTime(start: string | null, end: string | null, zone: 
   const endLabel = e ? `${dayKey(e, zone) !== dayKey(s, zone) ? shortDate(e) + " " : ""}${time(e)}` : "";
   return { dateLabel, timeRange: `${time(s)}${e ? ` – ${endLabel}` : ""}`, duration: e ? `${Math.round((e.getTime() - s.getTime()) / 60000)} min` : "" };
 }
+
+// recorded_at is the API's UTC database instant (including legacy naive UTC).
+// Extracted text has no such contract: only use it with an explicit offset.
+export function meetingTime(recordedAt?: string | null, extractedTime?: string | null): string | null {
+  if (parseInstant(recordedAt)) return recordedAt!;
+  return extractedTime && /(?:Z|[+-]\d{2}:?\d{2})$/i.test(extractedTime.trim()) && parseInstant(extractedTime) ? extractedTime : null;
+}
+
+export function compareRecordingTimes(a?: string | null, b?: string | null): number {
+  const left = parseInstant(a)?.getTime() ?? -Infinity;
+  const right = parseInstant(b)?.getTime() ?? -Infinity;
+  return left === right ? 0 : left > right ? -1 : 1;
+}
+
+export function meetingDisplayTime(meeting: {
+  recorded_at?: string | null;
+  extracted_json?: { meeting_time?: string | null } | null;
+  recording_display?: { recorded_at?: string | null } | null;
+}): string | null {
+  // An explicit missing file time must not fall back to an old calendar time.
+  return meeting.recording_display
+    ? meeting.recording_display.recorded_at ?? null
+    : meetingTime(meeting.recorded_at, meeting.extracted_json?.meeting_time);
+}

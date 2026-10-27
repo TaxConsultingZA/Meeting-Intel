@@ -8,6 +8,41 @@ from app.graph import client as graph
 from app.services.meeting_matching import recording_datetime, event_people
 
 
+def display_identity(ledger, metadata=None, recorded_at=None):
+    """Keep Teams evidence separate from a stable Outlook event association.
+
+    Evidence must be bound to this exact file, not just a similar title/time.
+    This read model never edits results, participants or associations.
+    """
+    identity = ledger.identity_json or {}
+    event = identity.get("event") or {}
+    metadata = metadata or {}
+    linked = bool(event.get("id")) and identity.get("status") == "linked"
+    if not identity:
+        legacy = metadata.get("t5_calendar_event") or {}
+        linked = bool(metadata.get("outlook_event_id") or (legacy.get("id") if isinstance(legacy, dict) else None))
+    teams = identity.get("teams_meeting") or {}
+    verified = bool(
+        teams.get("verified") is True and teams.get("meeting_id")
+        and teams.get("recording_reference") and teams.get("title")
+        and teams.get("drive_id") == ledger.drive_id
+        and teams.get("drive_item_id") == ledger.drive_item_id
+    )
+    reason = None
+    if not linked:
+        if identity.get("status") == "needs_review":
+            reason = "Previous calendar association is unverified; saved results are preserved."
+        elif verified:
+            reason = "Teams meeting verified; no verified Outlook event ID."
+        elif not identity.get("recorded_at") and not recorded_at:
+            reason = "Recording time unavailable; meeting identity cannot be confirmed."
+        else:
+            reason = "No unique calendar event with matching title, time and owner evidence."
+    return {"calendar_matched": linked, "teams_meeting_verified": verified,
+            "teams_meeting_title": teams.get("title") if verified else None,
+            "identity_reason": reason}
+
+
 async def owned_recording(db, user, drive_id, item_id, *, lock=False):
     # Verify against Microsoft, not a client-supplied owner or historical title.
     try:

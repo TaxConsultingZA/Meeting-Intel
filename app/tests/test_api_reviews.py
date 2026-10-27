@@ -93,7 +93,7 @@ class TestAllMeetingsEndpoint:
         assert "meetings.transcript" not in sql
         assert "meetings.summary" not in sql
         assert "meetings.extracted_json" not in sql
-        assert "meetings.drive_item_id" not in sql
+        assert "meetings.drive_item_id" in sql  # Needed for the batched recording display lookup.
         assert "meetings.email_delivery_error" not in sql
         assert "meeting_participants.access_type" in sql
         assert "not in" in sql

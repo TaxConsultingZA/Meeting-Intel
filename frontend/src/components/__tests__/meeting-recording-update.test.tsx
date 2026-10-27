@@ -19,7 +19,7 @@ it("runs calendar then incremental discovery then matching and refreshes once",a
   await waitFor(()=>expect(refresh).toHaveBeenCalledOnce());
   expect(order).toEqual(["calendar","discovery","matching","refresh"]);
   expect(screen.getByText(/1 matched · 5 unmatched/)).toBeVisible();
-  expect(screen.getAllByText("01 Sept 2026, 10:00").length).toBe(3);
+  expect(screen.getAllByText("01 Sept 2026, 10:00 SAST").length).toBe(3);
 });
 it("shows each partial failure and retains last success while continuing safe steps",async()=>{
   vi.mocked(getRecordingUpdateStatus).mockResolvedValue([result("calendar")]);
@@ -93,4 +93,15 @@ it("retries loading saved results without running Graph update stages",async()=>
   expect(await screen.findByText("Calendar sync: Complete")).toBeVisible();
   expect(getRecordingUpdateStatus).toHaveBeenCalledTimes(2);
   expect(runRecordingUpdateStage).not.toHaveBeenCalled();
+});
+
+it("formats saved notification time without running discovery or matching",async()=>{
+ vi.mocked(getRecordingUpdateStatus).mockResolvedValue([
+ {...result("calendar"),last_succeeded_at:"2026-10-22T14:50:32+08:00"},
+ {...result("discovery"),last_succeeded_at:null},
+ ]);
+ render(<Update token="token" onUpdated={vi.fn()}/>);
+ fireEvent.click(await screen.findByRole("button",{name:"Update results"}));
+ expect(screen.getByText("22 Oct 2026, 08:50 SAST")).toBeVisible(); expect(screen.getByText("No successful update yet")).toBeVisible();
+ expect(runRecordingUpdateStage).not.toHaveBeenCalled();
 });

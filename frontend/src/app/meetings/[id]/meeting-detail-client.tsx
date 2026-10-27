@@ -1,4 +1,5 @@
 "use client";
+import { meetingDisplayTime } from "@/lib/time";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -386,7 +387,9 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </h2>
           </div>
           <div className="px-4 py-4 flex flex-col gap-3">
-            <div><span className="text-xs text-gray-500">Date</span><p className="text-sm"><LocalDateTime value={meeting.recorded_at ?? data.meeting_time} /></p></div>
+            {meeting.recording_display?.filename && <div><span className="text-xs text-gray-500">Recording file</span><p className="text-sm break-all">{meeting.recording_display.filename}</p></div>}
+            {meeting.recording_display?.identity_reason && <p className="text-xs text-amber-800">{meeting.recording_display.identity_reason}</p>}
+            <div><span className="text-xs text-gray-500">Date</span><p className="text-sm"><LocalDateTime value={meetingDisplayTime(meeting)} /></p></div>
             <MetaRow label="Platform"   value={data.platform ?? "Microsoft Teams"} />
             <MetaRow label="Organiser"  value={meeting.organizer_upn ?? "—"} />
             <MetaRow

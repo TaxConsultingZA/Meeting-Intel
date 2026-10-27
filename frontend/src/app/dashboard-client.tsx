@@ -1,4 +1,5 @@
 "use client";
+import { meetingDisplayTime } from "@/lib/time";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -581,7 +582,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
                         </Link>
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px] whitespace-nowrap">
-                        {<LocalDateTime value={m.recorded_at ?? m.extracted_json?.meeting_time} />}
+                        {<LocalDateTime value={meetingDisplayTime(m)} />}
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px]">
                         {formatUpn(m.organizer_upn) || "—"}
@@ -699,7 +700,7 @@ function MeetingCard({ meeting: m }: { meeting: MeetingOut }) {
         <div className="flex flex-col gap-1.5 mb-3">
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             <span className="flex items-center gap-1 text-[#6b7280] text-[12.5px]">
-              <Calendar size={12} className="shrink-0" /> {<LocalDateTime value={m.recorded_at ?? m.extracted_json?.meeting_time} />}
+              <Calendar size={12} className="shrink-0" /> {<LocalDateTime value={meetingDisplayTime(m)} />}
             </span>
             <span className="flex items-center gap-1 text-[#6b7280] text-[12.5px]">
               <Users size={12} className="shrink-0" /> {m.calendar_participants.length} participants
@@ -741,7 +742,7 @@ function CalendarCard({ event: ev, inProgress }: { event: CalendarEvent; inProgr
         <div className="flex flex-col gap-1.5 mb-3">
           <span className="flex items-center gap-1.5 text-[#6b7280] text-[12.5px]">
             <Calendar size={12} className="shrink-0" />
-            {dateLabel} · {timeRange}
+            {dateLabel} · {timeRange}{timeRange !== "—" ? " SAST" : ""}
             {duration && <span className="text-[#9ca3af] ml-1">({duration})</span>}
           </span>
           <span className="flex items-center gap-1.5 text-[#6b7280] text-[12.5px]">

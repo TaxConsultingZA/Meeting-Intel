@@ -29,7 +29,7 @@ it("keeps date and size in separate columns and exposes an easy fixed close cont
   render(<ImportModal upn="offline" onClose={vi.fn()} initialRecordings={[{
     ...cachedRecording,created_at:"2026-09-01 08:41:58+00:00",size:544023
   }]}/>);
-  const date=screen.getByText("01 Sept 2026, 10:41").closest("td");
+  const date=screen.getByText("01 Sept 2026, 10:41 SAST").closest("td");
   const size=screen.getByText("531 KB").closest("td");
   expect(date).not.toBe(size);
   expect(screen.queryByText(/The transcript and AI notes will appear/)).not.toBeInTheDocument();
@@ -196,4 +196,25 @@ it("keeps cached recordings visible when an explicit refresh fails", async () =>
   expect(await screen.findByRole("alert")).toHaveTextContent("Showing the previously loaded recordings");
   expect(screen.getByText("cached.mp4")).toBeInTheDocument();
   expect(getAvailableRecordings).toHaveBeenCalledOnce();
+});
+
+it("uses SAST and keeps absent recording dates unavailable",()=>{
+ render(<ImportModal upn="offline" onClose={vi.fn()} initialRecordings={[
+ {...cachedRecording,created_at:"2026-10-22T14:50:32+08:00"},
+ {...cachedRecording,drive_item_id:"unknown",name:"unknown.mp4",created_at:null},
+ ]}/>);
+ expect(screen.getByText("Recordings · SAST")).toBeVisible(); expect(screen.getByText("22 Oct 2026, 08:50 SAST")).toBeVisible();
+ expect(screen.getByText("Recording date unavailable")).toBeVisible(); expect(screen.queryByText(/Africa\/Johannesburg/)).not.toBeInTheDocument();
+});
+
+it("orders actual instants descending with unknown dates last and separates Teams verification",()=>{
+ render(<ImportModal upn="offline" onClose={vi.fn()} initialRecordings={[
+ {...cachedRecording,drive_item_id:"unknown",name:"unknown.mp4",created_at:null},
+ {...cachedRecording,drive_item_id:"old",name:"old.mp4",created_at:"2026-09-01T08:41:58Z"},
+ {...cachedRecording,drive_item_id:"new",name:"new.mp4",created_at:"2026-10-22T14:50:32+08:00",teams_meeting_verified:true,teams_meeting_title:"Verified Teams",calendar_matched:false,identity_reason:"No verified Outlook event ID."},
+ ]}/>);
+ const rows=screen.getAllByRole("row");
+ expect(rows[1]).toHaveTextContent("new.mp4"); expect(rows[2]).toHaveTextContent("old.mp4"); expect(rows[3]).toHaveTextContent("unknown.mp4");
+ expect(rows[1]).toHaveTextContent("Teams meeting verified: Verified Teams");
+ expect(rows[1]).toHaveTextContent("No calendar meeting linked");
 });

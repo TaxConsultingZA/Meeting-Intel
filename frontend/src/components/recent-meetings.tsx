@@ -1,4 +1,5 @@
 "use client";
+import { meetingDisplayTime, parseInstant, compareRecordingTimes } from "@/lib/time";
 
 import Link from "next/link";
 import LoadingSpinner from "./loading-spinner";
@@ -56,7 +57,7 @@ function normalized(value: string | null | undefined) {
 }
 
 function historicalDate(meeting: MeetingOut) {
-  return meeting.recorded_at ?? meeting.extracted_json?.meeting_time ?? null;
+  return meetingDisplayTime(meeting);
 }
 
 export default function RecentMeetings({ token, cacheIdentity = "current-user", isSubscribed, accessibleMeetings = [], historical = [], processingRequests, onRefreshProcessingRequests, onRequestHistoricalAccess, onRequestMeetingEditAccess, refreshKey = 0 }: {
@@ -169,7 +170,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     ...recentOnly.map((event) => ({ kind: "recent" as const, id: event.event_id, date: event.start, organizer: event.organizer_email, hasRecording: event.action !== "no_recording", event })),
     ...historicalOnly.map((meeting) => ({ kind: "historical" as const, id: meeting.id, date: historicalDate(meeting), organizer: meeting.organizer_upn, hasRecording: true, meeting })),
   ].filter((row) => {
-    const timestamp = row.date ? Date.parse(row.date) : NaN;
+    const timestamp = parseInstant(row.date)?.getTime() ?? NaN;
     const cutoffDays = timeFilter === "7" ? 7 : timeFilter === "30" ? 30 : null;
     // Preserve the existing wall-clock cutoff whenever the list renders.
     // eslint-disable-next-line react-hooks/purity
@@ -184,7 +185,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
       ? [row.event.subject, ...row.event.attendees]
       : [row.meeting.title, row.meeting.summary, ...row.meeting.calendar_participants.map((participant) => participant.name)];
     return searchable.some((value) => normalized(value).includes(query));
-  }).sort((a, b) => (b.date ? Date.parse(b.date) : 0) - (a.date ? Date.parse(a.date) : 0));
+  }).sort((a, b) => compareRecordingTimes(a.date, b.date));
 
   const buttonClass = "rounded-md bg-[#003366] px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50";
   return (

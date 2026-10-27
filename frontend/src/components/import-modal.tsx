@@ -5,6 +5,7 @@ import { X, FolderOpen, Loader2, CheckCircle2, Download, AlertCircle, ExternalLi
 import { toast } from "sonner";
 import { getAvailableRecordings, getRecordingJobs, importRecording, reprocessRecording } from "@/lib/api";
 import LocalDateTime from "./local-date-time";
+import { compareRecordingTimes } from "@/lib/time";
 import StateBadge from "./state-badge";
 import { RECORDING_ACTION_CLASS, RECORDING_BADGE_CLASS } from "./recording-ui";
 import { JobControls, recordingStatusMessage } from "./recording-jobs";
@@ -208,7 +209,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
           <div>
             <h2 id="import-recording-title" className="text-white font-semibold text-[15px]">Process a Past Recording</h2>
             <p className="text-white/60 text-[13px] mt-0.5">
-              Recordings · Africa/Johannesburg (UTC+02:00)
+              Recordings · SAST
             </p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close recording dialog" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-white hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-white">
@@ -279,17 +280,19 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
                 </tr>
               </thead>
               <tbody>
-                {recordings.map((rec, i) => (
+                {[...recordings].sort((a, b) => compareRecordingTimes(a.created_at, b.created_at)).map((rec, i) => (
                   <tr key={rec.drive_item_id} className={i % 2 === 1 ? "bg-[#f8fafc]" : ""}>
                     <td className="px-4 py-3 pl-6 border-b border-[#dde1e8] font-medium text-[#1a1a2e] min-w-0">
                       <span tabIndex={0} className="block truncate text-[13px] focus:whitespace-normal focus:break-all hover:whitespace-normal hover:break-all" title={rec.original_filename || rec.name}>
                         {rec.original_filename || rec.name}
                       </span>
+                      {rec.teams_meeting_verified && <span className="mt-0.5 block text-[11px] text-[#6b7280]">Teams meeting verified: {rec.teams_meeting_title}</span>}
                       {rec.calendar_matched === false && (
                         <span className="mt-0.5 block text-[11px] font-normal text-[#6b7280]">No calendar meeting linked</span>
                       )}
-                      {rec.calendar_matched && rec.calendar_title && <span className="mt-0.5 block truncate text-[11px] font-normal text-[#6b7280]" title={rec.calendar_title}>Matched meeting: {rec.calendar_title}</span>}
+                      {rec.calendar_matched && rec.calendar_title && <span className="mt-0.5 block truncate text-[11px] font-normal text-[#6b7280]" title={rec.calendar_title}>Calendar event linked: {rec.calendar_title}</span>}
                       {rec.association_status === "needs_review" && <span className="block text-xs text-amber-800">Previous association requires verification. Results are preserved.</span>}
+                      {rec.identity_reason && <span className="block text-xs text-[#6b7280]">{rec.identity_reason}</span>}
                       {rec.association_status === "independent" && <span className="block text-xs text-[#6b7280]">Independent recording</span>}
                       {rec.meeting_error && (
                         <span className="block text-[11px] text-red-500 truncate mt-0.5" title="Processing could not finish. Open the meeting for recovery options.">

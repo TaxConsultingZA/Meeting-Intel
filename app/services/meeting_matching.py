@@ -18,12 +18,15 @@ def recording_datetime(name: str, metadata: dict | None = None) -> datetime | No
     # metadata rather than guessing that the recorder's local clock was UTC.
     metadata = metadata or {}
     file_system = metadata.get("fileSystemInfo") or {}
-    return parse_graph_datetime(
-        file_system.get("createdDateTime")
-        or file_system.get("lastModifiedDateTime")
-        or metadata.get("createdDateTime")
-        or metadata.get("lastModifiedDateTime")
-    )
+    for value in (file_system.get("createdDateTime"), metadata.get("createdDateTime")):
+        # Modified/upload/discovery times and unzoned filename clocks do not
+        # establish when a recording was made. Graph creation instants carry
+        # an explicit offset; reject incomplete metadata rather than guessing.
+        if isinstance(value, str) and re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", value, re.I):
+            instant = parse_graph_datetime(value)
+            if instant:
+                return instant
+    return None
 
 
 def clean_recording_title(name: str) -> str:

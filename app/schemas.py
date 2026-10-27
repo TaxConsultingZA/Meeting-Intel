@@ -216,6 +216,7 @@ class MeetingOut(BaseModel):
     """Full meeting representation returned by GET /reviews and GET /reviews/{id}."""
     id: str
     recorded_at: datetime | None = None
+    recording_display: dict | None = None
     title: str | None
     state: ProcessingState
     summary: str | None

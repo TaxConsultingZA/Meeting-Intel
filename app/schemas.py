@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Literal
 from uuid import UUID
 
@@ -12,6 +12,32 @@ class MeetingSearchOut(BaseModel):
     recorded_at: datetime | None
     matched_summary: bool
     matched_action_items: bool
+    matched_decisions: bool = False
+
+
+class MeetingDecisionEdit(BaseModel):
+    id: UUID | None = None
+    content: str = Field(min_length=1, max_length=2000)
+    decision_date: date
+
+    @field_validator("content")
+    @classmethod
+    def trim_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Decision content is required")
+        return value.strip()
+
+
+class MeetingDecisionsIn(BaseModel):
+    decisions: list[MeetingDecisionEdit] = Field(max_length=50)
+
+
+class MeetingDecisionOut(BaseModel):
+    model_config = {"from_attributes": True}
+    id: UUID
+    meeting_id: UUID
+    content: str
+    decision_date: date
 
 
 class AuditEventOut(BaseModel):

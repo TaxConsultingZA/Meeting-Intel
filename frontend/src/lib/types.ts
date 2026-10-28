@@ -39,7 +39,17 @@ export interface MeetingSearchResult {
   recorded_at: string | null;
   matched_summary: boolean;
   matched_action_items: boolean;
+  matched_decisions?: boolean;
 }
+
+export interface MeetingDecision {
+  id: string;
+  meeting_id: string;
+  content: string;
+  decision_date: string;
+}
+
+export type MeetingDecisionInput = Pick<MeetingDecision, "content" | "decision_date"> & { id?: string };
 
 /** Independent task execution status. */
 export interface TaskCompletion {

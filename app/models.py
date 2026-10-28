@@ -1,9 +1,9 @@
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import (
-    String, Text, DateTime, ForeignKey, Enum as SAEnum, UniqueConstraint, Boolean, Integer,
+    String, Text, Date, DateTime, ForeignKey, Enum as SAEnum, UniqueConstraint, Boolean, Integer,
     Index, text, CheckConstraint
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -302,6 +302,17 @@ class Meeting(Base):
     participants: Mapped[list["MeetingParticipant"]] = relationship(
         back_populates="meeting", cascade="all, delete-orphan"
     )
+
+
+class MeetingDecision(Base):
+    """Human-entered decisions, governed by the parent meeting's review lock."""
+    __tablename__ = "meeting_decisions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    meeting_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("meetings.id", ondelete="CASCADE"), index=True)
+    content: Mapped[str] = mapped_column(Text)
+    decision_date: Mapped[date] = mapped_column(Date)
 
 
 class MeetingParticipant(Base):

@@ -36,6 +36,7 @@ it("keeps date and size in separate columns and exposes an easy fixed close cont
   expect(date).not.toBe(size);
   expect(screen.queryByText(/The transcript and AI notes will appear/)).not.toBeInTheDocument();
   expect(screen.getByRole("button",{name:"Close recording dialog"})).toHaveClass("h-11","w-11");
+  expect(screen.queryByRole("button", {name: /^Close$/})).not.toBeInTheDocument();
 });
 
 it("shows the actual file identity without per-row association actions", () => {

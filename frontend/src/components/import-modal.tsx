@@ -357,9 +357,6 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
             <button type="button" title="Reload recording list" onClick={() => void load()} disabled={refreshing} className={RECORDING_ACTION_CLASS}>
               {refreshing && <Loader2 size={13} className="animate-spin" />}{refreshing ? "Refreshing…" : "Refresh"}
             </button>
-            <button type="button" onClick={onClose} className={RECORDING_ACTION_CLASS}>
-              Close
-            </button>
           </div>
         </div>
       </div>

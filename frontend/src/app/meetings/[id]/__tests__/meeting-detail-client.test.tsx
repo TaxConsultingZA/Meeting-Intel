@@ -4,11 +4,11 @@ import MeetingDetailClient from "../meeting-detail-client";
 import type { MeetingOut, RecordingJobOut } from "@/lib/types";
 
 import { toast } from "sonner";
-import { ApiError, approveMeeting, editActionItem, editMeetingTranscript, getMeeting, getRecordingJobs, previewMeetingEmail, saveSpeakerMappings } from "@/lib/api";
+import { ApiError, approveMeeting, editActionItem, editMeetingTranscript, getMeeting, getMeetingDecisions, getRecordingJobs, previewMeetingEmail, saveSpeakerMappings } from "@/lib/api";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
-  return { ...actual, saveSpeakerMappings: vi.fn().mockResolvedValue(undefined),
+  return { ...actual, getMeetingDecisions: vi.fn().mockResolvedValue([]), saveMeetingDecisions: vi.fn(), saveSpeakerMappings: vi.fn().mockResolvedValue(undefined),
     editActionItem: vi.fn().mockResolvedValue(undefined), editMeetingTranscript: vi.fn().mockResolvedValue(undefined),
     approveMeeting: vi.fn(), getMeeting: vi.fn(), previewMeetingEmail: vi.fn(), getRecordingJobs: vi.fn().mockResolvedValue([]) };
 });
@@ -81,6 +81,7 @@ it("requires a matching recipient preview, sends its fingerprint, and clears it 
   vi.mocked(previewMeetingEmail).mockResolvedValue({ subject: "Reviewed subject", html: "<p>Reviewed</p>",
     recipients: ["owner@example.com"], fingerprint: "reviewed-fingerprint" });
   render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="token" />);
+  await waitFor(() => expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: /Approve Meeting Notes/ }));
   expect(await screen.findByRole("button", { name: "Approve Meeting Notes" })).toBeDisabled();
   fireEvent.click(screen.getByRole("button", { name: "Review Email Preview" }));
@@ -133,7 +134,8 @@ it("displays Calendar participants when extracted attendees are empty", () => {
     accessToken="offline-test-token"
   />);
 
-  expect(screen.getByText("Sphesihle Mhlongo, Wei Jiuyang")).toBeInTheDocument();
+  expect(screen.getByText("Sphesihle Mhlongo")).toBeInTheDocument();
+  expect(screen.getByText("Wei Jiuyang")).toBeInTheDocument();
 });
 
 it("shows existing edit and final approval controls for an Admin projection", async () => {
@@ -236,7 +238,36 @@ const approvalMeeting: MeetingOut = {
   edit_access_requests: [], speaker_candidates: [], speaker_mappings: {}, speaker_sample_labels: [],
 };
 
-it("shows the stored summary near the top without substituting objective data or interpreting HTML", () => {
+it("blocks meeting approval while a manual decision draft is open", async () => {
+  render(<MeetingDetailClient meeting={approvalMeeting} upn="owner@example.com" accessToken="token" />);
+  fireEvent.click(await screen.findByRole("button", { name: "Edit decisions" }));
+  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeDisabled();
+  fireEvent.click(within(screen.getByRole("form", { name: "Edit meeting decisions" })).getByRole("button", { name: "Cancel" }));
+  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled();
+});
+
+it("blocks approval until decisions have loaded successfully, including retry after a read failure", async () => {
+  let reject!: (error: Error) => void;
+  vi.mocked(getMeetingDecisions).mockReturnValueOnce(new Promise((_, fail) => { reject = fail; }))
+    .mockResolvedValueOnce([]);
+  render(<MeetingDetailClient meeting={approvalMeeting} upn="owner@example.com" accessToken="token" />);
+  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeDisabled();
+  reject(new Error("offline"));
+  await screen.findByText("Decisions could not be loaded.");
+  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Reload decisions" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled());
+});
+
+it.each(["failed", "cancelled"] as const)("keeps saved decisions visible and read-only in the %s processing view", async state => {
+  vi.mocked(getMeetingDecisions).mockResolvedValueOnce([{ id: "d1", meeting_id: approvalMeeting.id,
+    content: "Previously recorded decision", decision_date: "2026-10-22" }]);
+  render(<MeetingDetailClient meeting={{ ...approvalMeeting, state }} upn="owner@example.com" accessToken="token" />);
+  expect(await screen.findByText("Previously recorded decision")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Edit decisions" })).not.toBeInTheDocument();
+});
+
+it("shows the stored summary near the top without substituting objective data or interpreting HTML", async () => {
   const summary = "Budget approved.\n<em>Follow up next week.</em>";
   render(<MeetingDetailClient meeting={{ ...approvalMeeting, summary, extracted_json: { objective: "Separate objective" } }} upn="owner@example.com" accessToken="token" />);
   const summaryHeading = screen.getByRole("heading", { name: "Meeting Summary" });
@@ -247,7 +278,7 @@ it("shows the stored summary near the top without substituting objective data or
   expect(section).toHaveTextContent("<em>Follow up next week.</em>");
   expect(section.querySelector("em")).toBeNull();
   expect(section).not.toHaveTextContent("Separate objective");
-  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled();
+  await waitFor(() => expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled());
 });
 
 it.each([null, "", " \n "])("shows an honest empty state for summary %s", summary => {
@@ -322,12 +353,12 @@ it("blocks transcript drafts and pending saves, retaining failed drafts for retr
   expect(editMeetingTranscript).toHaveBeenLastCalledWith(approvalMeeting.id, "Reviewed transcript", "token");
 });
 
-it("allows cancelling a transcript draft without saving it", () => {
+it("allows cancelling a transcript draft without saving it", async () => {
   render(<MeetingDetailClient meeting={{ ...approvalMeeting, transcript: "Original transcript" }} upn="owner@example.com" accessToken="token" />);
   fireEvent.click(screen.getByRole("button", { name: "Edit" }));
   fireEvent.change(screen.getByLabelText("Meeting transcript"), { target: { value: "Unsaved" } });
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled();
+  await waitFor(() => expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled());
   expect(screen.getByText("Original transcript")).toBeVisible();
   expect(editMeetingTranscript).not.toHaveBeenCalled();
 });
@@ -368,6 +399,7 @@ it.each(["action", "transcript", "speaker"])("requires a fresh preview after %s 
     fireEvent.change(screen.getByLabelText("Name for Speaker A"), { target: { value: "owner@example.com" } });
     fireEvent.change(screen.getByLabelText("Name for Speaker A"), { target: { value: "" } });
   }
+  await waitFor(() => expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: /Approve Meeting Notes/ }));
   expect(screen.getByRole("button", { name: "Approve Meeting Notes" })).toBeDisabled();
   fireEvent.click(screen.getByRole("button", { name: "Review Email Preview" }));
@@ -390,14 +422,14 @@ it.each(["approved", "sent"] as const)("keeps %s messaging consistent even when 
   expect(screen.getByLabelText("Name for Speaker A")).toBeDisabled();
 });
 
-it("keeps editing and approval available while awaiting review", () => {
+it("keeps editing and approval available while awaiting review", async () => {
   render(<MeetingDetailClient meeting={{ ...approvalMeeting,
     action_items: [{ id: "flagged", task: "Follow up", owner: null, deadline_iso: null,
       deadline_text: null, confidence: "low", source_quote: null, approved: false }] }}
     upn="owner@example.com" accessToken="token" />);
   expect(screen.getByText("Requires review")).toBeVisible();
   expect(screen.getByRole("button", { name: "Edit action item: Follow up" })).toBeEnabled();
-  expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled();
+  await waitFor(() => expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled());
   expect(screen.queryByText("Approved with review flags")).not.toBeInTheDocument();
   expect(screen.queryByText(/Editing is locked/)).not.toBeInTheDocument();
 });
@@ -405,6 +437,7 @@ it("keeps editing and approval available while awaiting review", () => {
 async function openReviewedApproval(meeting = approvalMeeting) {
   vi.mocked(previewMeetingEmail).mockResolvedValue({ subject: "Final notes", html: "<p>Exact email content</p>", recipients: meeting.email_recipients, fingerprint: "fingerprint" });
   render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="token" />);
+  await waitFor(() => expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: /Approve Meeting Notes/ }));
   await screen.findByRole("dialog", { name: "Approve Meeting Notes" });
   fireEvent.click(screen.getByRole("button", { name: "Review Email Preview" }));
@@ -489,6 +522,7 @@ it("does not encourage resending when approval and refresh both fail", async () 
 it("explains a preview failure without exposing provider details", async () => {
   vi.mocked(previewMeetingEmail).mockRejectedValue(new Error("Graph token secret"));
   render(<MeetingDetailClient meeting={approvalMeeting} upn="owner@example.com" accessToken="token" />);
+  await waitFor(() => expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: /Approve Meeting Notes/ }));
   fireEvent.click(await screen.findByRole("button", { name: "Review Email Preview" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("No approval was submitted");
@@ -540,6 +574,7 @@ it.each(["confirmed", "reconciled", "refresh-failed"])("refreshes the terminal s
   render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="token" />);
   const sidebar = within(screen.getByRole("region", { name: "Recording processing" }));
   await sidebar.findByRole("button", { name: "Reprocess" });
+  await waitFor(() => expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: /Approve Meeting Notes/ }));
   fireEvent.click(screen.getByRole("button", { name: "Review Email Preview" }));
   const preview = await screen.findByRole("dialog", { name: "Email Preview" });
@@ -573,6 +608,7 @@ it("ignores a meeting refresh started before approval", async () => {
   await sidebar.findByText("Transcribing");
   fireEvent.click(sidebar.getByRole("button", { name: "Refresh status" }));
   await waitFor(() => expect(getMeeting).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: /Approve Meeting Notes/ }));
   fireEvent.click(screen.getByRole("button", { name: "Approve Meeting Notes" }));
   await sidebar.findByText("Approved");
@@ -599,7 +635,8 @@ it("shows the same file identity and unverified notice on the old review without
  render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="token"/>);
  expect(screen.getByRole("heading",{name:"Test-original.mp4"})).toBeVisible();
  expect(screen.getByText("Calendar association unverified. Existing results are preserved.")).toBeVisible();
- expect(screen.queryByRole("heading",{name:"Trust wrong title"})).not.toBeInTheDocument();
+ expect(screen.queryByText("Trust wrong title")).not.toBeInTheDocument();
+ expect(screen.getByRole("link", {name:"Test-original.mp4"})).toHaveAttribute("href", `/meetings/${meeting.id}`);
  expect(screen.getByText("Original retained summary")).toBeVisible();
  expect(JSON.stringify(meeting)).toBe(before);
 });
@@ -608,4 +645,43 @@ it("retains a verified matched meeting title on detail",()=>{
  render(<MeetingDetailClient meeting={{...approvalMeeting,title:"27 October meeting",recording_display:{filename:"October-original.mp4",association_status:"linked",calendar_matched:true}}} upn="owner@example.com" accessToken="token"/>);
  expect(screen.getByRole("heading",{name:"27 October meeting"})).toBeVisible();
  expect(screen.queryByText("Calendar association unverified. Existing results are preserved.")).not.toBeInTheDocument();
+});
+
+
+it("collapses many attendees and shows unverified people with no speaker candidates", () => {
+  const meeting: MeetingOut = {
+    id: "people", title: "Meeting", state: "awaiting_review", summary: null,
+    transcript: "[Speaker A] Hello", action_items: [], extracted_json: {},
+    calendar_participants: Array.from({length: 9}, (_, i) => ({name: `Person ${i}`, email: `person${i}@example.test`, is_organizer: false})),
+    organizer_upn: null, email_recipients: [], approved_recipients: [], is_organizer: true,
+    can_edit: true, can_request_edit_access: false, edit_access_status: "organizer",
+    edit_access_requests: [], speaker_candidates: [], speaker_mappings: {}, speaker_sample_labels: ["Speaker A"],
+  };
+  const view = render(<MeetingDetailClient meeting={meeting} upn="owner@example.test" accessToken="token" />);
+  expect(screen.queryByText(/Person 8/)).not.toBeInTheDocument();
+  expect(screen.getByText("Person 6")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", {name: "Show all (9)"}));
+  expect(screen.getByText(/Person 8/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", {name: "Show less"}));
+  expect(screen.queryByText(/Person 8/)).not.toBeInTheDocument();
+  view.unmount();
+  render(<MeetingDetailClient meeting={{...meeting, calendar_participants: []}} upn="owner@example.test" accessToken="token" />);
+  expect(screen.getByText("Attendees not verified")).toBeVisible();
+  expect(within(screen.getByRole("combobox", {name: "Name for Speaker A"})).getAllByRole("option")).toHaveLength(1);
+  expect(screen.queryByText(/Outlook attendee/)).not.toBeInTheDocument();
+});
+
+
+it.each([7, 8])("only folds attendee lists above seven (%i)", (count) => {
+  const meeting = {
+    id: "threshold", title: "Meeting", state: "awaiting_review", summary: null,
+    transcript: null, action_items: [], extracted_json: {},
+    calendar_participants: Array.from({length: count}, (_, i) => ({name: `Attendee ${i}`, email: `p${i}@example.test`, is_organizer: false})),
+    organizer_upn: null, email_recipients: [], approved_recipients: [], is_organizer: true,
+    can_edit: true, can_request_edit_access: false, edit_access_status: "organizer",
+    edit_access_requests: [], speaker_candidates: [], speaker_mappings: {}, speaker_sample_labels: [],
+  } as MeetingOut;
+  render(<MeetingDetailClient meeting={meeting} upn="owner@example.test" accessToken="token" />);
+  expect(within(screen.getByRole("list", {name: "Attendees"})).getAllByRole("listitem")).toHaveLength(7);
+  expect(Boolean(screen.queryByRole("button", {name: `Show all (${count})`}))).toBe(count > 7);
 });

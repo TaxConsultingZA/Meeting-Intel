@@ -21,6 +21,15 @@ export function searchSavedMeetings(token: string, keyword: string, signal?: Abo
   return apiFetch(`/reviews/search?${params}`, token, { signal, cache: "no-store" });
 }
 
+export function getMeetingDecisions(meetingId: string, token: string, signal?: AbortSignal): Promise<import("./types").MeetingDecision[]> {
+  return apiFetch(`/reviews/${encodeURIComponent(meetingId)}/decisions`, token, { signal, cache: "no-store" });
+}
+
+export function saveMeetingDecisions(meetingId: string, decisions: import("./types").MeetingDecisionInput[], token: string): Promise<import("./types").MeetingDecision[]> {
+  return apiFetch(`/reviews/${encodeURIComponent(meetingId)}/decisions`, token,
+    { method: "PUT", body: JSON.stringify({ decisions }), cache: "no-store" });
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,

@@ -17,6 +17,7 @@ import RecordingJobs, { processingFailureMessage, processingFailureTitle } from 
 import LocalDateTime from "@/components/local-date-time";
 import PipelineView from "./pipeline-view";
 import ActionItemReview from "./action-item-review";
+import MeetingDecisions from "./meeting-decisions";
 import {
   ApiError,
   getMeeting,
@@ -119,6 +120,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const pollingInFlight = useRef(false);
   const meetingRefreshVersion = useRef(0);
 
+  const [showAllAttendees, setShowAllAttendees] = useState(false);
   const data = meeting.extracted_json ?? {};
   const isTranscriptOnly = data.extraction_mode === "transcript_only";
   const isReviewable = meeting.state === "awaiting_review";
@@ -144,7 +146,12 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const speakerMappingsChanged = speakerLabels.some(
     (label) => mappingForLabel(speakerMappings, label) !== mappingForLabel(meeting.speaker_mappings, label),
   );
-  const reviewChangesPending = editingTranscript || savingTranscript || speakerMappingsChanged ||
+  const [decisionsPending, setDecisionsPending] = useState(false);
+  const handleDecisionsPending = useCallback((pending: boolean) => {
+    setDecisionsPending(pending);
+    if (pending) setEmailPreview(null);
+  }, []);
+  const reviewChangesPending = decisionsPending || editingTranscript || savingTranscript || speakerMappingsChanged ||
     savingSpeakerMappings || Object.values(editingActionItems).some(Boolean);
   const reviewControlsBusy = approving || previewingEmail;
   const handleActionEditingChange = useCallback((id: string, editing: boolean) => {
@@ -337,6 +344,10 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
     }
   }
 
+  const decisionsPanel = <MeetingDecisions key={`${meeting.id}:${meeting.state}:${accessToken}`}
+    meetingId={meeting.id} meetingTitle={meetingDisplayTitle(meeting)} token={accessToken} canEdit={canEdit}
+    disabled={reviewControlsBusy} onPendingChange={handleDecisionsPending} onSaved={() => setEmailPreview(null)} />;
+
   return (
     <main className="max-w-6xl mx-auto px-6 py-7">
       <Link href="/" className="inline-flex items-center gap-1.5 text-[#6b7280] text-[13px] hover:text-[#003366] mb-4 transition-colors">
@@ -393,10 +404,20 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             <div><span className="text-xs text-gray-500">Date</span><p className="text-sm"><LocalDateTime value={meetingDisplayTime(meeting)} /></p></div>
             <MetaRow label="Platform"   value={data.platform ?? "Microsoft Teams"} />
             <MetaRow label="Organiser"  value={meeting.organizer_upn ?? "—"} />
-            <MetaRow
-              label="Attendees"
-              value={meeting.calendar_participants.map((participant) => participant.name).join(", ") || "—"}
-            />
+            <div className="min-w-0">
+              <span className="text-xs text-gray-500">Attendees</span>
+              <ul aria-label="Attendees" className="max-h-42 overflow-y-auto text-sm leading-6">
+                {meeting.calendar_participants.slice(0, showAllAttendees ? undefined : 7).map((participant) => (
+                  <li key={participant.email} title={participant.name} className="truncate">{participant.name}</li>
+                ))}
+              </ul>
+              {meeting.calendar_participants.length === 0 && <p className="text-sm">Attendees not verified</p>}
+              {meeting.calendar_participants.length > 7 && <button type="button"
+                aria-expanded={showAllAttendees} onClick={() => setShowAllAttendees(value => !value)}
+                className="mt-1 text-xs font-semibold text-[#003366]">
+                {showAllAttendees ? "Show less" : `Show all (${meeting.calendar_participants.length})`}
+              </button>}
+            </div>
             {(data.apologies?.length ?? 0) > 0 && (
               <MetaRow label="Apologies" value={data.apologies!.join(", ")} />
             )}
@@ -481,6 +502,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
 
         {/* Main content */}
         <div className="min-w-0 flex flex-col gap-4">
+          {(isProcessing || meeting.state === "failed" || meeting.state === "cancelled") && decisionsPanel}
           {isProcessing ? (
             <PipelineView state={meeting.state} job={recordingJob} />
           ) : meeting.state === "cancelled" ? (
@@ -513,6 +535,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               ? <p className="whitespace-pre-wrap break-words text-[13.5px] leading-7 text-[#1a1a2e]">{meeting.summary}</p>
               : <p className="text-sm text-[#6b7280]">No meeting summary is available.</p>}
           </Section>
+          {decisionsPanel}
           {data.objective && (
             <Section title="Meeting Objective">
               <p className="text-[13.5px] text-[#1a1a2e] leading-7">{data.objective}</p>
@@ -602,11 +625,11 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           )}
 
           {speakerLabels.length > 0 && (
-            <Section title="Speaker Names" hint={isApproved ? "Read-only · editing is locked after approval" : canEdit ? "Match each detected voice to an Outlook attendee" : "Speaker names can be changed by approved editors"}>
+            <Section title="Speaker Names" hint={isApproved ? "Read-only · editing is locked after approval" : canEdit ? (meeting.speaker_candidates.length ? "Match each detected voice to a verified attendee" : "Attendees not verified; detected speaker labels are preserved") : "Speaker names can be changed by approved editors"}>
               <div className="space-y-3.5">
                 {speakerLabels.map((label) => (
-                  <div key={label} className="grid items-center gap-2.5 rounded-md border border-[#edf0f4] bg-[#fafbfc] px-3 py-2.5 xl:grid-cols-[minmax(120px,180px)_120px_minmax(0,1fr)]">
-                    <span className="truncate text-[13px] font-semibold text-[#003366]" title={label}>{label}</span>
+                  <div key={label} className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-[#edf0f4] bg-[#fafbfc] px-3 py-2">
+                    <span className="max-w-40 truncate text-[13px] font-semibold text-[#003366]" title={label}>{label}</span>
                     <div className="flex min-h-9 items-center">
                       {canApprove && (meeting.speaker_sample_labels ?? []).includes(label) && (
                       <SpeakerSampleButton
@@ -621,7 +644,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                       disabled={!canEdit || savingSpeakerMappings || reviewControlsBusy}
                       value={mappingForLabel(speakerMappings, label) ?? ""}
                       onChange={(event) => { setEmailPreview(null); setSpeakerMappings((current) => ({ ...current, [label]: event.target.value || null })); }}
-                      className="h-9 min-w-0 rounded-md border border-[#cfd6df] bg-white px-3 text-sm text-[#1a1a2e] disabled:bg-[#f3f4f6] disabled:text-[#6b7280]"
+                      className="h-9 min-w-0 max-w-full flex-[1_1_180px] rounded-md border border-[#cfd6df] bg-white px-3 text-sm text-[#1a1a2e] disabled:bg-[#f3f4f6] disabled:text-[#6b7280]"
                     >
                       <option value="">Unknown / Guest</option>
                       {meeting.speaker_candidates.map((candidate) => {

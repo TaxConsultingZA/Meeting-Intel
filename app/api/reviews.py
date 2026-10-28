@@ -6,7 +6,7 @@ import json
 import os
 import subprocess
 import tempfile
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from sqlalchemy import Text, case, cast, column, exists, func, literal, not_, or_, select
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -17,13 +17,13 @@ from ..config import get_settings
 from ..db import get_db
 from ..models import (
     Meeting, ActionItem, MeetingEmailAudit, MeetingParticipant, ProcessingState, ProcessedItem,
-    RegisteredUser,
+    RegisteredUser, MeetingDecision,
 )
 from ..schemas import (
     MeetingOut, ActionItemOut, ActionItemEdit, ShareMeetingIn, ApproveMeetingIn,
     EmailPreviewOut, TranscriptEdit, SpeakerMappingIn, EditAccessDecisionIn,
     EditAccessRequestOut, CalendarParticipantOut, SendMeetingCopyIn, MeetingAccessRequestIn,
-    SpeakerCandidateOut, MeetingSearchOut,
+    SpeakerCandidateOut, MeetingSearchOut, MeetingDecisionsIn, MeetingDecisionOut,
 )
 from ..graph import client as graph
 from ..email_templates import build_meeting_email
@@ -498,10 +498,16 @@ async def search_meetings(
         ActionItem.meeting_id == Meeting.id,
         func.lower(ActionItem.task).contains(keyword, autoescape=True),
     ).exists()
+    decision_match = select(MeetingDecision.id).where(
+        MeetingDecision.meeting_id == Meeting.id,
+        Meeting.state.in_([ProcessingState.approved, ProcessingState.sent]),
+        func.lower(MeetingDecision.content).contains(keyword, autoescape=True),
+    ).exists()
     query = select(
         Meeting.id, Meeting.title, Meeting.recorded_at,
         summary_match.label("matched_summary"), action_match.label("matched_action_items"),
-    ).where(access, or_(summary_match, action_match)).order_by(
+        decision_match.label("matched_decisions"),
+    ).where(access, or_(summary_match, action_match, decision_match)).order_by(
         Meeting.recorded_at.desc().nullslast(), Meeting.id,
     ).limit(50)
     return (await db.execute(query)).mappings().all()
@@ -521,6 +527,30 @@ async def _with_recording_display(db, rows, outputs):
         if ledger is None:
             continue
         identity = ledger.identity_json or {}
+        # List queries deliberately defer the potentially large extraction.
+        if "extracted_json" in vars(m):
+            # Identity is keyed by the exact drive item, never title or time. A
+            # linked event cannot authenticate people copied from a different event.
+            saved = m.extracted_json or {}
+            event = identity.get("event") or {}
+            linked = identity.get("status") == "linked" and bool(event.get("id"))
+            legacy_id = saved.get("outlook_event_id") or (saved.get("t5_calendar_event") or {}).get("id")
+            verified = (linked and event["id"] == legacy_id) or (
+                not identity and bool((saved.get("t5_calendar_event") or {}).get("id"))
+            )
+            if verified:
+                attendee_emails = {p.email for p in output.calendar_participants}
+                output.speaker_candidates = [c for c in output.speaker_candidates if c.email in attendee_emails]
+            if not verified:
+                output.calendar_participants = []
+                output.organizer_upn = None
+                output.speaker_candidates = []
+                output.email_recipients = []
+                # Response copy only: retain transcript, samples and saved mappings.
+                if output.extracted_json is not None:
+                    output.extracted_json = {k: v for k, v in output.extracted_json.items()
+                        if k not in {"attendees", "organizer", "organiser", "organizer_upn",
+                                     "speaker_candidates", "apologies", "outlook_event_id", "t5_calendar_event"}}
         output.recording_display = {
             "filename": ledger.filename,
             "recorded_at": utc_iso(identity.get("recorded_at")),
@@ -641,13 +671,16 @@ async def get_meeting(meeting_id: str, db: AsyncSession = Depends(get_db),
     return (await _with_recording_display(db, [m], [_to_out(m, upn, is_admin=is_admin)]))[0]
 
 
-def _email_fingerprint(meeting_id, recipients: list[str], subject: str, html: str) -> str:
+def _email_fingerprint(meeting_id, recipients: list[str], subject: str, html: str, *, decision_revision: str | None = None) -> str:
     # The renderer's exact strings are canonical: do not strip HTML whitespace
     # or otherwise hide changes to the payload that Graph will receive.
-    return hashlib.sha256(json.dumps(
-        {"meeting_id": str(meeting_id),
+    payload = {"meeting_id": str(meeting_id),
          "recipients": sorted(set(v.strip().lower() for v in recipients if v.strip())),
-         "subject": subject, "html": html},
+         "subject": subject, "html": html}
+    if isinstance(decision_revision, str) and decision_revision:
+        payload["decision_revision"] = decision_revision
+    return hashlib.sha256(json.dumps(
+        payload,
         sort_keys=True,
     ).encode("utf-8")).hexdigest()
 
@@ -661,7 +694,52 @@ async def email_preview(meeting_id: str, db: AsyncSession = Depends(get_db),
     subject, html = build_meeting_email(m)
     recipients = ApproveMeetingIn(recipients=recipients).recipients
     return EmailPreviewOut(subject=subject, html=html, recipients=sorted(recipients),
-                           fingerprint=_email_fingerprint(m.id, recipients, subject, html))
+                           fingerprint=_email_fingerprint(m.id, recipients, subject, html,
+                               decision_revision=(m.extracted_json or {}).get("manual_decisions_revision")))
+
+
+@router.get("/reviews/{meeting_id}/decisions", response_model=list[MeetingDecisionOut])
+async def get_meeting_decisions(meeting_id: UUID, response: Response,
+                               db: Annotated[AsyncSession, Depends(get_db)],
+                               upn: Annotated[str, Depends(current_user)]):
+    response.headers["Cache-Control"] = "no-store"
+    meeting = await _authorize(db, meeting_id, upn, allow_admin=await _is_admin(db, upn))
+    return (await db.scalars(select(MeetingDecision).where(MeetingDecision.meeting_id == meeting.id)
+        .order_by(MeetingDecision.decision_date.desc(), MeetingDecision.id))).all()
+
+
+@router.put("/reviews/{meeting_id}/decisions", response_model=list[MeetingDecisionOut])
+async def save_meeting_decisions(meeting_id: UUID, body: MeetingDecisionsIn, response: Response,
+                                db: Annotated[AsyncSession, Depends(get_db)],
+                                upn: Annotated[str, Depends(current_user)]):
+    response.headers["Cache-Control"] = "no-store"
+    is_admin = await _is_admin(db, upn)
+    meeting = await _authorize(db, meeting_id, upn, for_update=True, allow_admin=is_admin)
+    _require_editor(meeting, upn, is_admin=is_admin)
+    _require_awaiting_review(meeting)
+    if meeting.email_delivery_status in {"sending", "sent"}:
+        raise HTTPException(409, "Decisions cannot be changed after email delivery has been claimed")
+    existing = {row.id: row for row in (await db.scalars(
+        select(MeetingDecision).where(MeetingDecision.meeting_id == meeting.id))).all()}
+    ids = [entry.id for entry in body.decisions if entry.id is not None]
+    if len(set(ids)) != len(ids) or any(id not in existing for id in ids):
+        raise HTTPException(422, "Decision IDs must be unique and belong to this meeting")
+    rows = []
+    for entry in body.decisions:
+        row = existing.get(entry.id) if entry.id else None
+        if row is None:
+            row = MeetingDecision(id=uuid4(), meeting_id=meeting.id)
+            db.add(row)
+        row.content, row.decision_date = entry.content, entry.decision_date
+        rows.append(row)
+    for id, row in existing.items():
+        if id not in ids:
+            await db.delete(row)
+    # Parent lock serializes with approval; stale previews must not approve unseen edits.
+    meeting.extracted_json = {**(meeting.extracted_json or {}), "manual_decisions_revision": str(uuid4())}
+    result = [MeetingDecisionOut.model_validate(row) for row in rows]
+    await db.commit()
+    return result
 
 
 @router.patch("/reviews/action-items/{item_id}")
@@ -863,7 +941,8 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
 
     recipients = sorted(set(body.recipients))
     subject, email_body = build_meeting_email(m)
-    fingerprint = _email_fingerprint(m.id, recipients, subject, email_body)
+    fingerprint = _email_fingerprint(m.id, recipients, subject, email_body,
+        decision_revision=(m.extracted_json or {}).get("manual_decisions_revision"))
     if not body.expected_fingerprint or body.expected_fingerprint != fingerprint:
         raise HTTPException(409, "Email preview is missing or has changed. Review a fresh preview before approving.")
 

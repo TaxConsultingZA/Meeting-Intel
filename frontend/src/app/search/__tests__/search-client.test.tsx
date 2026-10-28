@@ -53,3 +53,12 @@ it("ignores an obsolete response when another search starts", async () => {
   resolve(rows);
   await waitFor(() => expect(screen.queryByRole("link", { name: "Budget meeting" })).not.toBeInTheDocument());
 });
+
+it("identifies a decision-only match and links it to the related meeting", async () => {
+  vi.mocked(searchSavedMeetings).mockResolvedValueOnce([{ ...rows[0], matched_summary: false,
+    matched_action_items: false, matched_decisions: true }]);
+  render(<SearchClient accessToken="token" />);
+  submit("decision");
+  expect(await screen.findByText("Matched: decisions")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Budget meeting" })).toHaveAttribute("href", "/meetings/m1");
+});

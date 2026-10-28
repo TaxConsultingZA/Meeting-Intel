@@ -12,13 +12,19 @@ from sqlalchemy.pool import StaticPool
 from app.api.deps import current_user
 from app.api.reviews import router
 from app.db import get_db
-from app.models import ActionItem, Meeting, MeetingParticipant, ProcessingState
+from app.models import (
+    ActionItem,
+    Meeting,
+    MeetingDecision,
+    MeetingParticipant,
+    ProcessingState,
+)
 
 
 @pytest.fixture
 def search_api():
     engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    for table in [Meeting.__table__, MeetingParticipant.__table__, ActionItem.__table__]:
+    for table in [Meeting.__table__, MeetingParticipant.__table__, ActionItem.__table__, MeetingDecision.__table__]:
         table.create(engine)
     session = Session(engine)
 
@@ -57,7 +63,7 @@ def test_summary_action_case_and_time_order(search_api):
     assert [r["id"] for r in rows] == [str(second.id), str(first.id)]
     assert rows[0]["matched_action_items"] is True
     assert rows[1]["matched_summary"] is True
-    assert set(rows[0]) == {"id", "title", "recorded_at", "matched_summary", "matched_action_items"}
+    assert set(rows[0]) == {"id", "title", "recorded_at", "matched_summary", "matched_action_items", "matched_decisions"}
 
 
 def test_permissions_isolation_and_revocation(search_api):

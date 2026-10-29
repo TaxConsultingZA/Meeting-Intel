@@ -1,11 +1,12 @@
-"""Policy-gated local factories plus inert external adapter preparations.
+"""Policy-gated local factories and one explicitly configured chat adapter.
 
-No provider transport, dynamic imports, credential resolution, logging or retry.
+Other external preparations remain inert. No dynamic imports, logging or retry.
 """
 from types import MappingProxyType
 
 from pydantic import ValidationError
 
+from .businessai import BusinessAIConfig, BusinessAIProvider, PROMPT_VERSION, PROVIDER_ID
 from .contracts import FailureCode
 from .policy import (
     AIFeature, ProcessingMode, ProcessingPolicy, ProviderCapabilities, RouteKind,
@@ -45,10 +46,11 @@ class ProviderRegistry:
             raise ProviderRegistryError() from None
         self._descriptors = MappingProxyType(dict(zip(ids, prepared)))
 
-    def create(self, policy: ProcessingPolicy, *, requested_provider_id: str) -> AIProvider:
-        """Select one explicit route before constructing an approved local provider.
+    def create(self, policy: ProcessingPolicy, *, requested_provider_id: str,
+               businessai_config: BusinessAIConfig | None = None) -> AIProvider:
+        """Select one explicit route before constructing a configured provider.
 
-        External descriptors cannot execute, irrespective of policy approval.
+        External descriptors need the exact reviewed BusinessAI configuration.
         Denial or failure never causes selection of another descriptor.
         """
         try:
@@ -60,6 +62,19 @@ class ProviderRegistry:
         if not selection.permitted:
             raise ProviderRegistryError()
         descriptor = self._descriptors[selection.provider_id]
+        if businessai_config is not None and descriptor.capabilities.provider_id == PROVIDER_ID:
+            expected_identity = ProviderIdentity(PROVIDER_ID, descriptor.model_id, descriptor.prompt_version)
+            if (descriptor.capabilities.route_kind != RouteKind.CLOUD
+                    or descriptor.capabilities.automatic_fallback_allowed
+                    or expected_identity != ProviderIdentity(PROVIDER_ID, businessai_config.model_id, PROMPT_VERSION)):
+                raise ProviderRegistryError()
+            try:
+                provider = BusinessAIProvider(businessai_config)
+            except ProviderFailure:
+                raise ProviderRegistryError() from None
+            if provider.identity != expected_identity:
+                raise ProviderRegistryError()
+            return provider
         if descriptor.capabilities.route_kind not in {
             RouteKind.LOCAL_TRANSCRIPT, RouteKind.LOCAL_MOCK,
         } or descriptor.local_factory is None:
@@ -78,6 +93,22 @@ class ProviderRegistry:
         except Exception:
             raise ProviderRegistryError() from None
         return provider
+
+
+def businessai_runtime_configuration(config: BusinessAIConfig) -> tuple[ProviderRegistry, ProcessingPolicy, str]:
+    """Pin the sole external route and model; configuration never selects a backup."""
+    features = frozenset({AIFeature.SUMMARY, AIFeature.ACTION_ITEMS})
+    descriptor = ProviderDescriptor(
+        capabilities=ProviderCapabilities(
+            provider_id=PROVIDER_ID, route_kind=RouteKind.CLOUD,
+            enabled=config.enabled, approved=config.enabled,
+            contract_versions=frozenset({"1.0"}), features=features,
+            automatic_fallback_allowed=False,
+        ), model_id=config.model_id or None, prompt_version=PROMPT_VERSION,
+    )
+    policy = ProcessingPolicy(mode=ProcessingMode.CAPABILITY,
+                              allowed_provider_ids=(PROVIDER_ID,), required_features=features)
+    return ProviderRegistry((descriptor,)), policy, PROVIDER_ID
 
 
 def local_runtime_configuration(implementation: str) -> tuple[ProviderRegistry, ProcessingPolicy, str]:

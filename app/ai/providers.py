@@ -1,4 +1,4 @@
-"""Explicit injection only: no factory that can enable an external provider."""
+"""Provider protocol, local implementations and server-owned route descriptors."""
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -53,9 +53,10 @@ class LocalMockProvider:
 class ProviderDescriptor(Contract):
     """Server-owned adapter preparation; never a transport or credential value.
 
-    Cloud/workspace descriptors are inert, even when policy permits selection.
+    Descriptors alone cannot execute external providers. The registry requires
+    separate explicit BusinessAI configuration for its one reviewed adapter.
     Credential references name future server-side bindings and are never read.
-    Only the two reviewed local implementations have executable factory keys.
+    Only the two local implementations have local factory keys.
     """
 
     capabilities: ProviderCapabilities

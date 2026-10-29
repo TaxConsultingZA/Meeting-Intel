@@ -1,16 +1,19 @@
-"""Local-only foundation entry point at the existing extraction boundary.
+"""Foundation entry point at the existing extraction boundary.
 
 No persistence, retries, transport or authorization: those remain with callers.
 """
 from uuid import UUID
 
+from ..config import get_settings
 from ..pipeline.extract import require_transcript, validate_extraction
 from ..pipeline.transcribe import TranscriptSegment
 from ..schemas import RichExtractionResult
 from .contracts import FailureCode, ProcessingOutput, ProcessingRequest, Segment
 from .processing import process
-from .providers import AIProvider, LocalMockProvider, ProviderFailure
-from .registry import ProviderRegistryError, local_runtime_configuration
+from .providers import AIProvider, ProviderFailure
+from .providers import LocalMockProvider  # noqa: F401 - existing bridge test seam
+from .businessai import BusinessAIConfig
+from .registry import ProviderRegistryError, businessai_runtime_configuration, local_runtime_configuration
 
 
 class FoundationExtractionError(RuntimeError):
@@ -25,6 +28,20 @@ def get_local_provider(implementation: str) -> AIProvider:
     # Keep the bridge entry point/test seam, but enforce registry/policy selection.
     # LocalMockProvider remains imported here for existing local test compatibility.
     try:
+        if implementation == "businessai":
+            settings = get_settings()
+            config = BusinessAIConfig(
+                enabled=settings.businessai_enabled, chat_url=settings.businessai_chat_url,
+                model_id=settings.businessai_model, api_key=settings.businessai_api_key,
+                max_output_tokens=settings.businessai_max_output_tokens,
+                max_input_bytes=settings.businessai_max_input_bytes,
+                timeout_seconds=settings.businessai_timeout_seconds,
+                max_requests=settings.businessai_max_requests,
+                token_budget=settings.businessai_token_budget,
+                ledger_path=settings.businessai_ledger_path,
+            )
+            registry, policy, requested_id = businessai_runtime_configuration(config)
+            return registry.create(policy, requested_provider_id=requested_id, businessai_config=config)
         registry, policy, requested_id = local_runtime_configuration(implementation)
         return registry.create(policy, requested_provider_id=requested_id)
     except ProviderRegistryError:
@@ -62,7 +79,7 @@ async def extract_with_foundation(
     known_participants: set[str] | None = None,
     timestamps_available: bool = True,
 ) -> RichExtractionResult:
-    """Run one local attempt; return only validated, review-compatible output.
+    """Run one explicit attempt; return only validated, review-compatible output.
 
     Failure raises before the caller can write results. Cancellation propagates.
     Metadata is currently ephemeral; no additional database writes are made.

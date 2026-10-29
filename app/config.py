@@ -1,6 +1,6 @@
 from functools import lru_cache
 from typing import Literal
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from .database import normalize_database_url
 
@@ -75,9 +75,18 @@ class Settings(BaseSettings):
     # --- AI layer ---
     graph_impl: str = "microsoft"          # microsoft | mock
     transcriber_impl: str = "assemblyai"    # mock | assemblyai
-    # Current runtime is local-only. Reject unsupported routes at settings load,
-    # before a worker can claim jobs; never substitute another provider.
-    extractor_impl: Literal["transcript_only", "mock"] = "transcript_only"
+    # BusinessAI requires a separate explicit opt-in and complete server config.
+    extractor_impl: Literal["transcript_only", "mock", "businessai"] = "transcript_only"
+    businessai_enabled: bool = False
+    businessai_chat_url: str = ""  # Full approved HTTPS chat URL; no assumed API path.
+    businessai_model: str = ""     # No default model or automatic model discovery.
+    businessai_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), repr=False)
+    businessai_max_output_tokens: int = Field(default=256, ge=1, le=2048)
+    businessai_max_input_bytes: int = Field(default=2048, ge=1, le=16384)
+    businessai_timeout_seconds: float = Field(default=30, gt=0, le=55, allow_inf_nan=False)
+    businessai_max_requests: int = Field(default=0, ge=0, le=100)
+    businessai_token_budget: int = Field(default=0, ge=0, le=1000000)
+    businessai_ledger_path: str = ""
 
     # Legacy external-adapter settings; cannot enable the current runtime bridge.
     gemini_enabled: bool = False

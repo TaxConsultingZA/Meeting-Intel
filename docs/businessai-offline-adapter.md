@@ -1,92 +1,80 @@
-# BusinessAI preparation: existing transcript to summary/actions
+# BusinessAI: synthetic test only, default closed
 
-This is preparation code, not production AI acceptance. It does not transcribe
-recordings, wake Queued jobs, fetch Microsoft data, approve output or send mail.
-Defaults remain EXTRACTOR_IMPL=transcript_only and BUSINESSAI_ENABLED=false.
+Updated 2026-10-29 (Asia/Shanghai). The earlier audit is recorded in
+businessai-test-review-20261029.md; the authorized disabled release is described
+in businessai-test-release-20261029.md. These are separate execution records.
 
-## Call and save chain
+## Current execution boundary
 
-```mermaid
-flowchart TD
-  A[Existing transcript and saved segments] --> B[Worker: reuse text and require_transcript]
-  B --> C[audited_extraction: requested event and fenced commit]
-  C --> D[runtime bridge: explicit registry and policy selection]
-  D --> E[BusinessAI: reserve budget then one chat POST]
-  E --> F[Usage reconciliation and JSON/source-quote validation]
-  F --> G[Foundation contract and participant grounding]
-  G --> H[Return RichExtractionResult: save boundary]
-  H --> I[Audit completed event and fenced commit]
-  I --> J[Worker: summary and extracted_json; replace ActionItem rows]
-  J --> K[awaiting_review and guarded_commit]
-  L[No durable transcript] --> M[Separate Graph download and transcription stages]
-  M --> A
+The meeting runtime accepts only local transcript_only/mock execution.
+get_local_provider("businessai") always rejects, even with BUSINESSAI_ENABLED=true.
+No worker, web endpoint, scheduler, Graph call, recording, mail or UI integration
+invokes the synthetic test command. Deployment is not permission to analyse meetings.
+
+The low-level adapter additionally requires enabled AND synthetic_test_enabled,
+an exact HTTPS api.businessai.co.za/v1/chat/completions URL (port 443/default),
+a configured model and a server-side secret. It accepts only the exact fixed text
+`[Speaker A] Please send the report.`; other input fails before admission/HTTP.
+Keys and the dedicated permit database URL are excluded from config serialization.
+
+## Single-use admission across Railway replicas/restarts
+
+The original SQLite monthly ledger alone is insufficient: each independent or
+recreated disk can admit its own budget. It is retained as local usage evidence,
+not a shared financial ceiling. Zero request/token limits still deny all sends.
+
+A new PostgreSQL admission statement inserts the constant primary key
+`meeting-intel-businessai-synthetic-v1`. ON CONFLICT DO NOTHING RETURNING permits
+only one contender over the database's lifetime, across model/input changes and
+replicas. It commits before HTTP; failures, cancellation, invalid JSON, unknown
+usage and timeouts never refund it. Missing credentials/table, DB failure,
+exhausted permit and TLS certificate/hostname validation failure all deny. Before
+insertion, the adapter also verifies the public table primary key and rejects
+RLS, table/schema ownership, superuser/role-management capabilities, or extra
+UPDATE/DELETE/TRUNCATE/TRIGGER/public-schema-CREATE permissions. There is no migration or automatic DDL.
+
+Before any future controlled test, the database administrator must provision a
+DEDICATED shared PostgreSQL database/table, with the same DSN for every contender:
+
+```sql
+CREATE TABLE businessai_synthetic_permits (
+    permit_id text PRIMARY KEY CHECK (permit_id = 'meeting-intel-businessai-synthetic-v1')
+);
 ```
 
-Before this branch, main's bridge constructed only transcript_only/mock local
-providers; external descriptors were inert. This branch adds BusinessAI settings,
-registry construction and bridge selection. The worker already calls the bridge
-through services.ai_audit.audited_extraction. The unused legacy
-pipeline.extract.get_extractor is not the bridge's factory and is unchanged.
-No new analysis trigger is added. Do not use the full worker as an isolated chat
-test: even transcript reuse has surrounding Graph/access/enrichment/notification
-behaviour. Completed-recording reprocessing is a separate path that downloads
-and transcribes again, and rechecks the old result fingerprint before replacement.
+The runtime role needs INSERT and SELECT only on this table, no DELETE/UPDATE/TRUNCATE
+or schema ownership. The operator must not switch databases, drop/recreate/reset
+the table, restore an older snapshot, delete the local ledger or change PERMIT_ID
+to retry. All such administrative changes can defeat any durable limit. Shared
+PostgreSQL behavior is covered by mock statement/denial tests, not live acceptance;
+no database was provisioned or changed in this run. Do not claim an enabled shared
+test deployment is accepted until concurrency/restart checks pass on its dedicated DB.
 
-The bridge returns a validated RichExtractionResult without database writes.
-services.ai_audit writes content-free requested/completed/failed audit events
-using the caller's fence. The worker owns result persistence and notifications.
-Only summary/action_items are accepted; actions need exact transcript quotes and
-existing owner/deadline validation. Human review remains required.
+## Operator channel (not executed this run)
 
-## Controls
+Only after authentication, model entitlement and actual quota are verified:
+`python -m scripts.businessai_synthetic_test`.
+This command takes no transcript argument and uses no meeting database records.
+It requires all of: BUSINESSAI_ENABLED=true; BUSINESSAI_SYNTHETIC_TEST exactly
+`confirmed-account-model-quota`; BUSINESSAI_TEST_DATABASE_URL (server secret);
+BUSINESSAI_CHAT_URL; BUSINESSAI_MODEL; BUSINESSAI_API_KEY;
+an absolute writable BUSINESSAI_LEDGER_PATH; BUSINESSAI_MAX_REQUESTS=1; and an
+explicit BUSINESSAI_TOKEN_BUDGET up to 4096. Defaults remain false/empty/zero.
+Never put the marker/credentials in frontend variables, startup or health checks.
 
-Explicit enablement additionally requires HTTPS BUSINESSAI_CHAT_URL, a configured
-model and server-side BUSINESSAI_API_KEY. A credential alone never enables calls.
-No key belongs in frontend config, source, logs or a chat message.
+Command hard caps: one shared lifetime admission, input 2048 UTF-8 bytes,
+output 256 tokens, POST deadline 30 seconds, shared admission deadline 5 seconds,
+no redirects, retries, streaming or automatic fallback. The input itself is fixed
+and much shorter than the cap. Byte reservations include system prompt, 512
+estimated overhead and output cap; they are NOT a verified tokenizer or monetary
+limit. Actual usage is checked and retained before JSON/source-quote validation.
+Uncertain calls consume admission. No catalog estimate is treated as actual price.
 
-- BUSINESSAI_MAX_OUTPUT_TOKENS=256 (1–2048): sent as max_tokens.
-- BUSINESSAI_MAX_INPUT_BYTES=2048 (1–16384): UTF-8 transcript plus speaker labels;
-  reject oversized input rather than silently truncate it.
-- BUSINESSAI_TIMEOUT_SECONDS=30 (greater than 0, at most 55): HTTP timeout and
-  total POST deadline inside the foundation's existing 60-second deadline.
-- BUSINESSAI_MAX_REQUESTS=0 (0–100): monthly UTC admission count cap.
-- BUSINESSAI_TOKEN_BUDGET=0 (0–1000000): monthly UTC reserved-token cap.
-- BUSINESSAI_LEDGER_PATH: absolute persistent SQLite file outside the checkout;
-  parent must exist. Restrict access to the service account. Empty, relative,
-  corrupt or unwritable paths fail closed. Zero budgets prohibit sending.
+Results still require valid summary/action JSON and exact source quotes. Offline
+save-boundary tests inject the synthetic provider explicitly; they do not enable
+the meeting bridge or establish production persistence acceptance.
 
-Each send atomically reserves one request and system+transcript UTF-8 bytes,
-512 estimated chat-template tokens and the output cap. This is a conservative
-admission estimate, NOT a verified vendor tokenizer or monetary guarantee.
-Unknown vendor template overhead can exceed it; a reported overrun locks future
-sends pending reconciliation. Reservations are not refunded even on success,
-error, timeout or cancellation. Unknown charges must not be retried blindly.
-
-The ledger stores only a SHA-256 meeting/input/model/prompt fingerprint, UTC
-month, reservation, status and numeric usage. It never stores raw transcripts,
-keys, request/response bodies or participant identities. SQLite BEGIN IMMEDIATE
-makes admission atomic across instances sharing the file. The same fingerprint
-cannot send again across provider instances, worker attempts or month rollover.
-Do not delete/replace the ledger to retry an uncertain call.
-
-There is one POST per admitted invocation, no redirects, HTTP retries, streaming,
-model discovery, schema request or application fallback. Existing worker retries
-remain unchanged; the ledger blocks repeating the same external input. A changed
-input/model is a different fingerprint but still consumes the shared budget.
-
-For HTTP 200, usage counters must be nonnegative integers and total_tokens must
-equal prompt_tokens+completion_tokens. Missing/malformed usage or usage beyond
-the reservation/output cap rejects the result and locks subsequent sends. Usage
-is recorded BEFORE content validation: invalid generated JSON still costs its
-reservation. Safe INFO logs contain numeric token counts only. Non-200/transport
-failures retain reservations with unknown actual usage; they are not assumed free.
-
-This is a SINGLE-HOST preparation ledger, not a vendor-wide budget or distributed
-quota service. Independent files, ephemeral containers and multiple replicas can
-bypass its scope. Production needs shared durable atomic admission, verified
-account-side hard limits, ledger permissions/retention and reconciliation.
-Local admission does not enforce vendor RPM/TPM or prove max_tokens enforcement.
-No monetary costs are calculated.
+## Historical preparation evidence (not reverified this run)
 
 ## Official evidence checked 2026-10-29
 

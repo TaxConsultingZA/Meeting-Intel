@@ -33,12 +33,13 @@ LEDGER_PATH = ""
 
 @pytest.fixture(autouse=True)
 def isolated_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(businessai, "consume_test_permit", AsyncMock())
     monkeypatch.setitem(globals(), 'LEDGER_PATH', str(tmp_path / 'usage.sqlite'))
 
 
 def configured(**changes):
     return BusinessAIConfig(**{
-        "enabled": True, "chat_url": URL, "model_id": "businessai-chat",
+        "enabled": True, "synthetic_test_enabled": True, "chat_url": URL, "model_id": "businessai-chat",
         "api_key": SecretStr(KEY),
         "ledger_path": LEDGER_PATH, "max_requests": 1, "token_budget": 4096,
         **changes,
@@ -57,6 +58,8 @@ def response(result=RESULT, finish_reason="stop"):
 
 
 def runtime_settings(monkeypatch, **changes):
+    # Only synthetic mock tests inject the adapter; runtime has no cloud route.
+    monkeypatch.setattr(bridge, "get_local_provider", lambda _: BusinessAIProvider(configured()))
     settings = get_settings()
     values = {"businessai_enabled": True, "businessai_chat_url": URL,
               "businessai_model": "businessai-chat", "businessai_api_key": SecretStr(KEY)}
@@ -202,7 +205,7 @@ def test_registry_requires_exact_explicit_configuration():
 
 
 @respx.mock
-async def test_bridge_persists_compatible_shape_and_does_not_call_legacy_factory(monkeypatch):
+async def test_injected_synthetic_adapter_validates_shape_without_legacy_factory(monkeypatch):
     from app.pipeline import extract
 
     runtime_settings(monkeypatch)
@@ -216,7 +219,7 @@ async def test_bridge_persists_compatible_shape_and_does_not_call_legacy_factory
 
 
 @respx.mock
-async def test_bridge_failure_never_falls_back_to_local_provider_or_another_model(monkeypatch):
+async def test_injected_synthetic_failure_never_falls_back(monkeypatch):
     from app.ai.providers import LocalMockProvider, TranscriptOnlyProvider
 
     runtime_settings(monkeypatch)
@@ -388,3 +391,49 @@ async def test_invalid_output_never_reaches_save_boundary(monkeypatch):
     respx.post(URL).mock(return_value=httpx.Response(200, json=response({'summary':'x','action_items':[{'action':'invented','source_quote':'not spoken'}]})))
     with pytest.raises(bridge.FoundationExtractionError):
         await bridge.extract_with_foundation(uuid4(), [TranscriptSegment('Speaker A', TEXT, 0, 1)], implementation='businessai')
+
+
+@respx.mock
+async def test_exhausted_shared_permit_prevents_http(monkeypatch):
+    monkeypatch.setattr(businessai, 'consume_test_permit', AsyncMock(
+        side_effect=ProviderFailure(FailureCode.CONFIGURATION)))
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json=response()))
+    with pytest.raises(ProviderFailure):
+        await BusinessAIProvider(configured()).process(request())
+    assert route.call_count == 0
+
+
+@respx.mock
+async def test_fixed_command_sends_once_and_prints_only_numeric_usage(monkeypatch, capsys):
+    from scripts import businessai_synthetic_test as command
+    runtime_settings(monkeypatch)
+    monkeypatch.setenv('BUSINESSAI_SYNTHETIC_TEST', 'confirmed-account-model-quota')
+    monkeypatch.setenv('BUSINESSAI_TEST_DATABASE_URL', 'postgresql://private.invalid/test')
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json=response()))
+    assert await command.main() == 0
+    output = capsys.readouterr().out
+    assert json.loads(output)['usage']['total_tokens'] == 120
+    assert all(value not in output for value in (KEY, TEXT, RESULT['summary'], 'private.invalid'))
+    assert route.call_count == 1
+    assert await command.main() == 1
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_fixed_command_stays_closed_without_test_marker(monkeypatch, capsys):
+    from scripts import businessai_synthetic_test as command
+    runtime_settings(monkeypatch)
+    monkeypatch.delenv('BUSINESSAI_SYNTHETIC_TEST', raising=False)
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json=response()))
+    assert await command.main() == 1
+    assert route.call_count == 0
+    assert json.loads(capsys.readouterr().out)['failure'] == 'configuration'
+
+
+async def test_fixed_command_sanitizes_settings_failures(monkeypatch, capsys):
+    from scripts import businessai_synthetic_test as command
+    def unavailable():
+        raise ValueError('private-key-and-dsn')
+    monkeypatch.setattr(command, 'get_settings', unavailable)
+    assert await command.main() == 1
+    assert 'private-key-and-dsn' not in capsys.readouterr().out

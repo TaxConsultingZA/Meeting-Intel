@@ -75,12 +75,12 @@ class Settings(BaseSettings):
     # --- AI layer ---
     graph_impl: str = "microsoft"          # microsoft | mock
     transcriber_impl: str = "assemblyai"    # mock | assemblyai
-    # BusinessAI requires a separate explicit opt-in and complete server config.
+    # BusinessAI is test-adapter-only; the meeting runtime rejects this route.
     extractor_impl: Literal["transcript_only", "mock", "businessai"] = "transcript_only"
     businessai_enabled: bool = False
     businessai_chat_url: str = ""  # Full approved HTTPS chat URL; no assumed API path.
     businessai_model: str = ""     # No default model or automatic model discovery.
-    businessai_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), repr=False)
+    businessai_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), repr=False, exclude=True)
     businessai_max_output_tokens: int = Field(default=256, ge=1, le=2048)
     businessai_max_input_bytes: int = Field(default=2048, ge=1, le=16384)
     businessai_timeout_seconds: float = Field(default=30, gt=0, le=55, allow_inf_nan=False)

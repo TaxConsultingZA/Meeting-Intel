@@ -180,7 +180,7 @@ async def test_status_projection_preserves_controls_and_conditional_loading(admi
         last_error=None, locked_at=None, cancel_requested_at=None,
     )
     db = AsyncMock()
-    db.execute.return_value = SimpleNamespace(all=lambda: [(job, meeting)])
+    db.execute.return_value = SimpleNamespace(all=lambda: [(job, meeting, None)])
     db.scalars.return_value = SimpleNamespace(all=lambda: [meeting])
     actual = await list_jobs(db=db, user=SimpleNamespace(upn=upn, is_admin=admin), limit=20)
     assert actual == [job_out(job, meeting, upn, admin)]
@@ -207,7 +207,7 @@ async def test_status_clean_candidate_preserves_action_item_edit_check(edited):
         locked_at=None, cancel_requested_at=None,
     )
     db = AsyncMock()
-    db.execute.return_value = SimpleNamespace(all=lambda: [(job, meeting), (job, meeting)])
+    db.execute.return_value = SimpleNamespace(all=lambda: [(job, meeting, None), (job, meeting, None)])
     db.scalars.return_value = SimpleNamespace(all=lambda: [meeting])
     result = await list_jobs(db=db, user=SimpleNamespace(upn="admin", is_admin=True), limit=20)
     assert all(row["can_reprocess"] is (not edited) for row in result)
@@ -222,7 +222,7 @@ async def test_status_unassociated_job_preserves_response_without_review_loading
         locked_at=None, cancel_requested_at=None,
     )
     db = AsyncMock()
-    db.execute.return_value = SimpleNamespace(all=lambda: [(job, None)])
+    db.execute.return_value = SimpleNamespace(all=lambda: [(job, None, None)])
     result = await list_jobs(db=db, user=SimpleNamespace(upn="owner", is_admin=False), limit=20)
     assert result == [job_out(job, None, "owner", False)]
     db.scalars.assert_not_awaited()
@@ -241,7 +241,7 @@ async def test_status_nonorganizer_skips_large_review_fields():
         locked_at=None, cancel_requested_at=None,
     )
     db = AsyncMock()
-    db.execute.return_value = SimpleNamespace(all=lambda: [(job, meeting), (job, meeting)])
+    db.execute.return_value = SimpleNamespace(all=lambda: [(job, meeting, None), (job, meeting, None)])
     db.scalars.return_value = SimpleNamespace(all=lambda: [meeting])
     result = await list_jobs(db=db, user=SimpleNamespace(upn="owner", is_admin=False), limit=20)
     assert result == [job_out(job, meeting, "owner", False)]
@@ -250,3 +250,60 @@ async def test_status_nonorganizer_skips_large_review_fields():
     sql = str(db.scalars.await_args.args[0].compile(dialect=postgresql.dialect()))
     assert "meetings.transcript" not in sql
     assert "meetings.extracted_json" not in sql
+
+
+async def test_two_queued_file_names_are_projected_by_exact_drive_and_item_without_old_title():
+    from app.api.recording_jobs import list_jobs
+    from app.models import ProcessingState
+    from sqlalchemy.dialects import postgresql
+    def job(item):
+        return SimpleNamespace(id=uuid4(), drive_item_id=item, drive_id="drive-1", owner_upn="owner",
+            status="pending", source="manual", attempts=0, max_attempts=3,
+            last_error=None, locked_at=None, cancel_requested_at=None)
+    old_meeting = SimpleNamespace(id=uuid4(), title="Trust IT3(t)", state=ProcessingState.awaiting_review)
+    db = AsyncMock()
+    db.execute.return_value = SimpleNamespace(all=lambda: [
+        (job("oct22"), None, "October22.mp4"),
+        (job("sept1"), old_meeting, "September1.mp4"),
+        (job("unverified"), old_meeting, None),
+    ])
+    result = await list_jobs(db=db, user=SimpleNamespace(upn="owner", is_admin=False), limit=20)
+    assert [r["title"] for r in result] == ["October22.mp4", "September1.mp4", "Recording identity unverified"]
+    assert [r["drive_item_id"] for r in result] == ["oct22", "sept1", "unverified"]
+    assert all(r["processing_status"] == "queued" and r["can_cancel"] for r in result)
+    assert result[1]["meeting_id"] == str(old_meeting.id)
+    assert result[2]["recording_identity_verified"] is False
+    sql = str(db.execute.await_args.args[0].compile(dialect=postgresql.dialect()))
+    assert "processed_items.drive_item_id = recording_jobs.drive_item_id" in sql
+    assert "processed_items.drive_id = recording_jobs.drive_id" in sql
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.parametrize("ledger_drive,filename,expected", [
+    ("drive-1", "Exact-file.mp4", "Exact-file.mp4"),
+    ("different-drive", "Wrong-file.mp4", "Recording identity unverified"),
+    ("drive-1", "  ", "Recording identity unverified"),
+    (None, "Unscoped-file.mp4", "Recording identity unverified"),
+])
+async def test_status_filename_join_against_isolated_sqlite(ledger_drive, filename, expected):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from app.models import ProcessedItem, Meeting, MeetingParticipant, RecordingJob, ProcessingState
+    from app.api.recording_jobs import list_jobs
+    engine = create_engine("sqlite://")
+    for model in (ProcessedItem, Meeting, MeetingParticipant, RecordingJob):
+        model.__table__.create(engine)
+    with Session(engine) as session:
+        session.add(ProcessedItem(drive_item_id="exact-item", drive_id=ledger_drive, filename=filename, source="local"))
+        session.add(Meeting(drive_item_id="exact-item", title="Trust IT3(t)", organizer_upn="owner", state=ProcessingState.awaiting_review))
+        session.add(RecordingJob(drive_item_id="exact-item", drive_id="drive-1", owner_upn="owner", status="pending", source="manual"))
+        session.commit()
+        db = AsyncMock()
+        db.execute.side_effect = session.execute
+        result = await list_jobs(db=db, user=SimpleNamespace(upn="owner", is_admin=False), limit=20)
+        assert len(result) == 1
+        assert result[0]["title"] == expected
+        assert result[0]["recording_identity_verified"] is (expected == "Exact-file.mp4")
+        assert result[0]["can_cancel"] is True
+        db.commit.assert_not_awaited()
+    engine.dispose()

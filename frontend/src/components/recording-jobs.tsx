@@ -36,6 +36,14 @@ export function processingFailureMessage(failure?: ProcessingFailure | null): st
   return `${processingFailureTitle(failure)}. Category: ${category}.`;
 }
 
+export function recordingJobTitle(job: RecordingJobOut): string {
+  if (job.processing_status === "queued") {
+    return job.recording_identity_verified && job.recording_filename?.trim()
+      ? job.recording_filename.trim() : "Recording identity unverified";
+  }
+  return job.title?.trim() || "Recording identity unverified";
+}
+
 export function recordingStatusMessage(job: RecordingJobOut): string {
   switch (job.processing_status) {
     case "completed":
@@ -171,7 +179,7 @@ export default function RecordingJobs({ token, meetingId, refreshKey, onChanged,
       <p className="mt-1 text-xs">{meetingId ? "Check meeting details for saved results." : "Recordings appear here once they are queued for processing."}</p>
     </div>}
     {jobs.map(job => <div key={job.job_id} className={`min-w-0 rounded-md border p-2.5 text-sm ${job.status === "failed" ? "border-red-200 bg-red-50/30" : job.status === "completed" ? "border-green-200 bg-green-50/30" : "border-[#dde1e8]"}`}>
-      {!meetingId && (job.meeting_id ? <Link className="mb-3 block font-semibold text-[#003366] underline" href={`/meetings/${job.meeting_id}`}>{job.title}</Link> : <p className="mb-3 font-semibold text-[#003366]">{job.title}</p>)}
+      {!meetingId && (job.meeting_id ? <Link className="mb-3 block font-semibold text-[#003366] underline" href={`/meetings/${job.meeting_id}`}>{recordingJobTitle(job)}</Link> : <p className="mb-3 font-semibold text-[#003366]">{recordingJobTitle(job)}</p>)}
       <div className="grid gap-2">
         <div>
           <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[#6b7280]">Current recording status</p>

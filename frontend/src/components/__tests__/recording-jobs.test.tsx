@@ -243,3 +243,21 @@ describe("recording lifecycle visibility", () => {
     expect(screen.queryByText("Failed")).not.toBeInTheDocument();
   });
 });
+
+
+it("keeps queued file names distinct, marks unknown identity and explains paused processing", async () => {
+  vi.mocked(getRecordingJobs).mockReset().mockResolvedValue([
+    {...job, job_id: "oct22", drive_item_id: "file-oct22", meeting_id: null, status: "pending", processing_status: "queued",
+      recording_filename: "October22.mp4", recording_identity_verified: true},
+    {...job, job_id: "sept1", drive_item_id: "file-sept1", title: "Trust IT3(t)", status: "pending", processing_status: "queued",
+      recording_filename: "September1.mp4", recording_identity_verified: true},
+    {...job, job_id: "unknown", drive_item_id: "unknown", title: "Trust IT3(t)", status: "pending", processing_status: "queued"},
+  ]);
+  render(<RecordingJobs token="offline" />);
+  expect(await screen.findByText("October22.mp4")).toBeVisible();
+  expect(screen.getByText("September1.mp4")).toBeVisible();
+  expect(screen.getByText("Recording identity unverified")).toBeVisible();
+  expect(screen.queryByText("Trust IT3(t)")).not.toBeInTheDocument();
+  expect(screen.getAllByText("Queued")).toHaveLength(3);
+  expect(screen.getAllByText(/Processing is paused for this environment/)).toHaveLength(3);
+});

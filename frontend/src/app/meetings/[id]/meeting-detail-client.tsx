@@ -344,7 +344,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
     }
   }
 
-  const decisionsPanel = <MeetingDecisions key={`${meeting.id}:${meeting.state}:${accessToken}`}
+  const decisionsPanel = <MeetingDecisions
     meetingId={meeting.id} meetingTitle={meetingDisplayTitle(meeting)} token={accessToken} canEdit={canEdit}
     disabled={reviewControlsBusy} onPendingChange={handleDecisionsPending} onSaved={() => setEmailPreview(null)} />;
 
@@ -502,7 +502,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
 
         {/* Main content */}
         <div className="min-w-0 flex flex-col gap-4">
-          {(isProcessing || meeting.state === "failed" || meeting.state === "cancelled") && decisionsPanel}
+          {decisionsPanel}
           {isProcessing ? (
             <PipelineView state={meeting.state} job={recordingJob} />
           ) : meeting.state === "cancelled" ? (
@@ -535,7 +535,6 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
               ? <p className="whitespace-pre-wrap break-words text-[13.5px] leading-7 text-[#1a1a2e]">{meeting.summary}</p>
               : <p className="text-sm text-[#6b7280]">No meeting summary is available.</p>}
           </Section>
-          {decisionsPanel}
           {data.objective && (
             <Section title="Meeting Objective">
               <p className="text-[13.5px] text-[#1a1a2e] leading-7">{data.objective}</p>

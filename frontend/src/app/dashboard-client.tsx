@@ -11,7 +11,7 @@ import { formatEventTime, parseInstant } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
 import MeetingRecordingUpdate from "@/components/meeting-recording-update";
 import RecentMeetings from "@/components/recent-meetings";
-import { JobControls, recordingStatusMessage } from "@/components/recording-jobs";
+import { JobControls, recordingStatusMessage, recordingJobTitle } from "@/components/recording-jobs";
 import { getAvailableRecordings, decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecordingJobs, getSyncStatus, getUpcomingMeetings, requestHistoricalAccess, requestMeetingEditAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
 import type { AvailableRecording, MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
 
@@ -674,7 +674,7 @@ function RecordingJobCard({ job, token, onChanged }: { job: RecordingJobOut; tok
   return (
     <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
       <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-4 py-3.5">
-        <p className="text-white text-[13.5px] font-semibold leading-snug line-clamp-2">{job.title ?? "Recording queued for import"}</p>
+        <p className="text-white text-[13.5px] font-semibold leading-snug line-clamp-2">{recordingJobTitle(job)}</p>
       </div>
       <div className="px-4 py-3.5">
         <StateBadge state={job.processing_status} />

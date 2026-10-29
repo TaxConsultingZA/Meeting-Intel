@@ -19,7 +19,8 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   getCalendarSyncRun: vi.fn().mockResolvedValue(null), waitForCalendarSync: vi.fn(),
 }));
 // A mounted panel must be detectable even when the real component has no jobs.
-vi.mock("@/components/recording-jobs", () => ({
+vi.mock("@/components/recording-jobs", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/components/recording-jobs")>(),
   default: () => <section aria-label="Recording processing">Recording processing</section>,
   JobControls: () => null,
   recordingStatusMessage: () => "Recording processing status",
@@ -128,7 +129,7 @@ function recordingJob(overrides: Partial<RecordingJobOut> = {}): RecordingJobOut
     job_id: "job-1",
     drive_item_id: "item-1",
     meeting_id: null,
-    title: "Queued recording",
+    title: "Old Trust title", recording_filename: "Queued recording", recording_identity_verified: true,
     status: "pending",
     processing_status: "queued",
     review_status: null,
@@ -573,4 +574,23 @@ it("publishes a polled meeting before the recording request settles", async () =
   expect(getRecordingJobs).toHaveBeenCalledOnce();
   await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
   expect(getRecordingJobs).toHaveBeenCalledOnce();
+});
+
+
+it("shows two queued file identities and never falls back to old Trust history", async () => {
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  vi.mocked(getRecordingJobs).mockResolvedValue([
+    { ...recordingJob(), job_id: "new-job", drive_item_id: "file-oct22", meeting_id: null,
+      recording_filename: "October22.mp4", recording_identity_verified: true },
+    { ...recordingJob(), job_id: "old-job", drive_item_id: "file-sept1", meeting_id: "trust-meeting",
+      title: "Trust IT3(t)", recording_filename: "September1.mp4", recording_identity_verified: true },
+    { ...recordingJob(), job_id: "unknown-job", drive_item_id: "unknown-file", meeting_id: null,
+      title: "Trust IT3(t)", recording_filename: null, recording_identity_verified: false },
+  ]);
+  render(<DashboardClient deferInitialLoad meetings={[]} upcoming={[]} historical={[]} syncStates={[]} loadErrors={[]} isSubscribed={true} upn="owner@example.com" accessToken="token" />);
+  fireEvent.click(screen.getAllByRole("button", {name: /^In Progress/})[0]);
+  expect(await screen.findByText("October22.mp4")).toBeVisible();
+  expect(screen.getByText("September1.mp4")).toBeVisible();
+  expect(screen.getByText("Recording identity unverified")).toBeVisible();
+  expect(screen.queryByText("Trust IT3(t)")).not.toBeInTheDocument();
 });

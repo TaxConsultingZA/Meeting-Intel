@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload, load_only, raiseload
 
 from ..config import get_settings
 from ..db import get_db
-from ..models import RecordingJob, Meeting, MeetingParticipant, ActionItem, ProcessingState, RegisteredUser
+from ..models import RecordingJob, Meeting, MeetingParticipant, ActionItem, ProcessingState, RegisteredUser, ProcessedItem
 from ..services.job_control import RETRYABLE_JOB_STATES, public_job_error
 from ..services.access import NO_VIEW_ACCESS_TYPES
 from ..services.jobs import enqueue_retry_job
@@ -26,7 +26,7 @@ from .deps import registered_user
 router = APIRouter(route_class=RecordingStatusRoute)
 
 
-def job_out(job, meeting, upn, is_admin=False, *, clean_candidate=None, organizer=None):
+def job_out(job, meeting, upn, is_admin=False, *, clean_candidate=None, organizer=None, recording_filename=None):
     def clean():
         return clean_candidate if clean_candidate is not None else is_clean_reprocess_candidate(meeting)
 
@@ -53,9 +53,10 @@ def job_out(job, meeting, upn, is_admin=False, *, clean_candidate=None, organize
         and (is_admin or (organizer if organizer is not None else is_meeting_organizer(meeting, upn)))
         and clean()
     )
-    return dict(job_id=str(job.id), drive_item_id=job.drive_item_id,
+    filename = (recording_filename or "").strip() or None
+    return dict(recording_filename=filename, recording_identity_verified=filename is not None, job_id=str(job.id), drive_item_id=job.drive_item_id,
                 meeting_id=str(meeting.id) if meeting else None,
-                title=meeting.title if meeting else "Recording queued for import",
+                title=(filename or "Recording identity unverified") if job.status == "pending" else (meeting.title if meeting else "Recording identity unverified"),
                 owner_upn=job.owner_upn if is_admin else None,
                 status=job.status,
                 processing_status=processing_status,
@@ -96,8 +97,10 @@ async def list_jobs(
         func.lower(Meeting.organizer_upn) == upn.lower(),
         participant,
     )
-    query = (select(RecordingJob, Meeting)
+    query = (select(RecordingJob, Meeting, ProcessedItem.filename)
              .outerjoin(Meeting, Meeting.drive_item_id == RecordingJob.drive_item_id)
+             .outerjoin(ProcessedItem, (ProcessedItem.drive_item_id == RecordingJob.drive_item_id)
+                        & (ProcessedItem.drive_id == RecordingJob.drive_id))
              .options(
                  load_only(Meeting.id, Meeting.title, Meeting.state, Meeting.organizer_upn, raiseload=True),
                  raiseload("*"),
@@ -116,7 +119,7 @@ async def list_jobs(
     # Load large review fields once per meeting, only for controls which need
     # the existing clean-draft check. Ordinary status rows never fetch them.
     organizer_ids = {
-        meeting.id for job, meeting in rows
+        meeting.id for job, meeting, filename in rows
         if meeting is not None and meeting.state == ProcessingState.awaiting_review
         and not user.is_admin and job.status == "completed"
         and job.owner_upn.lower() == upn.lower()
@@ -131,7 +134,7 @@ async def list_jobs(
         ))).all()
         organizers = {meeting.id: is_meeting_organizer(meeting, upn) for meeting in organizer_meetings}
     candidate_ids = {
-        meeting.id for job, meeting in rows
+        meeting.id for job, meeting, filename in rows
         if meeting is not None and meeting.state == ProcessingState.awaiting_review
         and (user.is_admin or job.owner_upn.lower() == upn.lower())
         and ((job.status == "completed" and (user.is_admin or organizers.get(meeting.id, False)))
@@ -152,12 +155,13 @@ async def list_jobs(
     response_ready()
     seen = set()
     result = []
-    for job, meeting in rows:
+    for job, meeting, filename in rows:
         if user.is_admin or job.drive_item_id not in seen:
             seen.add(job.drive_item_id)
             result.append(job_out(job, meeting, upn, user.is_admin,
                                   clean_candidate=clean_candidates.get(meeting.id, False) if meeting else False,
-                                  organizer=organizers.get(meeting.id, False) if meeting else False))
+                                  organizer=organizers.get(meeting.id, False) if meeting else False,
+                                  recording_filename=filename))
     return result
 
 

@@ -253,7 +253,7 @@ it("blocks approval until decisions have loaded successfully, including retry af
   render(<MeetingDetailClient meeting={approvalMeeting} upn="owner@example.com" accessToken="token" />);
   expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeDisabled();
   reject(new Error("offline"));
-  await screen.findByText("Decisions could not be loaded.");
+  await screen.findByText(/Decisions could not be loaded/ );
   expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeDisabled();
   fireEvent.click(screen.getByRole("button", { name: "Reload decisions" }));
   await waitFor(() => expect(screen.getByRole("button", { name: /Approve Meeting Notes/ })).toBeEnabled());
@@ -684,4 +684,24 @@ it.each([7, 8])("only folds attendee lists above seven (%i)", (count) => {
   render(<MeetingDetailClient meeting={meeting} upn="owner@example.test" accessToken="token" />);
   expect(within(screen.getByRole("list", {name: "Attendees"})).getAllByRole("listitem")).toHaveLength(7);
   expect(Boolean(screen.queryByRole("button", {name: `Show all (${count})`}))).toBe(count > 7);
+});
+
+
+it("keeps the decisions editor mounted when the session token refreshes", async () => {
+  const meeting = {
+    id: "draft-meeting", title: "Draft", state: "awaiting_review", summary: null, transcript: null,
+    action_items: [], extracted_json: {}, calendar_participants: [], organizer_upn: "owner@example.com",
+    email_recipients: [], approved_recipients: [], is_organizer: true, can_edit: true,
+    edit_access_requests: [], speaker_candidates: [], speaker_mappings: {}, speaker_sample_labels: [],
+  } as unknown as MeetingOut;
+  vi.mocked(getMeetingDecisions).mockResolvedValue([]);
+  const view = render(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="first" />);
+  fireEvent.click(await screen.findByRole("button", { name: "Edit decisions" }));
+  view.rerender(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="renewed" />);
+  await waitFor(() => expect(getMeetingDecisions).toHaveBeenLastCalledWith(meeting.id, "renewed", expect.any(AbortSignal)));
+  expect(screen.getByRole("form", { name: "Edit meeting decisions" })).toBeVisible();
+  fireEvent.change(screen.getByLabelText("Decision 1 content"), {target: {value: "Retained draft"}});
+  view.rerender(<MeetingDetailClient meeting={meeting} upn="owner@example.com" accessToken="renewed-again" />);
+  await waitFor(() => expect(getMeetingDecisions).toHaveBeenLastCalledWith(meeting.id, "renewed-again", expect.any(AbortSignal)));
+  expect(screen.getByLabelText("Decision 1 content")).toHaveValue("Retained draft");
 });

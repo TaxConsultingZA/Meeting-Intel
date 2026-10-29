@@ -42,12 +42,26 @@ interface Props {
 }
 
 export default function ImportModal({ upn, onClose, initialRecordings = null, onRecordingsLoaded }: Props) {
+  const tableRef = useRef<HTMLTableElement>(null);
+  const [listHeight, setListHeight] = useState<number>();
   const [recordings, setRecordings] = useState<AvailableRecording[]>(initialRecordings ?? []);
   const [hasLoaded, setHasLoaded] = useState(initialRecordings !== null);
   const [refreshing, setRefreshing] = useState(initialRecordings === null);
   const [error, setError] = useState<string | null>(null);
   const [completeRead, setCompleteRead] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
+  useEffect(() => {
+    const table = tableRef.current;
+    if (!table) return;
+    const rows = Array.from(table.tBodies[0]?.rows ?? []).slice(0, 7);
+    const measure = () => setListHeight(Math.ceil((table.tHead?.getBoundingClientRect().height ?? 0)
+      + rows.reduce((height, row) => height + row.getBoundingClientRect().height, 0)) + 1);
+    const observer = new ResizeObserver(measure);
+    rows.forEach(row => observer.observe(row));
+    if (table.tHead) observer.observe(table.tHead);
+    measure();
+    return () => observer.disconnect();
+  }, [recordings, hasLoaded]);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const jobsInFlight = useRef<Promise<RecordingJobOut[]> | null>(null);
   const actionInFlight = useRef(new Set<string>());
@@ -237,7 +251,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div className="flex min-h-0 flex-col overflow-hidden">
           {refreshing && !hasLoaded && (
             <div role="status" aria-label="Loading recordings" className="min-h-72 animate-pulse" aria-live="polite">
               <span className="sr-only">Loading recordings…</span>
@@ -259,7 +273,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
             </div>
           )}
 
-          {hasLoaded && <p role="status" aria-label="Recording data freshness" className="mx-6 mt-3 text-xs text-[#6b7280]">
+          {hasLoaded && <p role="status" aria-label="Recording data freshness" className="shrink-0 mx-6 my-3 text-xs text-[#6b7280]">
             {completeRead ? "Recording list and task status loaded successfully." : "Showing cached recordings. Latest list and task status are not verified."}
           </p>}
 
@@ -276,7 +290,7 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
           )}
 
           {error && hasLoaded && (
-            <div role="alert" className="mx-6 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <div role="alert" className="shrink-0 mx-6 my-4 max-h-[25vh] overflow-auto rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-900">
               Refresh failed. Showing the previously loaded recordings. {error}
               {authRequired && <Link href="/login" className="ml-2 font-semibold underline">Sign in again</Link>}
             </div>
@@ -291,12 +305,13 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
           )}
 
           {hasLoaded && recordings.length > 0 && (
-            <table className="w-full min-w-[920px] table-fixed text-sm">
+            <div role="region" aria-label="Recording list" tabIndex={0} className="min-h-0 overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#003366]" style={{ maxHeight: listHeight ?? "34rem" }}>
+            <table ref={tableRef} className="w-full min-w-[920px] table-fixed text-sm">
               <colgroup>
                 <col className="w-[26%]" /><col className="w-[20%]" /><col className="w-[8%]" />
                 <col className="w-[13%]" /><col className="w-[15%]" /><col className="w-[18%]" />
               </colgroup>
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr>
                   {TABLE_HEADERS.map((h) => (
                     <th key={h} className="bg-[#f8fafc] text-[#374151] text-xs font-semibold px-4 py-2.5 text-left border-b border-[#dde1e8] first:pl-6 last:pr-6">
@@ -349,10 +364,11 @@ export default function ImportModal({ upn, onClose, initialRecordings = null, on
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-[#dde1e8] flex items-center justify-end bg-[#f8fafc]">
+        <div className="shrink-0 px-6 py-4 border-t border-[#dde1e8] flex items-center justify-end bg-[#f8fafc]">
           <div className="flex items-center gap-2">
             <button type="button" title="Reload recording list" onClick={() => void load()} disabled={refreshing} className={RECORDING_ACTION_CLASS}>
               {refreshing && <Loader2 size={13} className="animate-spin" />}{refreshing ? "Refreshing…" : "Refresh"}

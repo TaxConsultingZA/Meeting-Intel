@@ -333,6 +333,8 @@ export interface AvailableRecording {
 }
 
 export interface RecordingJobOut {
+  recording_filename?: string | null;
+  recording_identity_verified?: boolean;
   failure?: ProcessingFailure | null;
   job_id: string;
   drive_item_id: string;

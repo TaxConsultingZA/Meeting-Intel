@@ -100,6 +100,10 @@ class Settings(BaseSettings):
     # Staging must not consume real recordings merely because the worker starts.
     recording_processing_enabled: bool = False
     process_only_job_id: str = ""
+    # Optional controlled-release fence before a user creates the job. Both
+    # recording identity fields are required together; normal operation is empty.
+    process_only_drive_id: str = ""
+    process_only_drive_item_id: str = ""
 
     assemblyai_api_key: str = ""
 

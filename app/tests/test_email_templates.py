@@ -77,6 +77,19 @@ class TestDetailTable:
 
 
 class TestBuildMeetingEmail:
+    def test_transcript_only_explains_missing_extraction_without_copying_transcript(self):
+        meeting = self._mock_meeting()
+        meeting.summary = None
+        meeting.transcript = '[Speaker A] 合成中文原文，不应隐式加入邮件。'
+        meeting.extracted_json = {'extraction_mode': 'transcript_only'}
+        meeting.action_items = []
+        subject, html = build_meeting_email(meeting)
+        assert subject == 'Meeting Notes — Q2 Tax Review'
+        assert 'without AI summary or action-item extraction' in html
+        assert 'it is not included in this email' in html
+        assert 'agreed action items from the discussion' not in html
+        assert meeting.transcript not in html
+
     def _mock_meeting(self):
         from unittest.mock import MagicMock
         m = MagicMock()

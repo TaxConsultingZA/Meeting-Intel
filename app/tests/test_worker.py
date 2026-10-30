@@ -144,7 +144,7 @@ async def test_empty_queue_returns_none(monkeypatch):
 
 
 @pytest.mark.parametrize("attempts,error,expected", [(1, None, "completed"),
-    (1, RuntimeError("AI failed"), "pending"), (3, RuntimeError("AI failed"), "failed")])
+    (1, RuntimeError("AI failed"), "failed"), (3, RuntimeError("AI failed"), "failed")])
 async def test_finish_success_retry_and_permanent_failure(monkeypatch, attempts, error, expected):
     db = session(monkeypatch)
     row = job(attempts=attempts)
@@ -161,11 +161,11 @@ async def test_finish_success_retry_and_permanent_failure(monkeypatch, attempts,
     db.commit.assert_awaited_once()
 
 
-def test_retry_backoff_is_capped():
+def test_failure_never_requeues_even_with_remaining_budget():
     row = job(attempts=100, max_attempts=101)
     before = worker._now()
     worker._retry_or_fail(row, RuntimeError("failed"))
-    assert before + timedelta(seconds=300) <= row.available_at <= worker._now() + timedelta(seconds=300)
+    assert row.status == "failed"  # No automatic requeue after any attempted execution.
 
 
 async def test_old_worker_cannot_complete_new_lease(monkeypatch):
@@ -176,7 +176,7 @@ async def test_old_worker_cannot_complete_new_lease(monkeypatch):
     assert "recording_jobs.lease_token =" in sql(db.scalar.call_args.args[0])
 
 
-@pytest.mark.parametrize("attempts,lock_free,expected", [(1, True, "pending"),
+@pytest.mark.parametrize("attempts,lock_free,expected", [(1, True, "failed"),
     (3, True, "failed"), (1, False, "processing")])
 async def test_stale_recovery_respects_live_lock_and_retry_budget(monkeypatch, attempts, lock_free, expected):
     db = session(monkeypatch)
@@ -375,7 +375,7 @@ async def test_restarted_worker_recovers_from_new_session_without_process_memory
     next_session.scalars.return_value = [persisted]
     next_session.scalar.return_value = True
     await worker._recover_interrupted_jobs()
-    assert persisted.status == "pending" and persisted.attempts == 1
+    assert persisted.status == "failed" and persisted.attempts == 1
     assert persisted.lease_token is None
 
 
@@ -448,3 +448,44 @@ async def test_unknown_advisory_lock_ownership_invalidates_connection(monkeypatc
         async with worker._recording_lock("r"):
             pytest.fail("Lock was never confirmed")
     conn.invalidate.assert_awaited_once()
+
+async def test_one_shot_claim_is_fenced_to_initial_attempt_in_sql(monkeypatch):
+    db = session(monkeypatch)
+    target_id = uuid.uuid4()
+    monkeypatch.setattr(worker.settings, 'process_only_job_id', str(target_id))
+    db.scalar.return_value = None
+    assert await worker._claim_next(expected_attempts=0) is None
+    statement = sql(db.scalar.call_args.args[0])
+    assert str(target_id) in statement
+    assert 'recording_jobs.attempts = 0' in statement
+    assert 'FOR UPDATE SKIP LOCKED' in statement
+
+
+@pytest.mark.parametrize('enabled,selected', [(False, str(uuid.uuid4())), (True, ''), (True, 'invalid')])
+async def test_one_shot_rejects_unsafe_configuration_before_claim(monkeypatch, enabled, selected):
+    monkeypatch.setattr(worker.settings, 'recording_processing_enabled', enabled)
+    monkeypatch.setattr(worker.settings, 'process_only_job_id', selected)
+    claim = AsyncMock()
+    monkeypatch.setattr(worker, '_claim_next', claim)
+    with pytest.raises(ValueError):
+        await worker.run_worker_once()
+    claim.assert_not_awaited()
+
+
+@pytest.mark.parametrize('available', [False, True])
+async def test_one_shot_never_recovers_or_claims_twice_even_after_failure(monkeypatch, available):
+    row = job(status='pending', attempts=0)
+    monkeypatch.setattr(worker.settings, 'process_only_job_id', str(row.id))
+    claim = AsyncMock(return_value=row if available else None)
+    recover = AsyncMock()
+    async def failed_attempt(_):
+        row.status = 'pending'
+        row.attempts = 1
+    execute = AsyncMock(side_effect=failed_attempt)
+    monkeypatch.setattr(worker, '_claim_next', claim)
+    monkeypatch.setattr(worker, '_recover_interrupted_jobs', recover)
+    monkeypatch.setattr(worker, '_execute', execute)
+    assert await worker.run_worker_once() is available
+    claim.assert_awaited_once_with(expected_attempts=0)
+    recover.assert_not_awaited()
+    assert execute.await_count == int(available)

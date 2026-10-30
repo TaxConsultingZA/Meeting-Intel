@@ -3,6 +3,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 from sqlalchemy import (
+    Float,
     String, Text, Date, DateTime, ForeignKey, Enum as SAEnum, UniqueConstraint, Boolean, Integer,
     Index, text, CheckConstraint
 )
@@ -205,6 +206,16 @@ class RecordingJob(Base):
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # No backfill: only a new permission-checked user action grants admission.
+    admission_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    authorized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    authorized_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    submission_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    provider_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider_transcript_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    audio_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    detected_language: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)

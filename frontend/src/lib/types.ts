@@ -333,6 +333,12 @@ export interface AvailableRecording {
 }
 
 export interface RecordingJobOut {
+  auto_processing_admitted?: boolean;
+  submission_count?: number;
+  provider_status?: string | null;
+  audio_duration_seconds?: number | null;
+  detected_language?: string | null;
+  actual_cost?: number | null;
   recording_filename?: string | null;
   recording_identity_verified?: boolean;
   failure?: ProcessingFailure | null;

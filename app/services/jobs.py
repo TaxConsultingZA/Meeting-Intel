@@ -10,6 +10,9 @@ from .ledger import claim_item
 
 
 ACTIVE_JOB_STATUSES = ("pending", "processing")
+UNRESOLVED_PROVIDER_STATUSES = (
+    "submitting", "submission_unknown", "submitted", "queued", "processing", "poll_unknown",
+)
 
 
 async def enqueue_recording_job(
@@ -23,6 +26,7 @@ async def enqueue_recording_job(
     filename: str | None = None,
     commit: bool = True,
     job_id: UUID | None = None,
+    authorized_by: str | None = None,
 ) -> bool:
     """Atomically claim a new Graph item and persist its processing job."""
     claimed = await claim_item(
@@ -36,6 +40,7 @@ async def enqueue_recording_job(
         drive_id=drive_id,
         owner_upn=owner_upn,
         source=source,
+        **admission(authorized_by),
     ))
     if commit:
         await db.commit()
@@ -53,12 +58,14 @@ async def enqueue_retry_job(
     source: str = "manual_retry",
     commit: bool = True,
     job_id: UUID | None = None,
+    authorized_by: str | None = None,
 ) -> bool:
     """Persist a retry unless this item already has active queued work."""
     active = await db.scalar(
         select(RecordingJob.id).where(
             RecordingJob.drive_item_id == drive_item_id,
-            RecordingJob.status.in_(ACTIVE_JOB_STATUSES),
+            (RecordingJob.status.in_(ACTIVE_JOB_STATUSES)
+             | RecordingJob.provider_status.in_(UNRESOLVED_PROVIDER_STATUSES)),
         )
     )
     if active:
@@ -69,6 +76,7 @@ async def enqueue_retry_job(
         drive_id=drive_id,
         owner_upn=owner_upn,
         source=source,
+        **admission(authorized_by),
         available_at=datetime.now(timezone.utc),
     ).on_conflict_do_nothing(
         index_elements=[RecordingJob.drive_item_id],
@@ -81,3 +89,9 @@ async def enqueue_retry_job(
     if commit:
         await db.commit()
     return created_id is not None
+
+
+def admission(actor: str | None) -> dict:
+    """Source/manual strings grant nothing without explicit caller authorization."""
+    return (dict(admission_version=1, authorized_at=datetime.now(timezone.utc),
+                 authorized_by=actor) if actor else {})

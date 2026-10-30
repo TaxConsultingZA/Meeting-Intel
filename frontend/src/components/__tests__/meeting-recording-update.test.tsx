@@ -53,7 +53,7 @@ it("does not replace fresh results with a slow initial status response",async()=
 it.each(["success","failed"] as const)("hides completed %s results after a minute and reopens them without another update",async(status)=>{
   vi.mocked(getRecordingUpdateStatus).mockResolvedValue([{...result("calendar"),status,error:status==="failed"?"Calendar access was denied. Try the update again.":null}]);
   render(<Update token="owner-token" onUpdated={vi.fn()}/>);
-  const history=await screen.findByRole("button",{name:/Update results/});
+  const history=await screen.findByRole("button",{name:/View update results/});
   expect(screen.queryByRole("region")).not.toBeInTheDocument();
   vi.useFakeTimers();
   fireEvent.click(history);
@@ -89,7 +89,7 @@ it("keeps running progress visible beyond a minute and starts dismissal after co
 it("retries loading saved results without running Graph update stages",async()=>{
   vi.mocked(getRecordingUpdateStatus).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([result("calendar")]);
   render(<Update token="owner-token" onUpdated={vi.fn()}/>);
-  fireEvent.click(await screen.findByRole("button",{name:/Update results/}));
+  fireEvent.click(await screen.findByRole("button",{name:/View update results/}));
   expect(await screen.findByText("Calendar sync: Complete")).toBeVisible();
   expect(getRecordingUpdateStatus).toHaveBeenCalledTimes(2);
   expect(runRecordingUpdateStage).not.toHaveBeenCalled();
@@ -101,7 +101,7 @@ it("formats saved notification time without running discovery or matching",async
  {...result("discovery"),last_succeeded_at:null},
  ]);
  render(<Update token="token" onUpdated={vi.fn()}/>);
- fireEvent.click(await screen.findByRole("button",{name:"Update results"}));
+ fireEvent.click(await screen.findByRole("button",{name:"View update results"}));
  expect(screen.getByText("22 Oct 2026, 08:50 SAST")).toBeVisible(); expect(screen.getByText("No successful update yet")).toBeVisible();
  expect(runRecordingUpdateStage).not.toHaveBeenCalled();
 });

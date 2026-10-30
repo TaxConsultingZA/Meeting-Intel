@@ -240,7 +240,15 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
     next_steps         = data.get("next_steps") or []
     nm                 = data.get("next_meeting") or {}
 
-    subject = f"Meeting Notes & Action Items — {title}"
+    transcript_only = data.get("extraction_mode") == "transcript_only"
+    subject = f"Meeting Notes — {title}" if transcript_only else f"Meeting Notes & Action Items — {title}"
+    introduction = (
+        "This meeting was transcribed without AI summary or action-item extraction. "
+        "The available meeting details and notes are shown below. "
+        "The full transcript is available on the meeting details page; it is not included in this email."
+        if transcript_only else
+        "Please find below the meeting notes and agreed action items from the discussion."
+    )
 
     # ── speaker highlights cards ──────────────────────────────────────────────
     if speaker_highlights:
@@ -478,7 +486,7 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
           <td style="padding-bottom:20px;font-size:14px;color:{_TEXT};
               font-family:Arial,sans-serif;line-height:1.7;">
             Good Day,<br><br>
-            Please find below the meeting notes and agreed action items from the discussion.
+            {introduction}
           </td>
         </tr>
 

@@ -45,6 +45,12 @@ export function recordingJobTitle(job: RecordingJobOut): string {
 }
 
 export function recordingStatusMessage(job: RecordingJobOut): string {
+  if (["submitting", "submission_unknown", "poll_unknown", "submitted", "queued", "processing", "completed"].includes(job.provider_status ?? "") && job.status === "failed") {
+    return "Provider submission needs manual verification. Automatic resubmission is blocked; contact an administrator.";
+  }
+  if (job.processing_status === "queued" && job.auto_processing_admitted === false) {
+    return "This existing task is not authorized for automatic processing. It will remain queued for manual review.";
+  }
   switch (job.processing_status) {
     case "completed":
       if (job.review_status === "sent") return "Processing is complete. Meeting notes have been approved. Email submission accepted. Delivery confirmation is not available.";

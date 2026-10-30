@@ -102,6 +102,8 @@ def public_job_error(error):
     if failure:
         return _failure_message(failure["stage"], failure["category"])
     value = str(error).lower()
+    if "reconciliation" in value or "submission" in value:
+        return "Provider submission needs manual verification. Automatic resubmission is blocked."
     if "reprocess conflict" in value:
         return "Reprocess stopped because the meeting was edited or approved. Existing results were kept."
     if "cancel" in value:

@@ -57,8 +57,8 @@ export default function MeetingRecordingUpdate({token,onUpdated}:{token:string;o
     </button>
     {(results.length>0 || refreshError) && <button type="button" onClick={()=>void viewResults()}
       className="inline-flex min-h-10 items-center rounded-md px-2 text-xs font-semibold text-[#003366] hover:bg-blue-50"
-      aria-label={needsAttention ? "Update results — needs attention" : "Update results"}>
-      Update results{needsAttention && <span className="ml-1 text-amber-700" aria-hidden="true">!</span>}
+      aria-label={needsAttention ? "View update results — needs attention" : "View update results"}>
+      View update results{needsAttention && <span className="ml-1 text-amber-700" aria-hidden="true">!</span>}
     </button>}
     {noticeOpen && <section role="region" aria-label="Meeting and recording update results"
       className="fixed bottom-5 right-5 z-[60] max-h-[80vh] w-[min(26rem,calc(100vw-2.5rem))] overflow-auto rounded-lg border border-slate-200 bg-white p-4 text-left shadow-lg">
@@ -84,7 +84,7 @@ export default function MeetingRecordingUpdate({token,onUpdated}:{token:string;o
         </div>;
       })}
       {refreshError && <p role="alert">{refreshError}</p>}
-      {!current && <p className="border-t pt-2 text-slate-500">This notification closes after about a minute. You can reopen it using Update results.</p>}
+      {!current && <p className="border-t pt-2 text-slate-500">This notification closes after about a minute. You can reopen it using View update results.</p>}
       </div>
     </section>}
   </div>;

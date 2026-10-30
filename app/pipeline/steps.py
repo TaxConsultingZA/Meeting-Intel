@@ -1,3 +1,4 @@
+from ..services.transcription_submission import transcribe_recording
 import os
 import tempfile
 
@@ -132,7 +133,7 @@ async def _reprocess_completed_recording(
         with processing_stage("download"):
             await graph.download_drive_item(drive_id, drive_item_id, video_path)
         with processing_stage("transcription"):
-            segments = await get_transcriber().transcribe(video_path)
+            segments = await transcribe_recording(get_transcriber(), video_path, job_id, lease_token)
         if known_people is not None:
             segments = normalize_single_person_diarization(segments, known_people)
         with processing_stage("transcription"):
@@ -451,7 +452,7 @@ async def process_recording(
                 if not (meeting.extracted_json or {}).get("t5_calendar_event"):
                     await _send_processing_started(meeting, all_upns)
                 with processing_stage("transcription"):
-                    segments = await get_transcriber().transcribe(video_path)
+                    segments = await transcribe_recording(get_transcriber(), video_path, job_id, lease_token)
                 segments = normalize_single_person_diarization(segments, all_attendee_upns)
                 meeting.transcript = "\n".join(f"[{s.speaker}] {s.text}" for s in segments)
                 transcript_segments = [

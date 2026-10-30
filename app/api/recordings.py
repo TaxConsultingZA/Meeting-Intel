@@ -270,7 +270,7 @@ async def import_recording(
         queued = False if prior_job else await enqueue_retry_job(
             db, drive_item_id=req.drive_item_id, drive_id=req.drive_id,
             owner_upn=upn, source="manual",
-            commit=False, job_id=new_job_id,
+            commit=False, job_id=new_job_id, authorized_by=upn,
         )
     else:
         queued = await enqueue_recording_job(
@@ -281,7 +281,7 @@ async def import_recording(
             source="manual",
             etag=item.get("eTag"),
             filename=item.get("name"),
-            commit=False, job_id=new_job_id,
+            commit=False, job_id=new_job_id, authorized_by=upn,
         )
     if not queued:
         raise HTTPException(status_code=409, detail="Already imported or currently processing")
@@ -330,6 +330,8 @@ async def _queue_reprocess(
     user: RegisteredUser,
     source_job: RecordingJob | None = None,
 ):
+    if not getattr(user, "is_admin", False) and not getattr(user, "is_subscribed", True):
+        raise HTTPException(403, "Subscribe before accessing Calendar or OneDrive")
     upn = getattr(user, "upn", user)
     m = await db.scalar(
         select(Meeting)
@@ -372,7 +374,7 @@ async def _queue_reprocess(
         drive_id=ledger.drive_id,
         owner_upn=owner_upn,
         source=MANUAL_REPROCESS_SOURCE,
-        commit=False, job_id=new_job_id,
+        commit=False, job_id=new_job_id, authorized_by=upn,
     )
     if not queued:
         await db.rollback()

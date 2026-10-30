@@ -14,6 +14,20 @@ from app.pipeline.transcribe import (
 from app.services.job_control import JobCancelled
 
 
+def test_submit_requests_original_language_detection_without_translation(monkeypatch):
+    from app.pipeline import transcribe
+    response = Mock()
+    response.json.return_value = {'id': 'synthetic-provider-id'}
+    post = Mock(return_value=response)
+    monkeypatch.setattr(transcribe.httpx, 'post', post)
+    assert AssemblyAITranscriber()._submit('synthetic-upload') == 'synthetic-provider-id'
+    assert post.call_count == 1
+    assert post.call_args.kwargs['json'] == {
+        'audio_url': 'synthetic-upload', 'speaker_labels': True,
+        'language_detection': True, 'speech_models': ['universal-2'],
+    }
+
+
 class TestTranscriptSegment:
     def test_fields_stored(self):
         seg = TranscriptSegment("Speaker A", "Hello.", 0.0, 2.5)

@@ -314,3 +314,30 @@ it("retains the cached warning if recovery succeeds only for task status",async(
  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
  expect(screen.getByText("Recording list and task status loaded successfully.")).toBeVisible();
 });
+
+it.each(["failed", "cancelled"] as const)("only offers %s Retry when permitted and never Transcribe", (status) => {
+  render(<ImportModal upn="token" onClose={vi.fn()} initialRecordings={[{
+    ...cachedRecording, already_imported: true, job: {
+      ...statusPollJob, status, processing_status: status, phase: status, can_retry: true,
+    },
+  }]} />);
+  expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Transcribe" })).not.toBeInTheDocument();
+});
+
+it("deduplicates rapid Transcribe clicks while acceptance is pending", async () => {
+  vi.mocked(getAvailableRecordings).mockResolvedValue([cachedRecording]);
+  vi.mocked(getRecordingJobs).mockResolvedValue([]);
+  let accepted!: (value: { ok: boolean }) => void;
+  vi.mocked(importRecording).mockReturnValue(new Promise(resolve => { accepted = resolve; }));
+  render(<ImportModal upn="token" onClose={vi.fn()} initialRecordings={[cachedRecording]} />);
+  await screen.findByText("Recording list and task status loaded successfully.");
+  const button = screen.getByRole("button", { name: "Transcribe" });
+  fireEvent.click(button); fireEvent.click(button);
+  expect(importRecording).toHaveBeenCalledOnce();
+  expect(screen.getByText("Queuing recording…")).toBeVisible();
+  vi.mocked(getRecordingJobs).mockResolvedValue([{ ...statusPollJob, can_cancel: true }]);
+  await act(async () => accepted({ ok: true }));
+  expect(await screen.findByRole("button", { name: "Cancel" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Transcribe" })).not.toBeInTheDocument();
+});

@@ -26,7 +26,7 @@ from .deps import registered_user
 router = APIRouter(route_class=RecordingStatusRoute)
 
 
-def job_out(job, meeting, upn, is_admin=False, *, clean_candidate=None, organizer=None, recording_filename=None):
+def job_out(job, meeting, upn, is_admin=False, *, clean_candidate=None, organizer=None, recording_filename=None, subscribed=True):
     def clean():
         return clean_candidate if clean_candidate is not None else is_clean_reprocess_candidate(meeting)
 
@@ -43,13 +43,14 @@ def job_out(job, meeting, upn, is_admin=False, *, clean_candidate=None, organize
     ) else None
     owner = job.owner_upn.lower() == upn.lower()
     can_control = owner or is_admin
+    can_submit = can_control and (is_admin or subscribed)
     reprocess_job = getattr(job, "source", None) == MANUAL_REPROCESS_SOURCE
     is_stuck = bool(
         job.status == "processing" and job.locked_at
         and job.locked_at < datetime.now(timezone.utc) - timedelta(seconds=get_settings().worker_lease_seconds)
     )
     can_reprocess = (
-        can_control and job.status == "completed" and meeting is not None
+        can_submit and job.status == "completed" and meeting is not None
         and (is_admin or (organizer if organizer is not None else is_meeting_organizer(meeting, upn)))
         and clean()
     )
@@ -67,7 +68,7 @@ def job_out(job, meeting, upn, is_admin=False, *, clean_candidate=None, organize
                 error=public_job_error(job.last_error),
                 failure=processing_failure_info(job.last_error, cancelled=job.status == "cancelled")
                 if job.status in {"failed", "cancelled", "pending"} else None,
-                can_retry=can_control and job.status in ("failed", "cancelled") and (
+                can_retry=can_submit and getattr(job, "provider_status", None) not in {"submitting", "submission_unknown", "submitted", "queued", "processing", "completed", "poll_unknown"} and job.status in ("failed", "cancelled") and (
                     not meeting or meeting.state not in (
                         ProcessingState.awaiting_review, ProcessingState.approved, ProcessingState.sent,
                     ) or (reprocess_job and meeting.state == ProcessingState.awaiting_review
@@ -76,6 +77,11 @@ def job_out(job, meeting, upn, is_admin=False, *, clean_candidate=None, organize
                 can_reprocess=can_reprocess,
                 can_cancel=can_control and job.status in ("pending", "processing") and not job.cancel_requested_at,
                 is_stuck=is_stuck,
+                auto_processing_admitted=getattr(job, "admission_version", None) == 1,
+                submission_count=getattr(job, "submission_count", 0) or 0,
+                provider_status=getattr(job, "provider_status", None),
+                audio_duration_seconds=getattr(job, "audio_duration_seconds", None),
+                detected_language=getattr(job, "detected_language", None), actual_cost=None,
                 processing_enabled=get_settings().recording_processing_enabled)
 
 
@@ -161,7 +167,8 @@ async def list_jobs(
             result.append(job_out(job, meeting, upn, user.is_admin,
                                   clean_candidate=clean_candidates.get(meeting.id, False) if meeting else False,
                                   organizer=organizers.get(meeting.id, False) if meeting else False,
-                                  recording_filename=filename))
+                                  recording_filename=filename,
+                                  subscribed=getattr(user, "is_subscribed", True)))
     return result
 
 
@@ -178,7 +185,11 @@ async def controlled_job(db, job_id, user):
 
 @router.post("/recordings/jobs/{job_id}/retry")
 async def retry_job(job_id: UUID, db=Depends(get_db), user: RegisteredUser = Depends(registered_user)):
+    if not getattr(user, "is_admin", False) and not getattr(user, "is_subscribed", True):
+        raise HTTPException(403, "Subscribe before accessing Calendar or OneDrive")
     job = await controlled_job(db, job_id, user)
+    if getattr(job, "provider_status", None) in {"submitting", "submission_unknown", "submitted", "queued", "processing", "completed", "poll_unknown"}:
+        raise HTTPException(409, "Provider submission requires manual reconciliation; it will not be resubmitted")
     if job.status not in RETRYABLE_JOB_STATES:
         raise HTTPException(409, "Only failed or cancelled recording jobs can be retried")
     meeting = await db.scalar(select(Meeting).where(Meeting.drive_item_id == job.drive_item_id)
@@ -194,7 +205,7 @@ async def retry_job(job_id: UUID, db=Depends(get_db), user: RegisteredUser = Dep
     new_job_id = uuid4()
     if not await enqueue_retry_job(db, drive_item_id=job.drive_item_id, drive_id=job.drive_id,
                                    owner_upn=job.owner_upn,
-                                   commit=False, job_id=new_job_id,
+                                   commit=False, job_id=new_job_id, authorized_by=user.upn,
                                    source=MANUAL_REPROCESS_SOURCE if reprocess_job else "manual_retry"):
         await db.rollback()
         raise HTTPException(409, "Recording is already queued or processing")

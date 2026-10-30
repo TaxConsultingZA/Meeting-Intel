@@ -41,13 +41,11 @@ def _retry_or_fail(job, error: Exception) -> None:
     job.locked_at = None
     job.lease_token = None
     job.last_error = public_job_error(error)
-    if job.attempts < job.max_attempts:
-        job.status = "pending"
-        job.available_at = _now() + timedelta(
-            seconds=min(300, 15 * 2 ** min(5, max(0, job.attempts - 1)))
-        )
-    else:
-        job.status = "failed"
+    # An interruption is not permission for a second paid submission.
+    job.status = "failed"
+    if getattr(job, "provider_status", None) == "submitting":
+        job.provider_status = "submission_unknown"
+
 
 
 async def _mark_meeting_interrupted(db, job):
@@ -69,11 +67,37 @@ def _cancel(job):
     job.last_error = public_job_error("cancelled")
 
 
+def _admitted():
+    return (RecordingJob.admission_version == 1,
+            RecordingJob.authorized_at.is_not(None),
+            RecordingJob.authorized_by.is_not(None))
+
+
+def _exact_filter():
+    from sqlalchemy import false
+    filters = []
+    value = settings.process_only_job_id.strip()
+    if value:
+        try:
+            filters.append(RecordingJob.id == uuid.UUID(value))
+        except ValueError:
+            return (false(),)
+    drive = settings.process_only_drive_id.strip()
+    item = settings.process_only_drive_item_id.strip()
+    if bool(drive) != bool(item):
+        return (false(),)
+    if item:
+        filters.extend((RecordingJob.drive_id == drive, RecordingJob.drive_item_id == item))
+    return tuple(filters)
+
+
 async def _recover_interrupted_jobs() -> None:
     """Recover only expired leases, never all jobs owned by other workers."""
     async with SessionLocal() as db:
         jobs = await db.scalars(
             select(RecordingJob).where(
+                *_admitted(),
+                *_exact_filter(),
                 RecordingJob.status == "processing",
                 or_(RecordingJob.locked_at.is_(None),
                     RecordingJob.locked_at < _now() - timedelta(seconds=settings.worker_lease_seconds)),
@@ -94,17 +118,13 @@ async def _recover_interrupted_jobs() -> None:
         await db.commit()
 
 
-async def _claim_next() -> RecordingJob | None:
-    only_job_id = settings.process_only_job_id.strip()
-    if only_job_id:
-        try:
-            target_filters = (RecordingJob.id == uuid.UUID(only_job_id),)
-        except ValueError:
-            logger.warning("PROCESS_ONLY_JOB_ID is not a valid UUID; worker will remain idle")
-            return None
-    else:
-        target_filters = ()
+async def _claim_next(*, expected_attempts: int | None = None) -> RecordingJob | None:
+    target_filters = _exact_filter()
+    if expected_attempts is not None:
+        target_filters += (RecordingJob.attempts == expected_attempts,)
 
+    target_filters += (*_admitted(), RecordingJob.attempts == 0,
+                       RecordingJob.submission_count == 0)
     async with SessionLocal() as db:
         exhausted_jobs = await db.execute(update(RecordingJob).where(
             RecordingJob.status == "pending",
@@ -255,6 +275,25 @@ async def _idle(stop):
         await asyncio.wait_for(stop.wait(), timeout=settings.worker_poll_seconds)
     except asyncio.TimeoutError:
         pass
+
+
+async def run_worker_once() -> bool:
+    """One initial attempt for an explicitly selected job, with no recovery loop.
+
+    The SQL attempts=0 predicate survives process restarts and concurrent claims.
+    A failure leaves the existing job failed. This entry point never
+    retries it or falls back to other queued recordings.
+    """
+    if not settings.recording_processing_enabled or not settings.process_only_job_id.strip():
+        raise ValueError("One-shot processing requires an enabled, explicitly selected job")
+    uuid.UUID(settings.process_only_job_id.strip())
+    if settings.worker_heartbeat_seconds >= settings.worker_lease_seconds:
+        raise ValueError("WORKER_HEARTBEAT_SECONDS must be less than WORKER_LEASE_SECONDS")
+    job = await _claim_next(expected_attempts=0)
+    if job is None:
+        return False
+    await _execute(job)
+    return True
 
 
 async def run_worker(stop_event: asyncio.Event | None = None) -> None:

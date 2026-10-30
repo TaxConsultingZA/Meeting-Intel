@@ -6,6 +6,21 @@ from uuid import uuid4
 import pytest
 
 
+@pytest.mark.parametrize('route', ['retry', 'reprocess'])
+async def test_unsubscribed_cannot_admit_new_processing_job(route):
+    from fastapi import HTTPException
+    from app.api import recording_jobs, recordings
+    db = AsyncMock()
+    user = SimpleNamespace(upn='synthetic@example.test', is_admin=False, is_subscribed=False)
+    with pytest.raises(HTTPException) as error:
+        if route == 'retry':
+            await recording_jobs.retry_job(uuid4(), db=db, user=user)
+        else:
+            await recordings._queue_reprocess(db, 'synthetic-item', user)
+    assert error.value.status_code == 403
+    db.commit.assert_not_awaited()
+
+
 class TestRecordingOwnership:
     async def test_foreign_drive_is_rejected_before_item_lookup(self, monkeypatch):
         from fastapi import HTTPException

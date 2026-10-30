@@ -61,6 +61,10 @@ class MockTranscriber(Transcriber):
         ]
 
 
+class ProviderTranscriptionError(RuntimeError):
+    pass
+
+
 class AssemblyAITranscriber(Transcriber):
     """Diarized transcription via AssemblyAI REST API (direct httpx — no SDK).
     Uploads the MP4, submits for transcription, polls until complete."""
@@ -89,6 +93,7 @@ class AssemblyAITranscriber(Transcriber):
             json={
                 "audio_url": upload_url,
                 "speaker_labels": True,
+                "language_detection": True,
                 "speech_models": ["universal-2"],
             },
             timeout=30,
@@ -99,16 +104,22 @@ class AssemblyAITranscriber(Transcriber):
     def _poll(self, transcript_id: str, stop: threading.Event | None = None) -> dict:
         """Poll until the transcript is complete or errored."""
         url = f"{_ASSEMBLYAI_BASE}/v2/transcript/{transcript_id}"
+        deadline = time.monotonic() + 1800
         while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Provider polling deadline; manual reconciliation required")
             if stop and stop.is_set():
                 raise JobCancelled("Cancellation requested")
             r = httpx.get(url, headers=self._headers(), timeout=30)
             r.raise_for_status()
             data = r.json()
+            observer = getattr(self, "status_observer", None)
+            if observer:
+                observer(data["status"])
             if data["status"] == "completed":
                 return data
             if data["status"] == "error":
-                raise RuntimeError(f"AssemblyAI error: {data.get('error')}")
+                raise ProviderTranscriptionError("Provider reported transcription error; manual review required")
             if stop:
                 stop.wait(5)
             else:

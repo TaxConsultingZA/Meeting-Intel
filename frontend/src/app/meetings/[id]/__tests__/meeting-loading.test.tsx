@@ -50,5 +50,3 @@ it("keeps navigation and renders a retry control when the detail API fails", asy
   expect(html).toContain("Retry loading meeting");
   expect(html).not.toContain("private upstream response");
 });
-
-

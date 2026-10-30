@@ -9,6 +9,6 @@ export default async function ActionItemsPage() {
   // No /users/me call: registration and welcome-email side effects are unnecessary here.
   return <>
     <Nav userEmail={session.user.email} accessToken={session.accessToken} />
-    <ActionItemsClient accessToken={session.accessToken} />
+    <ActionItemsClient key={session.user.email} accessToken={session.accessToken} userKey={session.user.email} />
   </>;
 }

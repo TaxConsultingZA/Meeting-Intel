@@ -8,6 +8,6 @@ export default async function SearchPage() {
   if (!session?.user?.email || !session.accessToken || session.authError) redirect("/login");
   return <>
     <Nav userEmail={session.user.email} accessToken={session.accessToken} />
-    <SearchClient key={session.accessToken} accessToken={session.accessToken} />
+    <SearchClient key={session.user.email} accessToken={session.accessToken} userKey={session.user.email} />
   </>;
 }

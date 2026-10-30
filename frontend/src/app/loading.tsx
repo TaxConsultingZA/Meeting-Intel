@@ -1,4 +1,18 @@
+"use client";
+
+import { usePathname } from "next/navigation";
+import { MeetingPageLoading } from "@/components/meeting-page-feedback";
+
+// The root boundary can paint before a destination's loading module arrives.
+// Keep it aligned with these routes as well as their nested boundaries.
 export default function Loading() {
+  const pathname = usePathname();
+  if (pathname === "/action-items") return <MeetingPageLoading page="actions" />;
+  if (pathname === "/search") return <MeetingPageLoading page="search" />;
+  return <DashboardLoading />;
+}
+
+function DashboardLoading() {
   return (
     <div aria-label="Dashboard loading" aria-busy="true">
       <p role="status" className="sr-only">Loading Dashboard</p>

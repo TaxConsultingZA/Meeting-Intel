@@ -1,9 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { searchSavedMeetings } from "@/lib/api";
+import { ApiError, searchSavedMeetings } from "@/lib/api";
 import SearchClient from "../search-client";
 
-vi.mock("@/lib/api", () => ({ searchSavedMeetings: vi.fn() }));
+vi.mock("@/lib/api", async importOriginal => ({ ...await importOriginal<typeof import("@/lib/api")>(), searchSavedMeetings: vi.fn() }));
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 const rows = [{ id: "m1", title: "Budget meeting", recorded_at: null, matched_summary: true, matched_action_items: true }];
 function submit(q = "budget") {
@@ -61,4 +61,40 @@ it("identifies a decision-only match and links it to the related meeting", async
   submit("decision");
   expect(await screen.findByText("Matched: decisions")).toBeVisible();
   expect(screen.getByRole("link", { name: "Budget meeting" })).toHaveAttribute("href", "/meetings/m1");
+});
+
+it("retries the failed submitted query while preserving a new input draft", async () => {
+  vi.mocked(searchSavedMeetings).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(rows);
+  render(<SearchClient accessToken="token" />);
+  submit("budget");
+  await screen.findByRole("alert");
+  fireEvent.change(screen.getByLabelText("Keyword"), { target: { value: "new draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  await screen.findByRole("link", { name: "Budget meeting" });
+  expect(searchSavedMeetings).toHaveBeenLastCalledWith("token", "budget", expect.any(AbortSignal));
+  expect(screen.getByLabelText("Keyword")).toHaveValue("new draft");
+});
+
+it.each([401, 403])("clears results and explains permission failure %s", async status => {
+  vi.mocked(searchSavedMeetings).mockResolvedValueOnce(rows).mockRejectedValueOnce(new ApiError(status, "Access denied."));
+  render(<SearchClient accessToken="token" />);
+  submit();
+  await screen.findByRole("link", { name: "Budget meeting" });
+  submit();
+  expect(await screen.findByRole("alert")).toHaveTextContent("Access denied.");
+  expect(screen.queryByRole("link", { name: "Budget meeting" })).not.toBeInTheDocument();
+});
+
+it("restores only the same user's draft after remount without automatically searching", async () => {
+  sessionStorage.clear();
+  const view = render(<SearchClient accessToken="token" userKey="local@example.test" />);
+  fireEvent.change(screen.getByLabelText("Keyword"), { target: { value: "draft keyword" } });
+  view.unmount();
+  const other = render(<SearchClient accessToken="other" userKey="other@example.test" />);
+  expect(screen.getByLabelText("Keyword")).toHaveValue("");
+  other.unmount();
+  render(<SearchClient accessToken="renewed-token" userKey="local@example.test" />);
+  await waitFor(() => expect(screen.getByLabelText("Keyword")).toHaveValue("draft keyword"));
+  expect(searchSavedMeetings).not.toHaveBeenCalled();
+  sessionStorage.clear();
 });

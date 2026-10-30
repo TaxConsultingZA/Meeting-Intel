@@ -186,3 +186,21 @@ it("keeps loaded actions visible during a slow refresh and a recoverable failure
   expect(screen.getByText("Send report")).toBeVisible();
   expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
 });
+
+it("hides the old empty Dashboard link while filtering and retries without losing a draft", async () => {
+  vi.mocked(getApprovedActionItems).mockResolvedValueOnce({ ...page, items: [] });
+  render(<ActionItemsClient accessToken="token" />);
+  await screen.findByRole("link", { name: "View meetings on Dashboard" });
+  let fail!: (error: Error) => void;
+  vi.mocked(getApprovedActionItems).mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
+  fireEvent.change(screen.getByLabelText("Meeting"), { target: { value: "Budget" } });
+  fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+  expect(screen.queryByRole("link", { name: "View meetings on Dashboard" })).not.toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "unfinished draft" } });
+  fail(new Error("offline"));
+  await screen.findByRole("alert");
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  await screen.findByText("Send report");
+  expect(screen.getByLabelText("Owner")).toHaveValue("unfinished draft");
+  expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", expect.objectContaining({ meeting: "Budget", owner: "" }), expect.any(AbortSignal));
+});

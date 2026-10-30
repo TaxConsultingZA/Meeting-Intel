@@ -7,8 +7,11 @@ import type { ActionItemFilters, ApprovedActionItemsPage } from "@/lib/types";
 import TaskCompletionControl from "@/components/task-completion";
 import LoadingSpinner from "@/components/loading-spinner";
 import { getActionItemReminders } from "@/lib/action-item-reminders";
+import { MeetingPageHeading, ResultsLoading } from "@/components/meeting-page-feedback";
+import { useMeetingPageDraft } from "@/lib/use-meeting-page-draft";
 
 const initial: ActionItemFilters = { view: "all", meeting: "", owner: "", deadline: "", offset: 0 };
+const initialDraft = { meeting: "", owner: "", deadline: "" };
 const controlBase = "rounded-md border px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-[#003366]";
 const control = `${controlBase} border-gray-300 bg-white`;
 function confidenceLabel(value: string | null | undefined) {
@@ -20,9 +23,9 @@ function confidenceLabel(value: string | null | undefined) {
   }
 }
 
-export default function ActionItemsClient({ accessToken }: { accessToken: string }) {
+export default function ActionItemsClient({ accessToken, userKey }: { accessToken: string; userKey?: string }) {
   const [filters, setFilters] = useState(initial);
-  const [draft, setDraft] = useState({ meeting: "", owner: "", deadline: "" });
+  const [draft, setDraft] = useMeetingPageDraft("action-items", userKey, initialDraft);
   const [result, setResult] = useState<ApprovedActionItemsPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -68,8 +71,7 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
 
   return <main className="mx-auto min-w-0 max-w-7xl px-4 py-8 sm:px-6">
     <div className="flex flex-wrap items-start justify-between gap-4">
-      <div><h1 className="text-2xl font-bold text-[#003366]">Action Items</h1>
-        <p className="mt-2 max-w-2xl text-sm text-gray-600">Approved action items from meetings you can access. Task completion is separate from meeting-note approval. Approved wording remains locked.</p></div>
+      <MeetingPageHeading page="actions" />
       <button className={control} disabled={loading} onClick={() => { setLoading(true); setRefresh(value => value + 1); }}>Refresh</button>
     </div>
     <form aria-label="Filter action items" className="mt-5 grid gap-3 rounded-lg border bg-gray-50 p-4 sm:grid-cols-3" onSubmit={event => { event.preventDefault(); change({ ...filters, ...draft, offset: 0 }); }}>
@@ -81,11 +83,14 @@ export default function ActionItemsClient({ accessToken }: { accessToken: string
       <div className="flex flex-wrap gap-2 sm:col-span-3"><button type="submit" className={`${control} font-semibold text-[#003366]`}>Apply filters</button>
         <button type="button" className={control} onClick={() => { setDraft({ meeting: "", owner: "", deadline: "" }); change({ ...initial }); }}>Clear filters</button></div>
     </form>
-    <section className="mt-6" aria-label="Approved action items" aria-busy={loading}>
-      {loading && <LoadingSpinner label="Action items loading" />}
+    <section className="mt-6 min-h-64" aria-label="Approved action items" aria-busy={loading}>
+      {loading && (result ? <div className="flex items-center text-sm text-[#003366]"><LoadingSpinner label="Action items loading" />Updating action items…</div> : <ResultsLoading page="actions" />)}
       {result && loading && <p className="sr-only">Showing previous results while the requested view loads.</p>}
-      {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">{error}</div>}
-      {result && !result.items.length && <div className="rounded-lg border bg-white px-6 py-10 text-center">
+      {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800"><p>{error}</p>
+        <button className={`${control} mt-3`} disabled={loading} onClick={() => { setLoading(true); setRefresh(value => value + 1); }}>Try again</button>
+        {result && <p className="mt-2 text-sm">Showing previous results. Refresh to check the latest view.</p>}
+      </div>}
+      {result && !loading && !error && !result.items.length && <div className="rounded-lg border bg-white px-6 py-10 text-center">
         <div role="status">
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto mb-4 h-10 w-10 text-[#003366]">
             <rect x="5" y="4" width="14" height="17" rx="2" />

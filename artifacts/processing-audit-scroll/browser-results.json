@@ -1,0 +1,27 @@
+{
+  "synthetic": true,
+  "desktop": "1280x900",
+  "narrow": "390x844",
+  "noOverflow": true,
+  "desktopScroll": {
+    "height": 804,
+    "expected": 803.5,
+    "scrollTop": 545,
+    "headerMovement": 0.5,
+    "sticky": "sticky",
+    "overflow": "auto"
+  },
+  "narrowScroll": {
+    "height": 804,
+    "expected": 803.5,
+    "scrollTop": 545,
+    "headerMovement": 0.5,
+    "sticky": "sticky",
+    "overflow": "auto"
+  },
+  "pagination": true,
+  "filters": true,
+  "errorRetry": true,
+  "externalRequests": [],
+  "pageErrors": []
+}

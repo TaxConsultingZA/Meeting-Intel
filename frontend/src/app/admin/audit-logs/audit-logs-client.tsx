@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Loader2, RefreshCw, Search, History, AlertCircle } from "lucide-react";
 import { ApiError, getAuditEvents, getProcessingMonitor } from "@/lib/api";
@@ -35,10 +35,30 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
   const [request, setRequest] = useState<Request>({ filters: {}, cursors: [undefined], index: 0, refresh: false });
   const [result, setResult] = useState<{ request: Request; token: string; page: AuditEventsPage | null; error: string | null } | null>(null);
   const [monitor, setMonitor] = useState<{ request: Request; token: string; page?: ProcessingMonitorPage; error?: string } | null>(null);
+  const eventsViewport = useRef<HTMLDivElement>(null);
   const zone = useUserTimeZone();
   const loading = result?.request !== request || result?.token !== accessToken;
   const page = result?.token === accessToken && (!loading || request.refresh) ? result.page : null;
   const error = !loading ? result?.error : null;
+
+  useEffect(() => {
+    const viewport = eventsViewport.current;
+    const table = viewport?.querySelector("table");
+    if (!viewport || !table) return;
+    // Keep seven actual rows visible even when long outcomes wrap or fonts resize.
+    const measure = () => {
+      const rows = table.tBodies[0]?.rows;
+      if (!rows?.length || loading || error) return;
+      const lastVisible = rows[Math.min(7, rows.length) - 1];
+      const height = Math.ceil(lastVisible.getBoundingClientRect().bottom - table.getBoundingClientRect().top);
+      if (height > 0) viewport.style.maxHeight = `${height}px`;
+    };
+    viewport.scrollTop = 0;
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(table);
+    return () => observer?.disconnect();
+  }, [page, loading, error]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -190,8 +210,10 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
         {page && <p className="mt-1 text-xs text-[#6b7280]">Window: <LocalDateTime value={page.window_start} /> – <LocalDateTime value={page.window_end} /></p>}
       </div>
       <p className="px-4 pb-3 text-xs text-[#6b7280]">Newest first. For email submission events, Succeeded means Microsoft Graph accepted the request. Delivery confirmation is not available.</p>
+      <div ref={eventsViewport} role="region" aria-label="Scrollable audit events" tabIndex={0}
+        className="relative max-h-[42rem] overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#003366] [&>[data-slot=table-container]]:overflow-visible">
       <Table className="text-xs min-w-[720px]" aria-label="Audit events">
-        <TableHeader><TableRow className="hover:bg-transparent">{["Time", "Actor", "Action", "Resource", "Outcome", "Details"].map((label) => <TableHead key={label} scope="col" className="bg-[#003366] text-white text-xs font-semibold px-4 py-2.5 border border-white/10">{label}</TableHead>)}</TableRow></TableHeader>
+        <TableHeader><TableRow className="hover:bg-transparent">{["Time", "Actor", "Action", "Resource", "Outcome", "Details"].map((label) => <TableHead key={label} scope="col" className="sticky top-0 z-10 bg-[#003366] text-white text-xs font-semibold px-4 py-2.5 border border-white/10">{label}</TableHead>)}</TableRow></TableHeader>
         <TableBody>
           {loading && <TableRow><TableCell colSpan={6} className="px-4 py-8 text-center"><p role="status" className="flex justify-center items-center gap-2 text-sm text-[#6b7280]"><Loader2 size={18} className="animate-spin" aria-hidden="true" />{page ? "Refreshing…" : "Loading audit events…"}</p></TableCell></TableRow>}
           {error && <TableRow><TableCell colSpan={6} className="px-4 py-8 text-center bg-red-50/50"><div role="alert" className="text-[13px] text-red-700"><AlertCircle size={20} className="mx-auto mb-2" aria-hidden="true" /><p className="font-semibold">Audit events could not be loaded</p><p className="mt-1">{error}</p></div><Button variant="outline" className={`${secondaryStyle} mt-3 bg-white`} onClick={() => setRequest({ ...request, refresh: false })}>Retry</Button></TableCell></TableRow>}
@@ -206,6 +228,7 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
           {!loading && !error && page?.items.length === 0 && <TableRow><TableCell colSpan={6} className="px-4 py-10 text-center text-[#6b7280] text-[13px]"><History size={22} className="mx-auto mb-3 text-[#003366]" aria-hidden="true" /><p className="font-semibold text-[#003366]">No audit events match these filters.</p><p className="mt-1">Try a wider date range or reset the filters to the last 7 days.</p><Button variant="outline" className={`${secondaryStyle} mt-3`} onClick={reset}>Clear filters</Button></TableCell></TableRow>}
         </TableBody>
       </Table>
+      </div>
       <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-3 border-t border-[#dde1e8]">
         <span className="text-xs text-[#6b7280]">Page {request.index + 1}{page ? ` · ${page.items.length} events` : ""}</span>
         <div className="flex gap-2">

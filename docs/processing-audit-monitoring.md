@@ -166,3 +166,16 @@
 用户明确授权：线上仅 Wei Jiuyang 管理员会话及未登录验收；普通用户 403 与切换身份清除数据采用已有本地测试，报告为“本地通过，线上普通用户会话未验收”。不创建账号、不改任何人的管理员权限。
 
 发布 SHA、部署 ID 与上线后只读验收结论另记 release-result.md / production-postflight.json；在取得证据前不标已验收。
+
+
+### 前端独立补发：7 行内部滚动
+
+用户在首轮部署完成后补充要求：保持每页数据量和分页，仅限制 Audit Events 的可视区域。新增可键盘聚焦的滚动区域，按当前表格前 7 条实际行高计算最大高度；横向滚动仍局限在表格，th 使用 sticky top-0。ResizeObserver 随列宽/字体变化重新测量并在卸载时清理，分页后回到表格顶部。没有改接口 limit 或分页游标。
+
+验证 scripts/verify_audit_scroll_ui.mjs：12 条合成事件只显示 7 行高度，desktop/narrow 均测得区域 804px、前七行加表头 803.5px，内部可滚动 545px；滚动到底后表头位移 0.5px。Previous/Next、页数/每页计数、筛选、加载失败重试仍通过；无非 loopback 请求和浏览器异常。tsc --noEmit 通过。新证据在 artifacts/processing-audit-scroll/，旧合成证据保留。
+
+首轮源代码 222cf86；API 部署 1ac9a4b6-a644-498b-bd80-5cc3d3091b44、worker 87e70a7c-4b38-4a9c-bc90-506f4b83c7d9、Vercel dpl_97eyD1Qcu38E6jwsvzSkRyPmwuss 均成功。API health=200；两个审计 API 无认证=401。API 容器 admin.py/reviews.py/processing_monitor.py SHA256 与发布源匹配。
+
+用户补充要求恢复原自动处理：worker RECORDING_PROCESSING_ENABLED 已恢复 true；配置恢复部署 38f8cb63-daec-4b87-b3e0-ee40bb1c1b26 成功，SSH printenv 实查 true；仍为 222cf86 worker 代码。没有因前端补丁重新部署 API/worker，没有手工创建任务或调用录音、AI、邮件接口。邮件与 BusinessAI 开关保持关闭。
+
+管理员线上页面验收暂未完成：浏览器扩展两次报告 Debugger unattached；窗口恢复工具因无法可靠识别 URL 而停止。已请用户将管理员 Chrome 页面恢复前台，不把数据库只读预检或本地截图冒充真实管理员页面验收。

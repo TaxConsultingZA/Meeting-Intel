@@ -1,0 +1,18 @@
+{
+  "this_window": {
+    "sha": "3822215338e25b166c398f5d4c5b9f794c65f863",
+    "frontend_deployment": "dpl_6vzuL8fjxK73H2kxurHaz8HQWXUh",
+    "status": "READY",
+    "api_worker_deploys_triggered": false
+  },
+  "current_concurrent_release": {
+    "sha": "6bd6b08e9929c8f21cac52af04998a60ce37f214",
+    "frontend_deployment": "dpl_DHFKkqEwHmGQmS8SAnSKcaJSh68G",
+    "frontend_status": "READY",
+    "api_deployment": "783e3160-4a6d-4792-833f-c0357c84f97b",
+    "api_status": "SUCCESS",
+    "worker_deployment": "38f8cb63-daec-4b87-b3e0-ee40bb1c1b26",
+    "worker_status": "SUCCESS",
+    "audit_and_nav_files_identical": true
+  }
+}

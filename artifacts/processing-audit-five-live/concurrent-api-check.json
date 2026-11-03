@@ -1,0 +1,11 @@
+{
+  "health": 200,
+  "/admin/audit-events": {
+    "present": true,
+    "unsigned": 401
+  },
+  "/admin/processing-monitor": {
+    "present": true,
+    "unsigned": 401
+  }
+}

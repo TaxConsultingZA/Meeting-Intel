@@ -1,0 +1,49 @@
+{
+  "synthetic": true,
+  "desktop": "1280x900",
+  "narrow": "390x844",
+  "noOverflow": true,
+  "desktopScroll": {
+    "events": {
+      "height": 804,
+      "expected": 803.5,
+      "horizontalOverflow": 0,
+      "scrollTop": 545,
+      "headerMovement": 0.5,
+      "sticky": "sticky",
+      "mobile": false
+    },
+    "jobs": {
+      "height": 256,
+      "firstRowHeight": 258,
+      "firstRowCount": 2,
+      "horizontalOverflow": 0,
+      "canScroll": true,
+      "focused": true
+    }
+  },
+  "narrowScroll": {
+    "events": {
+      "height": 633,
+      "expected": 3250,
+      "horizontalOverflow": 0,
+      "scrollTop": 4987,
+      "headerMovement": 0,
+      "sticky": "sticky",
+      "mobile": true
+    },
+    "jobs": {
+      "height": 320,
+      "firstRowHeight": 322,
+      "firstRowCount": 1,
+      "horizontalOverflow": 0,
+      "canScroll": true,
+      "focused": true
+    }
+  },
+  "pagination": true,
+  "filters": true,
+  "errorRetry": true,
+  "externalRequests": [],
+  "pageErrors": []
+}

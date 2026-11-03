@@ -15,7 +15,7 @@ type Request = { filters: AuditFilters; window?: { from: string; to: string }; c
 const emptyDraft: Draft = { from: "", to: "", event_type: "", outcome: "", actor: "", job_id: "", recording_id: "", status: "" };
 const inputStyle = "min-w-0 w-full border border-[#dde1e8] rounded-md px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#003366]";
 const secondaryStyle = "rounded-md border-[#dde1e8] text-[#003366] text-[13px]";
-const cellStyle = "px-4 py-2.5 border border-[#dde1e8] text-[12px]";
+const cellStyle = "block min-w-0 whitespace-normal [overflow-wrap:anywhere] px-3 py-2.5 border border-[#dde1e8] text-[12px] before:mb-1 before:block before:font-semibold before:text-[#003366] before:content-[attr(data-label)] lg:table-cell lg:before:hidden";
 
 export function parseAuditDate(value: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/.exec(value.trim());
@@ -36,6 +36,7 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
   const [result, setResult] = useState<{ request: Request; token: string; page: AuditEventsPage | null; error: string | null } | null>(null);
   const [monitor, setMonitor] = useState<{ request: Request; token: string; page?: ProcessingMonitorPage; error?: string } | null>(null);
   const eventsViewport = useRef<HTMLDivElement>(null);
+  const jobsViewport = useRef<HTMLDivElement>(null);
   const zone = useUserTimeZone();
   const loading = result?.request !== request || result?.token !== accessToken;
   const page = result?.token === accessToken && (!loading || request.refresh) ? result.page : null;
@@ -50,7 +51,8 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
       const rows = table.tBodies[0]?.rows;
       if (!rows?.length || loading || error) return;
       const lastVisible = rows[Math.min(7, rows.length) - 1];
-      const height = Math.ceil(lastVisible.getBoundingClientRect().bottom - table.getBoundingClientRect().top);
+      const sevenRows = Math.ceil(lastVisible.getBoundingClientRect().bottom - table.getBoundingClientRect().top);
+      const height = (typeof window.matchMedia === "undefined" || window.matchMedia("(min-width: 1024px)").matches) ? sevenRows : Math.min(sevenRows, Math.max(320, window.innerHeight * 0.75));
       if (height > 0) viewport.style.maxHeight = `${height}px`;
     };
     viewport.scrollTop = 0;
@@ -59,6 +61,25 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
     observer?.observe(table);
     return () => observer?.disconnect();
   }, [page, loading, error]);
+
+  useEffect(() => {
+    const viewport = jobsViewport.current;
+    const grid = viewport?.firstElementChild;
+    if (!viewport || !(grid instanceof HTMLElement)) return;
+    const measure = () => {
+      const cards = Array.from(grid.children) as HTMLElement[];
+      if (!cards.length) return;
+      const firstTop = cards[0].offsetTop;
+      const firstRow = cards.filter(card => card.offsetTop === firstTop);
+      const height = Math.ceil(Math.max(...firstRow.map(card => card.getBoundingClientRect().bottom)) - grid.getBoundingClientRect().top);
+      if (height > 0) viewport.style.maxHeight = `${height}px`;
+    };
+    viewport.scrollTop = 0;
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(grid);
+    return () => observer?.disconnect();
+  }, [monitor]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -185,7 +206,10 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
       {monitor?.request !== request || monitor?.token !== accessToken ? <p>Loading processing monitoring…</p> : monitor.error ? <div role="alert">{monitor.error}<Button variant="outline" onClick={() => setRequest({ ...request })}>Retry monitoring</Button></div> : <>
         {monitor.page?.has_more && <p>More jobs exist. Narrow the date, status, recording or job filters.</p>}
         {monitor.page?.items.length === 0 && <p>No jobs match these filters.</p>}
-        <div className="grid gap-3 sm:grid-cols-2">{monitor.page?.items.map((job) => <article key={job.job_id} className="min-w-0 rounded border p-3 text-xs break-words">
+        {!!monitor.page?.items.length && <p id="job-scroll-help" className="mb-2 text-xs font-medium text-[#003366]">↓ Scroll inside this panel for more jobs. Keyboard: Tab into the panel, then use ↑ / ↓ or Page Down.</p>}
+        <div ref={jobsViewport} role="region" aria-label="Scrollable processing jobs" aria-describedby="job-scroll-help" tabIndex={0}
+          className="relative max-h-[24rem] overflow-y-scroll overscroll-contain rounded border border-[#dde1e8] focus-visible:outline-2 focus-visible:outline-[#003366]" style={{ scrollbarGutter: "stable" }}>
+        <div className="grid min-w-0 gap-3 sm:grid-cols-2">{monitor.page?.items.map((job) => <article key={job.job_id} className="min-w-0 rounded border p-3 text-xs break-words">
           <p className="break-all font-semibold">Job {job.job_id}</p>
           <p>Created: <LocalDateTime value={job.created_at} /></p>
           <p>Current status: {job.status} · Attempts: {job.attempts}</p>
@@ -200,6 +224,7 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
           <p>Actual cost: Unknown · Estimated cost: Unknown · Billing evidence: Unknown</p>
           <Button variant="outline" className="mt-2" onClick={() => { setDraft({ ...draft, job_id: job.job_id }); setRequest({ filters: { ...request.filters, job_id: job.job_id }, cursors: [undefined], index: 0, refresh: false }); }}>View job events</Button>
         </article>)}</div>
+        </div>
       </>}
     </section>
 
@@ -211,19 +236,21 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
       </div>
       <p className="px-4 pb-3 text-xs text-[#6b7280]">Newest first. For email submission events, Succeeded means Microsoft Graph accepted the request. Delivery confirmation is not available.</p>
       <div ref={eventsViewport} role="region" aria-label="Scrollable audit events" tabIndex={0}
-        className="relative max-h-[42rem] overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#003366] [&>[data-slot=table-container]]:overflow-visible">
-      <Table className="text-xs min-w-[720px]" aria-label="Audit events">
-        <TableHeader><TableRow className="hover:bg-transparent">{["Time", "Actor", "Action", "Resource", "Outcome", "Details"].map((label) => <TableHead key={label} scope="col" className="sticky top-0 z-10 bg-[#003366] text-white text-xs font-semibold px-4 py-2.5 border border-white/10">{label}</TableHead>)}</TableRow></TableHeader>
-        <TableBody>
+        className="relative max-h-[42rem] overflow-y-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#003366] [&>[data-slot=table-container]]:overflow-visible">
+      <div className="sticky top-0 z-10 bg-[#003366] px-3 py-2 text-xs font-semibold text-white lg:hidden">Audit events · scroll within this list ↓</div>
+      <Table className="block w-full table-fixed text-xs lg:table" aria-label="Audit events">
+        <colgroup className="hidden lg:table-column-group">{[14, 12, 13, 22, 24, 15].map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup>
+        <TableHeader className="hidden lg:table-header-group"><TableRow className="hover:bg-transparent">{["Time", "Actor", "Action", "Resource", "Outcome", "Details"].map((label) => <TableHead key={label} scope="col" className="sticky top-0 z-10 bg-[#003366] text-white text-xs font-semibold whitespace-normal px-3 py-2.5 border border-white/10">{label}</TableHead>)}</TableRow></TableHeader>
+        <TableBody className="block lg:table-row-group">
           {loading && <TableRow><TableCell colSpan={6} className="px-4 py-8 text-center"><p role="status" className="flex justify-center items-center gap-2 text-sm text-[#6b7280]"><Loader2 size={18} className="animate-spin" aria-hidden="true" />{page ? "Refreshing…" : "Loading audit events…"}</p></TableCell></TableRow>}
           {error && <TableRow><TableCell colSpan={6} className="px-4 py-8 text-center bg-red-50/50"><div role="alert" className="text-[13px] text-red-700"><AlertCircle size={20} className="mx-auto mb-2" aria-hidden="true" /><p className="font-semibold">Audit events could not be loaded</p><p className="mt-1">{error}</p></div><Button variant="outline" className={`${secondaryStyle} mt-3 bg-white`} onClick={() => setRequest({ ...request, refresh: false })}>Retry</Button></TableCell></TableRow>}
-          {page?.items.map((event, index) => <TableRow key={event.id} className={`${index % 2 ? "bg-[#f8fafc]" : ""} hover:bg-blue-50/30`}>
-            <TableCell className={`${cellStyle} text-[#6b7280]`}><LocalDateTime value={event.occurred_at} /></TableCell>
-            <TableCell className={`${cellStyle} whitespace-normal break-words max-w-48`}>{actorLabel(event)}</TableCell>
-            <TableCell className={`${cellStyle} whitespace-normal`}>{eventTitle(event.event_type)}</TableCell>
-            <TableCell className={cellStyle}><span className="block font-medium">{resourceLabel(event)}</span>{event.job_id && <span className="block break-all">Job: {event.job_id}</span>}<span className="mt-1 block text-[#6b7280]" title={event.resource_id}>Reference: {event.resource_id.slice(0, 8)}{event.resource_id.length > 8 ? "…" : ""}</span></TableCell>
-            <TableCell className={`${cellStyle} whitespace-normal min-w-52`}><OutcomeBadge outcome={event.outcome} /><p className="mt-2 leading-5 text-[#374151]">{outcomeDescription(event)}</p>{failureDescription(event) && <p className="mt-1 leading-5 text-[#6b7280]">{failureDescription(event)}</p>}{event.outcome === "failed" && <><p className="mt-1 leading-5 text-[#6b7280]"><span className="font-medium">Failure stage: </span>{failureStage(event)}</p><p className="mt-1 leading-5 text-[#6b7280]"><span className="font-medium">Recovery: </span>{recoveryDescription(event)}</p></>}</TableCell>
-            <TableCell className={cellStyle}><AuditEventDialog event={event} /></TableCell>
+          {page?.items.map((event, index) => <TableRow key={event.id} className={`mb-3 block border-b-4 lg:mb-0 lg:table-row lg:border-b ${index % 2 ? "bg-[#f8fafc]" : ""} hover:bg-blue-50/30`}>
+            <TableCell data-label="Time" className={`${cellStyle} text-[#6b7280]`}><LocalDateTime value={event.occurred_at} /></TableCell>
+            <TableCell data-label="Actor" className={cellStyle}>{actorLabel(event)}</TableCell>
+            <TableCell data-label="Action" className={cellStyle}>{eventTitle(event.event_type)}</TableCell>
+            <TableCell data-label="Resource" className={cellStyle}><span className="block font-medium">{resourceLabel(event)}</span>{event.job_id && <span className="block break-all">Job: {event.job_id}</span>}<span className="mt-1 block text-[#6b7280]" title={event.resource_id}>Reference: {event.resource_id}</span></TableCell>
+            <TableCell data-label="Outcome" className={cellStyle}><OutcomeBadge outcome={event.outcome} /><p className="mt-2 leading-5 text-[#374151]">{outcomeDescription(event)}</p>{failureDescription(event) && <p className="mt-1 leading-5 text-[#6b7280]">{failureDescription(event)}</p>}{event.outcome === "failed" && <><p className="mt-1 leading-5 text-[#6b7280]"><span className="font-medium">Failure stage: </span>{failureStage(event)}</p><p className="mt-1 leading-5 text-[#6b7280]"><span className="font-medium">Recovery: </span>{recoveryDescription(event)}</p></>}</TableCell>
+            <TableCell data-label="Details" className={cellStyle}><AuditEventDialog event={event} /></TableCell>
           </TableRow>)}
           {!loading && !error && page?.items.length === 0 && <TableRow><TableCell colSpan={6} className="px-4 py-10 text-center text-[#6b7280] text-[13px]"><History size={22} className="mx-auto mb-3 text-[#003366]" aria-hidden="true" /><p className="font-semibold text-[#003366]">No audit events match these filters.</p><p className="mt-1">Try a wider date range or reset the filters to the last 7 days.</p><Button variant="outline" className={`${secondaryStyle} mt-3`} onClick={reset}>Clear filters</Button></TableCell></TableRow>}
         </TableBody>

@@ -44,7 +44,9 @@ it("renders native admin layout and system outcomes", async () => {
   expect(screen.getByText("Failed", { selector: "span" })).toHaveClass("bg-red-50");
   expect(screen.getByRole("main")).toHaveClass("max-w-5xl", "px-6", "py-7");
   expect(screen.getByRole("link", { name: "Back to Administration" })).toHaveAttribute("href", "/admin");
-  expect(screen.getByRole("table")).toHaveClass("min-w-[720px]");
+  expect(screen.getByRole("table")).toHaveClass("table-fixed", "w-full");
+  expect(screen.getByRole("region", { name: "Scrollable audit events" })).toHaveAttribute("tabindex", "0");
+  expect(screen.getByText(`Reference: ${event.resource_id}`)).toBeVisible();
 });
 
 it("applies exact filters and resets to the first page", async () => {
@@ -183,7 +185,7 @@ it("uses only the available resource and failure data, preserving IDs for invest
   render(<AuditLogsClient accessToken="token" />);
   expect(await screen.findByText("Recording job")).toBeVisible();
   expect(screen.getByText("No failure category was provided.")).toBeVisible();
-  expect(screen.getByText("Reference: 00000000…")).toHaveAttribute("title", event.resource_id);
+  expect(screen.getByText(`Reference: ${event.resource_id}`)).toHaveAttribute("title", event.resource_id);
   fireEvent.click(screen.getByRole("button", { name: `View details for ${event.id}` }));
   const dialog = await screen.findByRole("dialog");
   expect(dialog).toHaveTextContent("Name not provided in this audit event.");

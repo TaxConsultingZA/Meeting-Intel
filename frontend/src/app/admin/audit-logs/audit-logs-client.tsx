@@ -46,13 +46,14 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
     const viewport = eventsViewport.current;
     const table = viewport?.querySelector("table");
     if (!viewport || !table) return;
-    // Keep seven actual rows visible even when long outcomes wrap or fonts resize.
+    // Keep five actual rows visible even when long outcomes wrap or fonts resize.
     const measure = () => {
+      viewport.parentElement?.style.setProperty("--audit-body-width", `${viewport.clientWidth}px`);
       const rows = table.tBodies[0]?.rows;
       if (!rows?.length || loading || error) return;
-      const lastVisible = rows[Math.min(7, rows.length) - 1];
-      const sevenRows = Math.ceil(lastVisible.getBoundingClientRect().bottom - table.getBoundingClientRect().top);
-      const height = (typeof window.matchMedia === "undefined" || window.matchMedia("(min-width: 1024px)").matches) ? sevenRows : Math.min(sevenRows, Math.max(320, window.innerHeight * 0.75));
+      const lastVisible = rows[Math.min(5, rows.length) - 1];
+      const fiveRows = Math.ceil(lastVisible.getBoundingClientRect().bottom - table.getBoundingClientRect().top);
+      const height = (typeof window.matchMedia === "undefined" || window.matchMedia("(min-width: 1024px)").matches) ? fiveRows : Math.min(fiveRows, Math.max(320, window.innerHeight * 0.75));
       if (height > 0) viewport.style.maxHeight = `${height}px`;
     };
     viewport.scrollTop = 0;
@@ -235,12 +236,17 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
         {page && <p className="mt-1 text-xs text-[#6b7280]">Window: <LocalDateTime value={page.window_start} /> – <LocalDateTime value={page.window_end} /></p>}
       </div>
       <p className="px-4 pb-3 text-xs text-[#6b7280]">Newest first. For email submission events, Succeeded means Microsoft Graph accepted the request. Delivery confirmation is not available.</p>
+      <div className="bg-[#003366] px-3 py-2 text-xs font-semibold text-white lg:hidden">Audit events · scroll within this list ↓</div>
+      <div aria-hidden="true" className="hidden lg:block" style={{ width: "var(--audit-body-width, 100%)" }}>
+        <table className="w-full table-fixed text-xs"><colgroup>{[14, 12, 13, 22, 24, 15].map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup>
+          <thead><tr>{["Time", "Actor", "Action", "Resource", "Outcome", "Details"].map((label) => <th key={label} className="h-10 bg-[#003366] text-left text-white text-xs font-semibold whitespace-normal px-3 py-2.5 border border-white/10">{label}</th>)}</tr></thead>
+        </table>
+      </div>
       <div ref={eventsViewport} role="region" aria-label="Scrollable audit events" tabIndex={0}
-        className="relative max-h-[42rem] overflow-y-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#003366] [&>[data-slot=table-container]]:overflow-visible">
-      <div className="sticky top-0 z-10 bg-[#003366] px-3 py-2 text-xs font-semibold text-white lg:hidden">Audit events · scroll within this list ↓</div>
+        className="relative max-h-[42rem] overflow-y-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#003366] [&>[data-slot=table-container]]:overflow-visible" style={{ scrollbarGutter: "stable" }}>
       <Table className="block w-full table-fixed text-xs lg:table" aria-label="Audit events">
         <colgroup className="hidden lg:table-column-group">{[14, 12, 13, 22, 24, 15].map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup>
-        <TableHeader className="hidden lg:table-header-group"><TableRow className="hover:bg-transparent">{["Time", "Actor", "Action", "Resource", "Outcome", "Details"].map((label) => <TableHead key={label} scope="col" className="sticky top-0 z-10 bg-[#003366] text-white text-xs font-semibold whitespace-normal px-3 py-2.5 border border-white/10">{label}</TableHead>)}</TableRow></TableHeader>
+        <TableHeader className="sr-only"><TableRow>{["Time", "Actor", "Action", "Resource", "Outcome", "Details"].map((label) => <TableHead key={label} scope="col">{label}</TableHead>)}</TableRow></TableHeader>
         <TableBody className="block lg:table-row-group">
           {loading && <TableRow><TableCell colSpan={6} className="px-4 py-8 text-center"><p role="status" className="flex justify-center items-center gap-2 text-sm text-[#6b7280]"><Loader2 size={18} className="animate-spin" aria-hidden="true" />{page ? "Refreshing…" : "Loading audit events…"}</p></TableCell></TableRow>}
           {error && <TableRow><TableCell colSpan={6} className="px-4 py-8 text-center bg-red-50/50"><div role="alert" className="text-[13px] text-red-700"><AlertCircle size={20} className="mx-auto mb-2" aria-hidden="true" /><p className="font-semibold">Audit events could not be loaded</p><p className="mt-1">{error}</p></div><Button variant="outline" className={`${secondaryStyle} mt-3 bg-white`} onClick={() => setRequest({ ...request, refresh: false })}>Retry</Button></TableCell></TableRow>}
@@ -248,7 +254,7 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
             <TableCell data-label="Time" className={`${cellStyle} text-[#6b7280]`}><LocalDateTime value={event.occurred_at} /></TableCell>
             <TableCell data-label="Actor" className={cellStyle}>{actorLabel(event)}</TableCell>
             <TableCell data-label="Action" className={cellStyle}>{eventTitle(event.event_type)}</TableCell>
-            <TableCell data-label="Resource" className={cellStyle}><span className="block font-medium">{resourceLabel(event)}</span>{event.job_id && <span className="block break-all">Job: {event.job_id}</span>}<span className="mt-1 block text-[#6b7280]" title={event.resource_id}>Reference: {event.resource_id}</span></TableCell>
+            <TableCell data-label="Resource" className={cellStyle}><span className="block font-medium">{resourceLabel(event)}</span>{event.job_id && <span className="block break-all">Job: {event.job_id}</span>}{event.resource_id.toLowerCase() !== event.job_id?.toLowerCase() && <span className="mt-1 block text-[#6b7280]" title={event.resource_id}>Reference: {event.resource_id}</span>}</TableCell>
             <TableCell data-label="Outcome" className={cellStyle}><OutcomeBadge outcome={event.outcome} /><p className="mt-2 leading-5 text-[#374151]">{outcomeDescription(event)}</p>{failureDescription(event) && <p className="mt-1 leading-5 text-[#6b7280]">{failureDescription(event)}</p>}{event.outcome === "failed" && <><p className="mt-1 leading-5 text-[#6b7280]"><span className="font-medium">Failure stage: </span>{failureStage(event)}</p><p className="mt-1 leading-5 text-[#6b7280]"><span className="font-medium">Recovery: </span>{recoveryDescription(event)}</p></>}</TableCell>
             <TableCell data-label="Details" className={cellStyle}><AuditEventDialog event={event} /></TableCell>
           </TableRow>)}

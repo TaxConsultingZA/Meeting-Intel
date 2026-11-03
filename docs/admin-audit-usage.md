@@ -8,7 +8,7 @@
 2. 默认看最近 7 天。可按 Job ID、Recording item ID、Current job status、From/To、Event type、Outcome、Actor 筛选，点 Apply。Actor 是完整邮箱或 recording_worker/email_sender 等系统身份，精确匹配；时间按页面显示的 SAST 输入，To 不包含在窗口内，最大 90 天。
 3. Processing monitoring 看当前 job 状态、attempts、已确认的转写接受证据、原音频时长、当前 attempt 时长、安全失败阶段/类别和已返回 token。桌面一排两张、手机一张，更多 job 在区域内向下滚动；Tab 聚焦后可用方向键或 Page Down。
 4. 找到失败 job，点 View job events：页面自动按该 job 筛选。查看 started、processing failed/cancelled 等时间顺序，再点 View details，查看完整时间、身份、安全类别及恢复说明；展开 Technical details 查看完整资源、job、关联 ID。此按钮只查日志，不执行 Retry/Reprocess。
-5. Audit Events 桌面保留六列，完整换行；手机每条记录按 Time/Actor/Action/Resource/Outcome/Details 展示。桌面约 7 条高、手机使用适合屏幕的有限高度，更多记录内部滚动。表头/手机列表标题固定；每页数量与 Previous/Next 分页保持原规则。Refresh 重读已应用条件，Reset 清空条件；加载失败可点 Retry。
+5. Audit Events 桌面保留六列，完整换行；手机每条记录按 Time/Actor/Action/Resource/Outcome/Details 展示。桌面约 5 条高、手机使用适合屏幕的有限高度，更多记录内部滚动。表头/手机列表标题位于滚动正文之外，保持可见且不遮挡正文；每页数量与 Previous/Next 分页保持原规则。Refresh 重读已应用条件，Reset 清空条件；加载失败可点 Retry。
 
 注意：监控区时间按 job 创建时间，事件区时间按事件发生时间；当前状态筛选会作用于两个区，Actor/事件类型/结果只筛事件。监控最多 50 个 job，超过时缩小范围。
 

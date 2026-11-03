@@ -34,3 +34,6 @@
 
 
 本次显示修复已完成真实管理员桌面和 390px 线上截图验收，部署 dpl_E67Xpb49qNPBmmtXPG1fe2nk9zFR / 7b082d5。当前 29 条事件在第一页，分页按钮正确禁用；有下一页时的翻页遍历仅本地通过，不能写成线上已测。完整前后截图、测量和剩余验收项见 [本次发布验收报告](../artifacts/processing-audit-layout-live/release-result.md)。
+
+
+当前 Audit Events 展示补正版本为 3822215 / dpl_6vzuL8fjxK73H2kxurHaz8HQWXUh：约五条高度，表头位于滚动正文外，键盘聚焦时为顶部导航留白；只隐藏与 Job ID 相同的重复 Reference。现有 29 条和分页不变。桌面/390px 顶部、中段、底部及同一管理员会话的 Admin 导航入口均已实测，见 [六位置截图验收](../artifacts/processing-audit-five-live/release-result.md)。

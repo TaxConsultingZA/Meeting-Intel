@@ -1,0 +1,16 @@
+{
+  "adminExists": true,
+  "hasSize": true,
+  "href": "/admin",
+  "insideNav": true,
+  "insideViewport": true,
+  "label": "Admin",
+  "links": [
+    "MITaxConsulting SA",
+    "Dashboard",
+    "Action Items",
+    "Search saved meetings",
+    "Admin"
+  ],
+  "viewport": 390
+}

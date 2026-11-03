@@ -1,0 +1,16 @@
+{
+  "adminVisible": true,
+  "detailsButtons": 29,
+  "eventCount": 29,
+  "firstRowGap": -12205.33334350586,
+  "focusSpacing": "164.5px",
+  "headerGap": 0,
+  "height": 633,
+  "lastRowGap": 11.666656494140623,
+  "maxScroll": 12206,
+  "navClearance": 31.083343505859375,
+  "overflow": 0,
+  "pageOverflow": 0,
+  "scrollTop": 12205.3330078125,
+  "width": 390
+}

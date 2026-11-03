@@ -9,9 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only, selectinload
 
 from ..db import get_db
-from ..models import ActionItem, Meeting, MeetingParticipant, ProcessingState, RegisteredUser
+from ..models import ActionItem, Meeting, MeetingParticipant, RegisteredUser
 from ..schemas import ApprovedActionItemOut, ApprovedActionItemsPageOut, TaskCompletionIn, TaskCompletionOut
 from ..services.access import NO_VIEW_ACCESS_TYPES
+from ..services.action_review import APPROVED_NOTE_STATES, is_confirmed_insight, task_is_reviewed, reviewed_task_clause
 from .deps import registered_user
 from .reviews import _authorize, _require_editor, can_complete_task
 
@@ -41,12 +42,12 @@ async def list_action_items(
     query = select(ActionItem, Meeting).options(
         load_only(ActionItem.id, ActionItem.meeting_id, ActionItem.task, ActionItem.owner,
                   ActionItem.deadline_iso, ActionItem.deadline_text, ActionItem.source_quote,
-                  ActionItem.confidence, ActionItem.approved, ActionItem.completed_at, ActionItem.completed_by_id),
+                  ActionItem.confidence, ActionItem.approved, ActionItem.raw, ActionItem.completed_at, ActionItem.completed_by_id),
         load_only(Meeting.id, Meeting.title, Meeting.state, Meeting.organizer_upn, Meeting.attendees_raw),
         selectinload(Meeting.participants),
     ).join(Meeting, Meeting.id == ActionItem.meeting_id).where(
         ActionItem.approved.is_(True),
-        Meeting.state.in_([ProcessingState.approved, ProcessingState.sent]),
+        reviewed_task_clause(),
         access,
     )
     if view == "mine":
@@ -71,6 +72,8 @@ async def list_action_items(
             source_quote=item.source_quote, confidence=item.confidence,
             completed_at=item.completed_at, completed_by_id=item.completed_by_id,
             can_complete=can_complete_task(meeting, item, upn, is_admin=bool(user.is_admin)),
+            confirmation_source="insight_review" if is_confirmed_insight(item) else "meeting_notes",
+            meeting_notes_approved=meeting.state in APPROVED_NOTE_STATES,
         ) for item, meeting in rows[:limit]],
         has_more=len(rows) > limit,
         viewer_upn=upn,
@@ -87,13 +90,14 @@ async def set_task_completion(
     if not item:
         raise HTTPException(404, "Action item not found")
     # Match the existing parent-meeting lock order. Do not invoke the note-edit
-    # awaiting-review guard: task execution happens after note approval.
-    meeting = await _authorize(db, item.meeting_id, user.upn, for_update=True, allow_admin=bool(user.is_admin))
+    # awaiting-review guard: human-confirmed actions can precede note approval.
+    # Task management requires actual meeting access even for administrators.
+    meeting = await _authorize(db, item.meeting_id, user.upn, for_update=True, allow_admin=False)
     _require_editor(meeting, user.upn, is_admin=bool(user.is_admin))
     item = await db.scalar(select(ActionItem).where(ActionItem.id == item_id)
                            .with_for_update().execution_options(populate_existing=True))
-    if not item or not item.approved or meeting.state not in (ProcessingState.approved, ProcessingState.sent):
-        raise HTTPException(409, "Only approved tasks in approved meeting notes can be completed or reopened")
+    if not item or not task_is_reviewed(meeting, item):
+        raise HTTPException(409, "Only human-confirmed action items can be completed or reopened")
     if body.completed:
         if item.completed_at is None:
             item.completed_at = datetime.now(timezone.utc)

@@ -375,3 +375,12 @@ it("exposes manual activity and access history without unsafe metadata", async (
   expect(screen.getByRole("option", { name: "Meeting access revoked" })).toHaveValue("access.revoked");
   expect(safeMetadata({ subject_actor_id: "00000000-0000-4000-8000-000000000001", raw: "SECRET", prompt: "PRIVATE" })).toEqual([["subject_actor_id", "00000000-0000-4000-8000-000000000001"]]);
 });
+
+
+it("omits only a reference that duplicates the job ID", async () => {
+  vi.mocked(getAuditEvents).mockResolvedValue(page([{ ...event, job_id: event.resource_id.toUpperCase() }, { ...event, id: "distinct-resource", job_id: event.correlation_id }]));
+  render(<AuditLogsClient accessToken="token" />);
+  await screen.findByText(`Job: ${event.resource_id.toUpperCase()}`);
+  expect(screen.getAllByText(`Reference: ${event.resource_id}`)).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "View details for distinct-resource" })).toBeVisible();
+});

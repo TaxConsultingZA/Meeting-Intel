@@ -8,7 +8,7 @@ import { ApiError, approveMeeting, editActionItem, editMeetingTranscript, getMee
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
-  return { ...actual, getMeetingDecisions: vi.fn().mockResolvedValue([]), saveMeetingDecisions: vi.fn(), saveSpeakerMappings: vi.fn().mockResolvedValue(undefined),
+  return { ...actual, meetingInsights: vi.fn().mockResolvedValue(null), getMeetingDecisions: vi.fn().mockResolvedValue([]), saveMeetingDecisions: vi.fn(), saveSpeakerMappings: vi.fn().mockResolvedValue(undefined),
     editActionItem: vi.fn().mockResolvedValue(undefined), editMeetingTranscript: vi.fn().mockResolvedValue(undefined),
     approveMeeting: vi.fn(), getMeeting: vi.fn(), previewMeetingEmail: vi.fn(), getRecordingJobs: vi.fn().mockResolvedValue([]) };
 });

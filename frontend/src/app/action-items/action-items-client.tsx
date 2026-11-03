@@ -6,9 +6,9 @@ import { ApiError, getApprovedActionItems } from "@/lib/api";
 import type { ActionItemFilters, ApprovedActionItemsPage } from "@/lib/types";
 import TaskCompletionControl from "@/components/task-completion";
 import LoadingSpinner from "@/components/loading-spinner";
-import { getActionItemReminders } from "@/lib/action-item-reminders";
 import { MeetingPageHeading, ResultsLoading } from "@/components/meeting-page-feedback";
 import { useMeetingPageDraft } from "@/lib/use-meeting-page-draft";
+import { getActionItemReminders } from "@/lib/action-item-reminders";
 
 const initial: ActionItemFilters = { view: "all", meeting: "", owner: "", deadline: "", offset: 0 };
 const initialDraft = { meeting: "", owner: "", deadline: "" };
@@ -26,11 +26,26 @@ function confidenceLabel(value: string | null | undefined) {
 export default function ActionItemsClient({ accessToken, userKey }: { accessToken: string; userKey?: string }) {
   const [filters, setFilters] = useState(initial);
   const [draft, setDraft] = useMeetingPageDraft("action-items", userKey, initialDraft);
-  const [result, setResult] = useState<ApprovedActionItemsPage | null>(null);
+  const [storedResult, setResult] = useState<ApprovedActionItemsPage | null>(null);
+  const [loadedToken, setLoadedToken] = useState<string | null>(null);
+  // Never render the previous identity's rows while a new token is loading.
+  const result = loadedToken === accessToken ? storedResult : null;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
   const [displayedOffset, setDisplayedOffset] = useState(0);
+  const [remindersEnabled, setRemindersEnabled] = useState(true);
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    // Refresh authorization as well as the local calendar day. Hidden tabs
+    // revalidate on focus; no reminder is delivered outside this page.
+    const revalidate = () => { setNow(new Date()); setLoading(true); setRefresh(value => value + 1); };
+    const timer = window.setInterval(revalidate, 60_000);
+    window.addEventListener("focus", revalidate);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", revalidate); };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -40,7 +55,7 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
       setError("");
       try {
         const page = await getApprovedActionItems(accessToken, filters, controller.signal);
-        if (active) { setResult(page); setDisplayedOffset(filters.offset); }
+        if (active) { setResult(page); setLoadedToken(accessToken); setDisplayedOffset(filters.offset); }
       } catch (failure) {
         if (active) {
           if (failure instanceof ApiError && [401, 403].includes(failure.status)) setResult(null);
@@ -57,22 +72,33 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
   function change(next: ActionItemFilters) { setLoading(true); setFilters(next); }
 
   const hasAppliedFilters = [filters.meeting, filters.owner, filters.deadline].some(value => value.trim());
-  const reminders = result && !loading && !error ? getActionItemReminders(result.items, result.viewer_upn) : { overdue: [], dueSoon: [] };
+  // Dismissal lasts for this page session, calendar day and deadline. Reopening
+  // keeps today's dismissal; a new deadline or day makes the task eligible again.
+  const reminderKey = (item: { id: string; deadline_iso: string | null }) =>
+    JSON.stringify([result?.viewer_upn, item.id, item.deadline_iso, now.toDateString()]);
+  const reminders = result && remindersEnabled && !loading && !error
+    ? getActionItemReminders(result.items.filter(item => !dismissed.includes(reminderKey(item))), result.viewer_upn, now)
+    : { overdue: [], dueSoon: [] };
   const emptyTitle = filters.offset > 0
     ? "No actions on this page"
     : hasAppliedFilters
     ? "No matching action items"
-    : "No approved action items yet";
+    : "No confirmed action items yet";
   const emptyDescription = filters.offset > 0
     ? "This page has no results. Return to the first page to reload this view."
     : hasAppliedFilters
-    ? "No approved action items from meetings you can access match your applied filters. Try changing or clearing the filters above."
-    : "There are no approved action items from meetings you can access yet. Action items appear here after meeting notes containing extracted action items are approved.";
+    ? "No confirmed action items from meetings you can access match your applied filters. Try changing or clearing the filters above."
+    : "There are no confirmed action items from meetings you can access yet. Human-confirmed actions can appear while meeting notes are still awaiting review.";
 
   return <main className="mx-auto min-w-0 max-w-7xl px-4 py-8 sm:px-6">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <MeetingPageHeading page="actions" />
       <button className={control} disabled={loading} onClick={() => { setLoading(true); setRefresh(value => value + 1); }}>Refresh</button>
+    </div>
+    <div className="mt-4 text-sm text-gray-700">
+      <label><input type="checkbox" checked={remindersEnabled} onChange={event => setRemindersEnabled(event.target.checked)} /> Show my due reminders in this page session</label>
+      <p>Current page and filters only. Dates use your device time zone. No email is sent.</p>
+      {dismissed.length > 0 && <button className={control} onClick={() => setDismissed([])}>Restore dismissed reminders</button>}
     </div>
     <form aria-label="Filter action items" className="mt-5 grid gap-3 rounded-lg border bg-gray-50 p-4 sm:grid-cols-3" onSubmit={event => { event.preventDefault(); change({ ...filters, ...draft, offset: 0 }); }}>
       {([ ["meeting", "Meeting", "Search meeting title"], ["owner", "Owner", "Search owner name or email"], ["deadline", "Due date", "Date or original wording"] ] as const).map(([key, label, placeholder]) =>
@@ -105,6 +131,7 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
       </div>}
       {result && result.items.length > 0 && <>
         {(reminders.overdue.length > 0 || reminders.dueSoon.length > 0) && <aside aria-label="Personal action item due reminders" className="mb-4 grid min-w-0 grid-cols-1 gap-3 break-words sm:grid-cols-2">
+          <button className={control} onClick={() => setDismissed(current => [...new Set([...current, ...reminders.overdue.map(reminderKey), ...reminders.dueSoon.map(reminderKey)])])}>Dismiss these reminders for today</button>
           {reminders.overdue.length > 0 && <section role="status" className="rounded-lg border border-red-300 bg-red-50 p-4 text-red-900">
             <h2 className="font-semibold">Overdue ({reminders.overdue.length})</h2>
             <ul className="mt-2 list-inside list-disc text-sm">{reminders.overdue.map(item => <li key={item.id}>{item.task} — due {item.deadline_iso}</li>)}</ul>
@@ -119,7 +146,7 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
           <caption className="sr-only">Approved action items and source evidence</caption>
           <thead className="bg-[#003366] text-white"><tr>{["Task", "Meeting", "Owner", "Due date", "Confidence", "Source evidence", "Task status"].map(label => <th scope="col" key={label} className="px-4 py-3">{label}</th>)}</tr></thead>
           <tbody>{result.items.map(item => <tr key={item.id} className="border-t even:bg-gray-50">
-            <td className="max-w-sm whitespace-pre-wrap break-words px-4 py-4 align-top font-medium">{item.task}</td>
+            <td className="max-w-sm whitespace-pre-wrap break-words px-4 py-4 align-top font-medium">{item.task}<p className="mt-2 text-xs font-normal text-gray-600">Action: {item.confirmation_source === "insight_review" ? "human confirmed" : "confirmed in notes"}</p>{item.meeting_notes_approved === false && <p className="text-xs font-normal text-gray-600">Meeting notes: not approved</p>}</td>
             <td className="px-4 py-4 align-top"><Link className="text-[#003366] underline" href={`/meetings/${encodeURIComponent(item.meeting_id)}`}>{item.meeting_title?.trim() || "Untitled meeting"}</Link></td>
             <td className="px-4 py-4 align-top">{item.owner?.trim() || "Unspecified"}</td>
             <td className="px-4 py-4 align-top">

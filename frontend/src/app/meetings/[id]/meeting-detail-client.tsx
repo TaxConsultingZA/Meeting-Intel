@@ -18,6 +18,7 @@ import LocalDateTime from "@/components/local-date-time";
 import PipelineView from "./pipeline-view";
 import ActionItemReview from "./action-item-review";
 import MeetingDecisions from "./meeting-decisions";
+import MeetingInsights from "./meeting-insights";
 import {
   ApiError,
   getMeeting,
@@ -508,6 +509,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
 
         {/* Main content */}
         <div className="min-w-0 flex flex-col gap-4">
+          <MeetingInsights key={`${meeting.id}:${accessToken}`} meetingId={meeting.id} token={accessToken} canEdit={Boolean(meeting.can_edit)} />
           {decisionsPanel}
           {isProcessing ? (
             <PipelineView state={meeting.state} job={recordingJob} />

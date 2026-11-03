@@ -15,6 +15,23 @@ const page = {
     source_quote: null, can_complete: true }],
 };
 
+it("allows disabling, dismissing and restoring without sending or changing tasks", async () => {
+  vi.mocked(getApprovedActionItems).mockResolvedValue(page);
+  render(<ActionItemsClient accessToken="token" />);
+  await screen.findByLabelText("Personal action item due reminders");
+  fireEvent.click(screen.getByRole("checkbox"));
+  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss these reminders for today" }));
+  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() => expect(getApprovedActionItems).toHaveBeenCalledTimes(2));
+  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Restore dismissed reminders" }));
+  await screen.findByLabelText("Personal action item due reminders");
+  expect(setTaskCompletion).not.toHaveBeenCalled();
+});
+
 it("hides previous reminders while loading and after a list failure, then restores on retry", async () => {
   vi.mocked(getApprovedActionItems).mockResolvedValue(page);
   render(<ActionItemsClient accessToken="token" />);
@@ -41,6 +58,29 @@ it("updates reminders after Complete and Reopen without reloading the list", asy
   fireEvent.click(screen.getByRole("button", { name: "Reopen: Send report" }));
   await screen.findByLabelText("Personal action item due reminders");
   expect(getApprovedActionItems).toHaveBeenCalledTimes(1);
+});
+
+it("preserves today's dismissal when a task is completed and reopened", async () => {
+  vi.mocked(getApprovedActionItems).mockResolvedValue(page);
+  vi.mocked(setTaskCompletion).mockResolvedValueOnce({ completed_at: "2026-10-22T00:00:00Z", can_complete: true })
+    .mockResolvedValueOnce({ completed_at: null, can_complete: true });
+  render(<ActionItemsClient accessToken="token" />);
+  await screen.findByLabelText("Personal action item due reminders");
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss these reminders for today" }));
+  fireEvent.click(screen.getByRole("button", { name: "Mark complete: Send report" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Reopen: Send report" }));
+  await screen.findByRole("button", { name: "Mark complete: Send report" });
+  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
+});
+
+it("revalidates access on focus and removes revoked tasks", async () => {
+  vi.mocked(getApprovedActionItems).mockResolvedValueOnce(page).mockResolvedValueOnce({ ...page, items: [] });
+  render(<ActionItemsClient accessToken="token" />);
+  await screen.findByLabelText("Personal action item due reminders");
+  fireEvent(window, new Event("focus"));
+  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
+  await screen.findByText("No confirmed action items yet");
+  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
 });
 
 it("replaces reminders with the requested page and applied filter results", async () => {

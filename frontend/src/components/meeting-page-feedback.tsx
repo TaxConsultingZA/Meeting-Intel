@@ -4,7 +4,7 @@ export type MeetingPage = "actions" | "search";
 export const meetingPages = {
   actions: {
     title: "Action Items",
-    description: "Approved action items from meetings you can access. Task completion is separate from meeting-note approval. Approved wording remains locked.",
+    description: "Human-confirmed action items from meetings you can access. Users with task management permission can complete or reopen them while meeting notes remain awaiting review. This does not approve notes or send email.",
     width: "max-w-7xl",
   },
   search: {

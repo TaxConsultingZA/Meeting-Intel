@@ -1,0 +1,2809 @@
+diff --git a/app/api/action_items.py b/app/api/action_items.py
+index 3011e28..2a96648 100644
+--- a/app/api/action_items.py
++++ b/app/api/action_items.py
+@@ -9,9 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
+ from sqlalchemy.orm import load_only, selectinload
+ 
+ from ..db import get_db
+-from ..models import ActionItem, Meeting, MeetingParticipant, ProcessingState, RegisteredUser
++from ..models import ActionItem, Meeting, MeetingParticipant, RegisteredUser
+ from ..schemas import ApprovedActionItemOut, ApprovedActionItemsPageOut, TaskCompletionIn, TaskCompletionOut
+ from ..services.access import NO_VIEW_ACCESS_TYPES
++from ..services.action_review import APPROVED_NOTE_STATES, is_confirmed_insight, task_is_reviewed, reviewed_task_clause
+ from .deps import registered_user
+ from .reviews import _authorize, _require_editor, can_complete_task
+ 
+@@ -41,12 +42,12 @@ async def list_action_items(
+     query = select(ActionItem, Meeting).options(
+         load_only(ActionItem.id, ActionItem.meeting_id, ActionItem.task, ActionItem.owner,
+                   ActionItem.deadline_iso, ActionItem.deadline_text, ActionItem.source_quote,
+-                  ActionItem.confidence, ActionItem.approved, ActionItem.completed_at, ActionItem.completed_by_id),
++                  ActionItem.confidence, ActionItem.approved, ActionItem.raw, ActionItem.completed_at, ActionItem.completed_by_id),
+         load_only(Meeting.id, Meeting.title, Meeting.state, Meeting.organizer_upn, Meeting.attendees_raw),
+         selectinload(Meeting.participants),
+     ).join(Meeting, Meeting.id == ActionItem.meeting_id).where(
+         ActionItem.approved.is_(True),
+-        Meeting.state.in_([ProcessingState.approved, ProcessingState.sent]),
++        reviewed_task_clause(),
+         access,
+     )
+     if view == "mine":
+@@ -71,6 +72,8 @@ async def list_action_items(
+             source_quote=item.source_quote, confidence=item.confidence,
+             completed_at=item.completed_at, completed_by_id=item.completed_by_id,
+             can_complete=can_complete_task(meeting, item, upn, is_admin=bool(user.is_admin)),
++            confirmation_source="insight_review" if is_confirmed_insight(item) else "meeting_notes",
++            meeting_notes_approved=meeting.state in APPROVED_NOTE_STATES,
+         ) for item, meeting in rows[:limit]],
+         has_more=len(rows) > limit,
+         viewer_upn=upn,
+@@ -87,13 +90,14 @@ async def set_task_completion(
+     if not item:
+         raise HTTPException(404, "Action item not found")
+     # Match the existing parent-meeting lock order. Do not invoke the note-edit
+-    # awaiting-review guard: task execution happens after note approval.
+-    meeting = await _authorize(db, item.meeting_id, user.upn, for_update=True, allow_admin=bool(user.is_admin))
++    # awaiting-review guard: human-confirmed actions can precede note approval.
++    # Task management requires actual meeting access even for administrators.
++    meeting = await _authorize(db, item.meeting_id, user.upn, for_update=True, allow_admin=False)
+     _require_editor(meeting, user.upn, is_admin=bool(user.is_admin))
+     item = await db.scalar(select(ActionItem).where(ActionItem.id == item_id)
+                            .with_for_update().execution_options(populate_existing=True))
+-    if not item or not item.approved or meeting.state not in (ProcessingState.approved, ProcessingState.sent):
+-        raise HTTPException(409, "Only approved tasks in approved meeting notes can be completed or reopened")
++    if not item or not task_is_reviewed(meeting, item):
++        raise HTTPException(409, "Only human-confirmed action items can be completed or reopened")
+     if body.completed:
+         if item.completed_at is None:
+             item.completed_at = datetime.now(timezone.utc)
+diff --git a/app/api/reviews.py b/app/api/reviews.py
+index d481449..1c1f6d5 100644
+--- a/app/api/reviews.py
++++ b/app/api/reviews.py
+@@ -30,6 +30,7 @@ from ..email_templates import build_meeting_email
+ from ..utils.identity import normalize_upn, normalize_upns
+ from ..services.job_control import public_job_error, processing_failure_info
+ from ..services.access import NO_VIEW_ACCESS_TYPES, has_view_access
++from ..services.action_review import task_is_reviewed
+ from ..services.activity_audit import add_activity
+ from ..services.email_audit import add_email_event, submission_failure
+ from .deps import current_user, require_registered  # noqa: F401 — re-exported; tests may import from here
+@@ -369,9 +370,9 @@ def _require_editor(m: Meeting, upn: str, *, is_admin: bool = False) -> None:
+ 
+ 
+ def can_complete_task(m: Meeting, item: ActionItem, upn: str | None, *, is_admin: bool = False) -> bool:
+-    if not upn or not item.approved or m.state not in (ProcessingState.approved, ProcessingState.sent):
++    if not upn or not task_is_reviewed(m, item):
+         return False
+-    if not is_admin and not any(normalize_upn(p.user_upn) == upn and _has_view_access(p) for p in m.participants):
++    if not any(normalize_upn(p.user_upn) == upn and _has_view_access(p) for p in m.participants):
+         return False
+     try:
+         _require_editor(m, upn, is_admin=is_admin)
+diff --git a/app/main.py b/app/main.py
+index 9214a7f..50a92ad 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -9,7 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
+ from sqlalchemy import select, text
+ from .api import webhooks, reviews, subscriptions, recordings, calendar, notifications, admin, users
+ from .api import recording_jobs, recording_processing_requests
+-from .api import action_items
++from .api import action_items, meeting_insights
+ from .config import get_settings
+ from .db import engine, SessionLocal
+ from .models import Base, BusinessUnit, RegisteredUser, BUSINESS_UNITS
+@@ -149,6 +149,7 @@ app.add_middleware(
+ 
+ app.include_router(webhooks.router, tags=["webhooks"])
+ app.include_router(reviews.router, tags=["reviews"])
++app.include_router(meeting_insights.router, tags=["meeting-insights"])
+ app.include_router(action_items.router, tags=["action-items"])
+ app.include_router(subscriptions.router, tags=["subscriptions"])
+ app.include_router(recordings.router, tags=["recordings"])
+diff --git a/app/models.py b/app/models.py
+index 84a4a89..7458c16 100644
+--- a/app/models.py
++++ b/app/models.py
+@@ -440,3 +440,13 @@ class AuditEvent(Base):
+     correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+     event_key: Mapped[str] = mapped_column(String(255))
+     event_metadata: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, server_default=text("'{}'::jsonb"))
++
++
++class MeetingInsightDraft(Base):
++    __tablename__ = "meeting_insight_drafts"
++    meeting_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"), primary_key=True)
++    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
++    status: Mapped[str] = mapped_column(String(32), nullable=False)
++    transcript_hash: Mapped[str] = mapped_column(String(64), nullable=False)
++    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
++    reviewed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+diff --git a/app/schemas.py b/app/schemas.py
+index 06a066c..499af6b 100644
+--- a/app/schemas.py
++++ b/app/schemas.py
+@@ -168,6 +168,8 @@ class ActionItemOut(TaskCompletionOut):
+ 
+ 
+ class ApprovedActionItemOut(TaskCompletionOut):
++    confirmation_source: Literal["insight_review", "meeting_notes"] = "meeting_notes"
++    meeting_notes_approved: bool = False
+     id: UUID
+     task: str
+     meeting_id: UUID
+diff --git a/app/tests/test_action_items_readonly.py b/app/tests/test_action_items_readonly.py
+index ba55195..4ab92fd 100644
+--- a/app/tests/test_action_items_readonly.py
++++ b/app/tests/test_action_items_readonly.py
+@@ -71,7 +71,7 @@ def test_all_only_approved_and_accessible_without_admin_bypass(api):
+     assert titles(response) == {"Budget", "Tax 100%", "Shared"}
+     assert response.headers["cache-control"] == "no-store"
+     item = response.json()["items"][0]
+-    assert set(item) == {"id", "task", "meeting_id", "meeting_title", "owner", "deadline_iso", "deadline_text", "source_quote", "confidence", "completed_at", "completed_by_id", "can_complete"}
++    assert set(item) == {"id", "task", "meeting_id", "meeting_title", "owner", "deadline_iso", "deadline_text", "source_quote", "confidence", "completed_at", "completed_by_id", "can_complete", "confirmation_source", "meeting_notes_approved"}
+     assert {row["meeting_title"]: row["confidence"] for row in response.json()["items"]} == {"Budget": "high", "Tax 100%": "medium", "Shared": "low"}
+     db.commit.assert_not_awaited()
+     db.add.assert_not_called()
+diff --git a/app/tests/test_task_completion.py b/app/tests/test_task_completion.py
+index 9e4f1a9..954a26a 100644
+--- a/app/tests/test_task_completion.py
++++ b/app/tests/test_task_completion.py
+@@ -63,7 +63,7 @@ def test_complete_idempotent_reopen_and_approval_unchanged(api):
+     db.add.assert_not_called()
+ 
+ 
+-@pytest.mark.parametrize("role,allowed", [("organiser", True), ("admin", True), ("editor", True),
++@pytest.mark.parametrize("role,allowed", [("organiser", True), ("admin", False), ("editor", True),
+     ("viewer", False), ("owner_only", False), ("shared_editor", False), ("revoked", False), ("outsider", False)])
+ def test_authority_requires_existing_view_and_editor_access(api, role, allowed):
+     client, session, user, meeting, participant, item, db = api
+@@ -117,3 +117,60 @@ def test_authentication_and_registration_required_for_completion(api):
+                           headers={"Authorization": "Bearer mock:missing@taxconsulting.co.za"})
+     assert response.status_code == 403
+     assert item.completed_at is None
++
++
++@pytest.mark.parametrize("role,allowed", [("organiser", True), ("editor", True), ("admin_with_access", True),
++    ("viewer", False), ("shared_editor", False), ("revoked", False), ("outsider", False), ("admin_revoked", False)])
++def test_confirmed_action_before_notes_approval(api, role, allowed):
++    client, session, user, meeting, participant, item, db = api
++    meeting.state = ProcessingState.awaiting_review
++    meeting.approved_by = None; meeting.approved_at = None
++    meeting.organizer_upn = "other@taxconsulting.co.za"
++    item.raw = {"origin": "mock_insight_human_confirmed"}
++    item.owner = user.upn; item.deadline_iso = "2026-11-03"
++    if role == "organiser": participant.is_organizer = True
++    if role == "editor": participant.edit_access_status = "approved"
++    if role.startswith("admin"): user.is_admin = True
++    if role == "shared_editor": participant.access_type = "shared"; participant.edit_access_status = "approved"
++    if role in {"revoked", "admin_revoked"}: participant.access_type = "revoked"; participant.edit_access_status = "approved"
++    if role == "outsider": participant.user_upn = "outsider@taxconsulting.co.za"
++    session.commit()
++    before = (meeting.summary, meeting.transcript, meeting.extracted_json, meeting.email_delivery_status)
++    rows = client.get("/action-items?view=all").json()["items"]
++    if role in {"revoked", "outsider", "admin_revoked"}:
++        assert rows == []
++    else:
++        assert len(rows) == 1 and rows[0]["can_complete"] is allowed
++        assert rows[0]["deadline_iso"] == "2026-11-03"
++    assert put(client, item).status_code == (200 if allowed else 403)
++    if allowed:
++        assert client.get("/action-items").json()["items"][0]["completed_at"]
++        assert put(client, item, False).status_code == 200
++        assert client.get("/action-items").json()["items"][0]["completed_at"] is None
++    else:
++        assert item.completed_at is None
++        db.commit.assert_not_awaited()
++    assert meeting.state == ProcessingState.awaiting_review
++    assert meeting.approved_by is None and meeting.approved_at is None
++    assert before == (meeting.summary, meeting.transcript, meeting.extracted_json, meeting.email_delivery_status)
++
++
++@pytest.mark.parametrize("approved,origin", [(False, "mock_insight_human_confirmed"),
++    (True, "unconfirmed"), (True, "rejected"), (False, "rejected"), (True, None)])
++def test_candidates_cannot_bypass_independent_confirmation(api, approved, origin):
++    client, session, _, meeting, _, item, db = api
++    meeting.state = ProcessingState.awaiting_review
++    item.approved = approved; item.raw = {"origin": origin}
++    session.commit()
++    assert client.get("/action-items?view=all").json()["items"] == []
++    assert put(client, item).status_code == 409
++    assert put(client, item, False).status_code == 409
++    db.commit.assert_not_awaited()
++
++
++@pytest.mark.parametrize("value,expected", [("2026-11-03", "2026-11-03"),
++    ("2028-02-29", "2028-02-29"), ("2026-02-29", None), ("2026-02-30", None),
++    ("next week", None), ("20261103", None), ("2026-11-03T00:00:00Z", None), (None, None)])
++def test_confirmed_deadline_requires_explicit_valid_date(value, expected):
++    from app.services.action_review import confirmed_deadline_iso
++    assert confirmed_deadline_iso(value) == expected
+diff --git a/frontend/src/app/action-items/__tests__/action-item-reminders.test.tsx b/frontend/src/app/action-items/__tests__/action-item-reminders.test.tsx
+index 8ed8d71..f0d5938 100644
+--- a/frontend/src/app/action-items/__tests__/action-item-reminders.test.tsx
++++ b/frontend/src/app/action-items/__tests__/action-item-reminders.test.tsx
+@@ -15,6 +15,23 @@ const page = {
+     source_quote: null, can_complete: true }],
+ };
+ 
++it("allows disabling, dismissing and restoring without sending or changing tasks", async () => {
++  vi.mocked(getApprovedActionItems).mockResolvedValue(page);
++  render(<ActionItemsClient accessToken="token" />);
++  await screen.findByLabelText("Personal action item due reminders");
++  fireEvent.click(screen.getByRole("checkbox"));
++  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
++  fireEvent.click(screen.getByRole("checkbox"));
++  fireEvent.click(screen.getByRole("button", { name: "Dismiss these reminders for today" }));
++  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
++  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
++  await waitFor(() => expect(getApprovedActionItems).toHaveBeenCalledTimes(2));
++  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
++  fireEvent.click(screen.getByRole("button", { name: "Restore dismissed reminders" }));
++  await screen.findByLabelText("Personal action item due reminders");
++  expect(setTaskCompletion).not.toHaveBeenCalled();
++});
++
+ it("hides previous reminders while loading and after a list failure, then restores on retry", async () => {
+   vi.mocked(getApprovedActionItems).mockResolvedValue(page);
+   render(<ActionItemsClient accessToken="token" />);
+@@ -43,6 +60,29 @@ it("updates reminders after Complete and Reopen without reloading the list", asy
+   expect(getApprovedActionItems).toHaveBeenCalledTimes(1);
+ });
+ 
++it("preserves today's dismissal when a task is completed and reopened", async () => {
++  vi.mocked(getApprovedActionItems).mockResolvedValue(page);
++  vi.mocked(setTaskCompletion).mockResolvedValueOnce({ completed_at: "2026-10-22T00:00:00Z", can_complete: true })
++    .mockResolvedValueOnce({ completed_at: null, can_complete: true });
++  render(<ActionItemsClient accessToken="token" />);
++  await screen.findByLabelText("Personal action item due reminders");
++  fireEvent.click(screen.getByRole("button", { name: "Dismiss these reminders for today" }));
++  fireEvent.click(screen.getByRole("button", { name: "Mark complete: Send report" }));
++  fireEvent.click(await screen.findByRole("button", { name: "Reopen: Send report" }));
++  await screen.findByRole("button", { name: "Mark complete: Send report" });
++  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
++});
++
++it("revalidates access on focus and removes revoked tasks", async () => {
++  vi.mocked(getApprovedActionItems).mockResolvedValueOnce(page).mockResolvedValueOnce({ ...page, items: [] });
++  render(<ActionItemsClient accessToken="token" />);
++  await screen.findByLabelText("Personal action item due reminders");
++  fireEvent(window, new Event("focus"));
++  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
++  await screen.findByText("No confirmed action items yet");
++  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
++});
++
+ it("replaces reminders with the requested page and applied filter results", async () => {
+   vi.mocked(getApprovedActionItems).mockResolvedValueOnce({ ...page, has_more: true });
+   render(<ActionItemsClient accessToken="token" />);
+diff --git a/frontend/src/app/action-items/__tests__/action-items-client.test.tsx b/frontend/src/app/action-items/__tests__/action-items-client.test.tsx
+index bcd76cc..ef3920f 100644
+--- a/frontend/src/app/action-items/__tests__/action-items-client.test.tsx
++++ b/frontend/src/app/action-items/__tests__/action-items-client.test.tsx
+@@ -77,7 +77,7 @@ it("clears restricted data on a failed refresh and allows retry", async () => {
+ it("shows empty and missing-value states", async () => {
+   vi.mocked(getApprovedActionItems).mockResolvedValueOnce({ ...page, items: [] });
+   render(<ActionItemsClient accessToken="token" />);
+-  expect(await screen.findByRole("heading", { name: "No approved action items yet" })).toBeInTheDocument();
++  expect(await screen.findByRole("heading", { name: "No confirmed action items yet" })).toBeInTheDocument();
+   vi.mocked(getApprovedActionItems).mockResolvedValueOnce({ ...page, items: [{ ...page.items[0], meeting_title: null, owner: null, deadline_iso: null, deadline_text: null, source_quote: null }] } as unknown as typeof page);
+   fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+   expect(await screen.findByRole("link", { name: "Untitled meeting" })).toBeInTheDocument();
+@@ -99,8 +99,8 @@ it("ignores an obsolete response after a filter change", async () => {
+ it("explains approval availability and links to meetings without extra requests", async () => {
+   vi.mocked(getApprovedActionItems).mockResolvedValue({ ...page, items: [] });
+   render(<ActionItemsClient accessToken="token" />);
+-  expect(await screen.findByRole("heading", { name: "No approved action items yet" })).toBeInTheDocument();
+-  expect(screen.getByText(/Action items appear here after meeting notes containing extracted action items are approved/)).toBeInTheDocument();
++  expect(await screen.findByRole("heading", { name: "No confirmed action items yet" })).toBeInTheDocument();
++  expect(screen.getByText(/Human-confirmed actions can appear while meeting notes are still awaiting review/)).toBeInTheDocument();
+   expect(screen.queryByRole("button", { name: "Previous" })).not.toBeInTheDocument();
+   expect(screen.queryByRole("button", { name: "Next" })).not.toBeInTheDocument();
+   expect(getApprovedActionItems).toHaveBeenCalledTimes(1);
+@@ -111,33 +111,33 @@ it("explains approval availability and links to meetings without extra requests"
+ it("uses only applied filters to select the no-matches message", async () => {
+   vi.mocked(getApprovedActionItems).mockResolvedValue({ ...page, items: [] });
+   render(<ActionItemsClient accessToken="token" />);
+-  await screen.findByRole("heading", { name: "No approved action items yet" });
++  await screen.findByRole("heading", { name: "No confirmed action items yet" });
+   fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "Alice" } });
+   expect(screen.queryByRole("heading", { name: "No matching action items" })).not.toBeInTheDocument();
+   expect(getApprovedActionItems).toHaveBeenCalledTimes(1);
+   fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+   expect(await screen.findByRole("heading", { name: "No matching action items" })).toBeInTheDocument();
+   expect(screen.getByText(/Try changing or clearing the filters above/)).toBeInTheDocument();
+-  expect(screen.getByText(/No approved action items from meetings you can access match your applied filters/)).toBeInTheDocument();
++  expect(screen.getByText(/No confirmed action items from meetings you can access match your applied filters/)).toBeInTheDocument();
+   expect(screen.queryByRole("link", { name: "View meetings on Dashboard" })).not.toBeInTheDocument();
+   fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+-  expect(await screen.findByRole("heading", { name: "No approved action items yet" })).toBeInTheDocument();
++  expect(await screen.findByRole("heading", { name: "No confirmed action items yet" })).toBeInTheDocument();
+ });
+ 
+ it("does not treat whitespace-only filters as applied restrictions", async () => {
+   vi.mocked(getApprovedActionItems).mockResolvedValue({ ...page, items: [] });
+   render(<ActionItemsClient accessToken="token" />);
+-  await screen.findByRole("heading", { name: "No approved action items yet" });
++  await screen.findByRole("heading", { name: "No confirmed action items yet" });
+   fireEvent.change(screen.getByLabelText("Meeting"), { target: { value: "   " } });
+   fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+   await waitFor(() => expect(getApprovedActionItems).toHaveBeenLastCalledWith("token", expect.objectContaining({ meeting: "   " }), expect.anything()));
+-  expect(await screen.findByRole("heading", { name: "No approved action items yet" })).toBeInTheDocument();
++  expect(await screen.findByRole("heading", { name: "No confirmed action items yet" })).toBeInTheDocument();
+ });
+ 
+ it("explains meeting outputs with neutral labels and no personal action views", async () => {
+   render(<ActionItemsClient accessToken="token" />);
+   await screen.findByText("Send report");
+-  expect(screen.getByText("Approved action items from meetings you can access. Task completion is separate from meeting-note approval. Approved wording remains locked.")).toBeInTheDocument();
++  expect(screen.getByText(/Users with task management permission can complete or reopen them while meeting notes remain awaiting review/)).toBeInTheDocument();
+   expect(screen.queryByRole("group", { name: "Action item views" })).not.toBeInTheDocument();
+   expect(screen.queryByText(/My Actions|All Accessible|account email/)).not.toBeInTheDocument();
+   expect(screen.getByRole("columnheader", { name: "Owner" })).toBeInTheDocument();
+diff --git a/frontend/src/app/action-items/action-items-client.tsx b/frontend/src/app/action-items/action-items-client.tsx
+index 5657908..200f6e6 100644
+--- a/frontend/src/app/action-items/action-items-client.tsx
++++ b/frontend/src/app/action-items/action-items-client.tsx
+@@ -6,9 +6,9 @@ import { ApiError, getApprovedActionItems } from "@/lib/api";
+ import type { ActionItemFilters, ApprovedActionItemsPage } from "@/lib/types";
+ import TaskCompletionControl from "@/components/task-completion";
+ import LoadingSpinner from "@/components/loading-spinner";
+-import { getActionItemReminders } from "@/lib/action-item-reminders";
+ import { MeetingPageHeading, ResultsLoading } from "@/components/meeting-page-feedback";
+ import { useMeetingPageDraft } from "@/lib/use-meeting-page-draft";
++import { getActionItemReminders } from "@/lib/action-item-reminders";
+ 
+ const initial: ActionItemFilters = { view: "all", meeting: "", owner: "", deadline: "", offset: 0 };
+ const initialDraft = { meeting: "", owner: "", deadline: "" };
+@@ -26,11 +26,26 @@ function confidenceLabel(value: string | null | undefined) {
+ export default function ActionItemsClient({ accessToken, userKey }: { accessToken: string; userKey?: string }) {
+   const [filters, setFilters] = useState(initial);
+   const [draft, setDraft] = useMeetingPageDraft("action-items", userKey, initialDraft);
+-  const [result, setResult] = useState<ApprovedActionItemsPage | null>(null);
++  const [storedResult, setResult] = useState<ApprovedActionItemsPage | null>(null);
++  const [loadedToken, setLoadedToken] = useState<string | null>(null);
++  // Never render the previous identity's rows while a new token is loading.
++  const result = loadedToken === accessToken ? storedResult : null;
+   const [loading, setLoading] = useState(true);
+   const [error, setError] = useState("");
+   const [refresh, setRefresh] = useState(0);
+   const [displayedOffset, setDisplayedOffset] = useState(0);
++  const [remindersEnabled, setRemindersEnabled] = useState(true);
++  const [dismissed, setDismissed] = useState<string[]>([]);
++  const [now, setNow] = useState(() => new Date());
++
++  useEffect(() => {
++    // Refresh authorization as well as the local calendar day. Hidden tabs
++    // revalidate on focus; no reminder is delivered outside this page.
++    const revalidate = () => { setNow(new Date()); setLoading(true); setRefresh(value => value + 1); };
++    const timer = window.setInterval(revalidate, 60_000);
++    window.addEventListener("focus", revalidate);
++    return () => { window.clearInterval(timer); window.removeEventListener("focus", revalidate); };
++  }, []);
+ 
+   useEffect(() => {
+     const controller = new AbortController();
+@@ -40,7 +55,7 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
+       setError("");
+       try {
+         const page = await getApprovedActionItems(accessToken, filters, controller.signal);
+-        if (active) { setResult(page); setDisplayedOffset(filters.offset); }
++        if (active) { setResult(page); setLoadedToken(accessToken); setDisplayedOffset(filters.offset); }
+       } catch (failure) {
+         if (active) {
+           if (failure instanceof ApiError && [401, 403].includes(failure.status)) setResult(null);
+@@ -57,23 +72,34 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
+   function change(next: ActionItemFilters) { setLoading(true); setFilters(next); }
+ 
+   const hasAppliedFilters = [filters.meeting, filters.owner, filters.deadline].some(value => value.trim());
+-  const reminders = result && !loading && !error ? getActionItemReminders(result.items, result.viewer_upn) : { overdue: [], dueSoon: [] };
++  // Dismissal lasts for this page session, calendar day and deadline. Reopening
++  // keeps today's dismissal; a new deadline or day makes the task eligible again.
++  const reminderKey = (item: { id: string; deadline_iso: string | null }) =>
++    JSON.stringify([result?.viewer_upn, item.id, item.deadline_iso, now.toDateString()]);
++  const reminders = result && remindersEnabled && !loading && !error
++    ? getActionItemReminders(result.items.filter(item => !dismissed.includes(reminderKey(item))), result.viewer_upn, now)
++    : { overdue: [], dueSoon: [] };
+   const emptyTitle = filters.offset > 0
+     ? "No actions on this page"
+     : hasAppliedFilters
+     ? "No matching action items"
+-    : "No approved action items yet";
++    : "No confirmed action items yet";
+   const emptyDescription = filters.offset > 0
+     ? "This page has no results. Return to the first page to reload this view."
+     : hasAppliedFilters
+-    ? "No approved action items from meetings you can access match your applied filters. Try changing or clearing the filters above."
+-    : "There are no approved action items from meetings you can access yet. Action items appear here after meeting notes containing extracted action items are approved.";
++    ? "No confirmed action items from meetings you can access match your applied filters. Try changing or clearing the filters above."
++    : "There are no confirmed action items from meetings you can access yet. Human-confirmed actions can appear while meeting notes are still awaiting review.";
+ 
+   return <main className="mx-auto min-w-0 max-w-7xl px-4 py-8 sm:px-6">
+     <div className="flex flex-wrap items-start justify-between gap-4">
+       <MeetingPageHeading page="actions" />
+       <button className={control} disabled={loading} onClick={() => { setLoading(true); setRefresh(value => value + 1); }}>Refresh</button>
+     </div>
++    <div className="mt-4 text-sm text-gray-700">
++      <label><input type="checkbox" checked={remindersEnabled} onChange={event => setRemindersEnabled(event.target.checked)} /> Show my due reminders in this page session</label>
++      <p>Current page and filters only. Dates use your device time zone. No email is sent.</p>
++      {dismissed.length > 0 && <button className={control} onClick={() => setDismissed([])}>Restore dismissed reminders</button>}
++    </div>
+     <form aria-label="Filter action items" className="mt-5 grid gap-3 rounded-lg border bg-gray-50 p-4 sm:grid-cols-3" onSubmit={event => { event.preventDefault(); change({ ...filters, ...draft, offset: 0 }); }}>
+       {([ ["meeting", "Meeting", "Search meeting title"], ["owner", "Owner", "Search owner name or email"], ["deadline", "Due date", "Date or original wording"] ] as const).map(([key, label, placeholder]) =>
+         <label key={key} className="flex min-w-0 flex-col gap-1 text-sm font-medium text-gray-700">{label}
+@@ -105,6 +131,7 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
+       </div>}
+       {result && result.items.length > 0 && <>
+         {(reminders.overdue.length > 0 || reminders.dueSoon.length > 0) && <aside aria-label="Personal action item due reminders" className="mb-4 grid min-w-0 grid-cols-1 gap-3 break-words sm:grid-cols-2">
++          <button className={control} onClick={() => setDismissed(current => [...new Set([...current, ...reminders.overdue.map(reminderKey), ...reminders.dueSoon.map(reminderKey)])])}>Dismiss these reminders for today</button>
+           {reminders.overdue.length > 0 && <section role="status" className="rounded-lg border border-red-300 bg-red-50 p-4 text-red-900">
+             <h2 className="font-semibold">Overdue ({reminders.overdue.length})</h2>
+             <ul className="mt-2 list-inside list-disc text-sm">{reminders.overdue.map(item => <li key={item.id}>{item.task} — due {item.deadline_iso}</li>)}</ul>
+@@ -119,7 +146,7 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
+           <caption className="sr-only">Approved action items and source evidence</caption>
+           <thead className="bg-[#003366] text-white"><tr>{["Task", "Meeting", "Owner", "Due date", "Confidence", "Source evidence", "Task status"].map(label => <th scope="col" key={label} className="px-4 py-3">{label}</th>)}</tr></thead>
+           <tbody>{result.items.map(item => <tr key={item.id} className="border-t even:bg-gray-50">
+-            <td className="max-w-sm whitespace-pre-wrap break-words px-4 py-4 align-top font-medium">{item.task}</td>
++            <td className="max-w-sm whitespace-pre-wrap break-words px-4 py-4 align-top font-medium">{item.task}<p className="mt-2 text-xs font-normal text-gray-600">Action: {item.confirmation_source === "insight_review" ? "human confirmed" : "confirmed in notes"}</p>{item.meeting_notes_approved === false && <p className="text-xs font-normal text-gray-600">Meeting notes: not approved</p>}</td>
+             <td className="px-4 py-4 align-top"><Link className="text-[#003366] underline" href={`/meetings/${encodeURIComponent(item.meeting_id)}`}>{item.meeting_title?.trim() || "Untitled meeting"}</Link></td>
+             <td className="px-4 py-4 align-top">{item.owner?.trim() || "Unspecified"}</td>
+             <td className="px-4 py-4 align-top">
+diff --git a/frontend/src/app/meetings/[id]/__tests__/meeting-detail-client.test.tsx b/frontend/src/app/meetings/[id]/__tests__/meeting-detail-client.test.tsx
+index 610403d..5d43c3e 100644
+--- a/frontend/src/app/meetings/[id]/__tests__/meeting-detail-client.test.tsx
++++ b/frontend/src/app/meetings/[id]/__tests__/meeting-detail-client.test.tsx
+@@ -8,7 +8,7 @@ import { ApiError, approveMeeting, editActionItem, editMeetingTranscript, getMee
+ 
+ vi.mock("@/lib/api", async () => {
+   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+-  return { ...actual, getMeetingDecisions: vi.fn().mockResolvedValue([]), saveMeetingDecisions: vi.fn(), saveSpeakerMappings: vi.fn().mockResolvedValue(undefined),
++  return { ...actual, meetingInsights: vi.fn().mockResolvedValue(null), getMeetingDecisions: vi.fn().mockResolvedValue([]), saveMeetingDecisions: vi.fn(), saveSpeakerMappings: vi.fn().mockResolvedValue(undefined),
+     editActionItem: vi.fn().mockResolvedValue(undefined), editMeetingTranscript: vi.fn().mockResolvedValue(undefined),
+     approveMeeting: vi.fn(), getMeeting: vi.fn(), previewMeetingEmail: vi.fn(), getRecordingJobs: vi.fn().mockResolvedValue([]) };
+ });
+diff --git a/frontend/src/app/meetings/[id]/meeting-detail-client.tsx b/frontend/src/app/meetings/[id]/meeting-detail-client.tsx
+index 7337f59..555b0a6 100644
+--- a/frontend/src/app/meetings/[id]/meeting-detail-client.tsx
++++ b/frontend/src/app/meetings/[id]/meeting-detail-client.tsx
+@@ -18,6 +18,7 @@ import LocalDateTime from "@/components/local-date-time";
+ import PipelineView from "./pipeline-view";
+ import ActionItemReview from "./action-item-review";
+ import MeetingDecisions from "./meeting-decisions";
++import MeetingInsights from "./meeting-insights";
+ import {
+   ApiError,
+   getMeeting,
+@@ -508,6 +509,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
+ 
+         {/* Main content */}
+         <div className="min-w-0 flex flex-col gap-4">
++          <MeetingInsights key={`${meeting.id}:${accessToken}`} meetingId={meeting.id} token={accessToken} canEdit={Boolean(meeting.can_edit)} />
+           {decisionsPanel}
+           {isProcessing ? (
+             <PipelineView state={meeting.state} job={recordingJob} />
+diff --git a/frontend/src/components/meeting-page-feedback.tsx b/frontend/src/components/meeting-page-feedback.tsx
+index 3bf0c37..7efe766 100644
+--- a/frontend/src/components/meeting-page-feedback.tsx
++++ b/frontend/src/components/meeting-page-feedback.tsx
+@@ -4,7 +4,7 @@ export type MeetingPage = "actions" | "search";
+ export const meetingPages = {
+   actions: {
+     title: "Action Items",
+-    description: "Approved action items from meetings you can access. Task completion is separate from meeting-note approval. Approved wording remains locked.",
++    description: "Human-confirmed action items from meetings you can access. Users with task management permission can complete or reopen them while meeting notes remain awaiting review. This does not approve notes or send email.",
+     width: "max-w-7xl",
+   },
+   search: {
+diff --git a/frontend/src/lib/__tests__/action-item-reminders.test.ts b/frontend/src/lib/__tests__/action-item-reminders.test.ts
+index 9b7de7e..58b8f1e 100644
+--- a/frontend/src/lib/__tests__/action-item-reminders.test.ts
++++ b/frontend/src/lib/__tests__/action-item-reminders.test.ts
+@@ -38,3 +38,16 @@ it("ignores invalid or implicit dates, completed tasks and nonmatching owners",
+   ], "alice@example.test", new Date(2026, 9, 20, 12));
+   expect(result).toEqual({ overdue: [], dueSoon: [] });
+ });
++
++it("deduplicates repeated tasks without suppressing distinct tasks", () => {
++  const task = { ...base, deadline_iso: "2026-10-20" };
++  expect(getActionItemReminders([task, task, { ...task, id: "b" }], base.owner!, new Date(2026, 9, 20)).dueSoon.map(item => item.id)).toEqual(["a", "b"]);
++});
++
++it("changes buckets at local midnight and rejects timestamps and absent identity", () => {
++  const task = { ...base, deadline_iso: "2026-10-20" };
++  expect(getActionItemReminders([task], base.owner!, new Date(2026, 9, 20, 23, 59)).dueSoon).toHaveLength(1);
++  expect(getActionItemReminders([task], base.owner!, new Date(2026, 9, 21)).overdue).toHaveLength(1);
++  expect(getActionItemReminders([{ ...task, deadline_iso: "2026-10-20T00:00:00Z" }], base.owner!)).toEqual({ overdue: [], dueSoon: [] });
++  expect(getActionItemReminders([task], "")).toEqual({ overdue: [], dueSoon: [] });
++});
+diff --git a/frontend/src/lib/action-item-reminders.ts b/frontend/src/lib/action-item-reminders.ts
+index c14ab8a..f8da788 100644
+--- a/frontend/src/lib/action-item-reminders.ts
++++ b/frontend/src/lib/action-item-reminders.ts
+@@ -29,11 +29,14 @@ export function getActionItemReminders(
+ 
+   const overdue: ApprovedActionItem[] = [];
+   const dueSoon: ApprovedActionItem[] = [];
++  const seen = new Set<string>();
+   for (const item of items) {
+     if (item.completed_at || !item.owner?.trim() || item.owner.trim().toLowerCase() !== viewerUpn.trim().toLowerCase()) continue;
+     if (!item.deadline_iso) continue;
+     const due = calendarDay(item.deadline_iso);
+     if (due === null) continue;
++    if (seen.has(item.id)) continue;
++    seen.add(item.id);
+     if (due < today) overdue.push(item);
+     else if (due <= today + 7) dueSoon.push(item);
+   }
+diff --git a/frontend/src/lib/api.ts b/frontend/src/lib/api.ts
+index 1db8cd5..f0074b3 100644
+--- a/frontend/src/lib/api.ts
++++ b/frontend/src/lib/api.ts
+@@ -621,3 +621,9 @@ export function getProcessingMonitor(token: string, filters: import("./types").A
+   }
+   return apiFetch(`/admin/processing-monitor?${params}`, token, { signal, cache: "no-store" });
+ }
++
++export type InsightCandidate = { text: string; source_quote: string; owner: string | null; deadline: string | null; status: "pending_confirmation" | "confirmed" | "rejected" };
++export type InsightDraft = { version: number; status: string; provider: string; summary: string; actions: InsightCandidate[]; decisions: InsightCandidate[] };
++export function meetingInsights(id: string, token: string, method = "GET", draft?: InsightDraft): Promise<InsightDraft | null> {
++  return apiFetch(`/reviews/${encodeURIComponent(id)}/insights`, token, { method, cache: "no-store", ...(draft ? { body: JSON.stringify(draft) } : {}) });
++}
+diff --git a/frontend/src/lib/types.ts b/frontend/src/lib/types.ts
+index 9474091..4630299 100644
+--- a/frontend/src/lib/types.ts
++++ b/frontend/src/lib/types.ts
+@@ -71,6 +71,8 @@ export interface ActionItemOut extends TaskCompletion {
+ 
+ /** Approved source actions for the read-only cross-meeting page. */
+ export interface ApprovedActionItem extends TaskCompletion {
++  confirmation_source?: "insight_review" | "meeting_notes";
++  meeting_notes_approved?: boolean;
+   id: string;
+   meeting_id: string;
+   meeting_title: string | null;
+diff --git a/alembic/versions/62e9a3b8d014_meeting_insight_drafts.py b/alembic/versions/62e9a3b8d014_meeting_insight_drafts.py
+new file mode 100644
+--- /dev/null
++++ b/alembic/versions/62e9a3b8d014_meeting_insight_drafts.py
+@@ -0,0 +1,16 @@
++"""Independent analysis drafts; coordinate migration release."""
++from alembic import op
++import sqlalchemy as sa
++from sqlalchemy.dialects.postgresql import UUID, JSONB
++revision = "62e9a3b8d014"
++down_revision = "92d6a10f4e72"
++branch_labels = None
++depends_on = None
++def upgrade():
++    op.create_table("meeting_insight_drafts",
++        sa.Column("meeting_id", UUID(as_uuid=True), sa.ForeignKey("meetings.id", ondelete="CASCADE"), primary_key=True),
++        sa.Column("version", sa.Integer(), nullable=False), sa.Column("status", sa.String(32), nullable=False),
++        sa.Column("transcript_hash", sa.String(64), nullable=False), sa.Column("payload", JSONB(), nullable=False),
++        sa.Column("reviewed_by", sa.String(255)))
++def downgrade():
++    op.drop_table("meeting_insight_drafts")
+diff --git a/app/api/meeting_insights.py b/app/api/meeting_insights.py
+new file mode 100644
+--- /dev/null
++++ b/app/api/meeting_insights.py
+@@ -0,0 +1,96 @@
++"""Saved-transcript analysis independent of recording processing."""
++import asyncio
++import hashlib
++from uuid import UUID
++from typing import Literal
++from fastapi import APIRouter, Depends, HTTPException
++from pydantic import BaseModel, Field, field_validator
++from sqlalchemy.ext.asyncio import AsyncSession
++from ..db import get_db
++from ..models import MeetingInsightDraft, ActionItem
++from ..services import meeting_insights as service
++from ..services.action_review import confirmed_deadline_iso
++from .reviews import _authorize, _require_editor, _is_admin
++from .deps import require_registered
++router = APIRouter(prefix="/reviews")
++class Candidate(BaseModel):
++    text: str = Field(min_length=1, max_length=10000)
++    source_quote: str = Field(min_length=1, max_length=10000)
++    owner: str | None = Field(default=None, max_length=255)
++    deadline: str | None = Field(default=None, max_length=255)
++    status: Literal["pending_confirmation", "confirmed", "rejected"] = "pending_confirmation"
++    @field_validator("text")
++    @classmethod
++    def nonblank(cls, value):
++        if not value.strip():
++            raise ValueError("Candidate cannot be blank")
++        return value.strip()
++
++class DraftEdit(BaseModel):
++    version: int = Field(ge=1)
++    summary: str = Field(max_length=30000)
++    actions: list[Candidate] = Field(max_length=30)
++    decisions: list[Candidate] = Field(max_length=30)
++def output(d):
++    return None if d is None else {"version": d.version, "status": d.status, "provider": "mock", **d.payload}
++def fingerprint(t):
++    return hashlib.sha256(t.encode()).hexdigest()
++@router.get("/{meeting_id}/insights")
++async def read(meeting_id: UUID, db: AsyncSession = Depends(get_db), upn: str = Depends(require_registered)):
++    await _authorize(db, meeting_id, upn, allow_admin=await _is_admin(db, upn))
++    return output(await db.get(MeetingInsightDraft, meeting_id))
++@router.post("/{meeting_id}/insights")
++async def generate(meeting_id: UUID, db: AsyncSession = Depends(get_db), upn: str = Depends(require_registered)):
++    admin = await _is_admin(db, upn)
++    meeting = await _authorize(db, meeting_id, upn, for_update=True, allow_admin=admin)
++    _require_editor(meeting, upn, is_admin=admin)
++    if not meeting.transcript or not meeting.transcript.strip():
++        raise HTTPException(409, "A saved transcript is required")
++    draft = await db.get(MeetingInsightDraft, meeting_id)
++    if draft and draft.status != "failed":
++        return output(draft)
++    if draft is None:
++        draft = MeetingInsightDraft(meeting_id=meeting_id, version=1, payload={}, status="running",
++                                    transcript_hash=fingerprint(meeting.transcript))
++        db.add(draft)
++    try:
++        payload = await asyncio.wait_for(service.adapter.analyze(meeting.transcript), timeout=10)
++        validated = DraftEdit(version=1, **payload)
++        for item in validated.actions + validated.decisions:
++            if item.source_quote not in meeting.transcript:
++                raise ValueError("Ungrounded output")
++            item.status = "pending_confirmation"
++        draft.payload = validated.model_dump(exclude={"version"})
++        draft.status = "awaiting_review"
++        draft.transcript_hash = fingerprint(meeting.transcript)
++    except Exception:
++        draft.status = "failed"
++        draft.payload = {"summary": "", "actions": [], "decisions": []}
++    await db.commit()
++    return output(draft)
++@router.put("/{meeting_id}/insights")
++async def save(meeting_id: UUID, body: DraftEdit, db: AsyncSession = Depends(get_db), upn: str = Depends(require_registered)):
++    admin = await _is_admin(db, upn)
++    meeting = await _authorize(db, meeting_id, upn, for_update=True, allow_admin=admin)
++    _require_editor(meeting, upn, is_admin=admin)
++    draft = await db.get(MeetingInsightDraft, meeting_id)
++    if not draft or draft.version != body.version or draft.status != "awaiting_review":
++        raise HTTPException(409, "Draft changed; reload before saving")
++    if fingerprint(meeting.transcript or "") != draft.transcript_hash:
++        raise HTTPException(409, "Saved transcript changed; draft requires reconciliation")
++    for kind in ("actions", "decisions"):
++        items, old = getattr(body, kind), draft.payload[kind]
++        if len(items) != len(old) or any(i.source_quote != o["source_quote"] for i, o in zip(items, old)):
++            raise HTTPException(422, "Source evidence is immutable")
++        for item, source in zip(items, old):
++            if source["status"] == "confirmed" and item.model_dump() != source:
++                raise HTTPException(409, "Confirmed candidates cannot be edited here")
++            if kind == "actions" and item.status == "confirmed" and source["status"] != "confirmed":
++                db.add(ActionItem(meeting_id=meeting_id, task=item.text, owner=item.owner,
++                    deadline_text=item.deadline, deadline_iso=confirmed_deadline_iso(item.deadline), source_quote=item.source_quote, approved=True,
++                    edited_by=upn, raw={"origin": "mock_insight_human_confirmed"}))
++    draft.payload = body.model_dump(exclude={"version"})
++    draft.version += 1
++    draft.reviewed_by = upn
++    await db.commit()
++    return output(draft)
+diff --git a/app/services/action_review.py b/app/services/action_review.py
+new file mode 100644
+--- /dev/null
++++ b/app/services/action_review.py
+@@ -0,0 +1,36 @@
++"""Independent, server-written action confirmation; never approves notes."""
++from datetime import date
++import re
++
++from sqlalchemy import or_
++
++from ..models import ActionItem, Meeting, ProcessingState
++
++INSIGHT_CONFIRMATION_ORIGIN = "mock_insight_human_confirmed"
++APPROVED_NOTE_STATES = (ProcessingState.approved, ProcessingState.sent)
++
++
++def confirmed_deadline_iso(value: str | None) -> str | None:
++    """Copy an explicit reviewed calendar date; never resolve relative wording."""
++    if not value or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
++        return None
++    try:
++        return date.fromisoformat(value).isoformat()
++    except ValueError:
++        return None
++
++
++def is_confirmed_insight(item: ActionItem) -> bool:
++    raw = getattr(item, "raw", None)
++    return isinstance(raw, dict) and raw.get("origin") == INSIGHT_CONFIRMATION_ORIGIN
++
++
++def task_is_reviewed(meeting: Meeting, item: ActionItem) -> bool:
++    return bool(item.approved and (is_confirmed_insight(item) or meeting.state in APPROVED_NOTE_STATES))
++
++
++def reviewed_task_clause():
++    # Matches the human-confirmation producer in meeting-insights-foundation.
++    # Neither a candidate status nor a name/date inferred by AI is confirmation.
++    return or_(Meeting.state.in_(APPROVED_NOTE_STATES),
++               ActionItem.raw["origin"].as_string() == INSIGHT_CONFIRMATION_ORIGIN)
+diff --git a/app/services/meeting_insights.py b/app/services/meeting_insights.py
+new file mode 100644
+--- /dev/null
++++ b/app/services/meeting_insights.py
+@@ -0,0 +1,15 @@
++"""Offline adapter boundary; no network, provider registry or keys."""
++import re
++from typing import Protocol
++class InsightsAdapter(Protocol):
++    async def analyze(self, transcript: str) -> dict: ...
++class MockInsightsAdapter:
++    async def analyze(self, transcript: str) -> dict:
++        lines = [x.strip() for x in re.split(r"[\n。！？]+", transcript) if x.strip()]
++        def candidates(pattern):
++            return [{"text": line, "source_quote": line, "owner": None, "deadline": None,
++                     "status": "pending_confirmation"} for line in lines if re.search(pattern, line, re.I)][:30]
++        return {"summary": "[MOCK / 待审核] " + " / ".join(lines[:3]),
++                "actions": candidates(r"\b(will|todo|action|please)\b|需要|请|负责|跟进"),
++                "decisions": candidates(r"\b(decid|agree|approv)|决定|同意|决策")}
++adapter: InsightsAdapter = MockInsightsAdapter()
+diff --git a/app/tests/test_confirmed_action_flow.py b/app/tests/test_confirmed_action_flow.py
+new file mode 100644
+--- /dev/null
++++ b/app/tests/test_confirmed_action_flow.py
+@@ -0,0 +1,87 @@
++"""Actual confirmation/list/completion API flow; all rows are synthetic.
++"""
++import hashlib
++import json
++import os
++from pathlib import Path
++from unittest.mock import AsyncMock, MagicMock
++from uuid import uuid4
++
++from fastapi import FastAPI
++from fastapi.testclient import TestClient
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import Session
++from sqlalchemy.pool import StaticPool
++
++from app.api import action_items, meeting_insights, reviews
++from app.api.deps import registered_user, require_registered
++from app.db import get_db
++from app.models import ActionItem, Meeting, MeetingInsightDraft, MeetingParticipant, ProcessingState, RegisteredUser
++
++
++def test_actual_confirmation_then_pending_notes_task_lifecycle(monkeypatch):
++    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
++    for model in (RegisteredUser, Meeting, MeetingParticipant, ActionItem, MeetingInsightDraft):
++        model.__table__.create(engine)
++    session = Session(engine, expire_on_commit=False)
++    user = RegisteredUser(id=uuid4(), upn="alice@taxconsulting.co.za", is_admin=False)
++    meeting = Meeting(id=uuid4(), drive_item_id="synthetic-independent-action", title="Synthetic pending notes",
++        organizer_upn=user.upn, state=ProcessingState.awaiting_review, summary="Unapproved notes",
++        transcript="Please prepare a report.\nPlease archive evidence.\nPlease check totals.")
++    session.add_all([user, meeting]); session.flush()
++    participant = MeetingParticipant(meeting_id=meeting.id, user_upn=user.upn, access_type="participant")
++    payload = {"summary": "Synthetic draft", "actions": [
++        {"text": text, "source_quote": quote, "owner": user.upn, "deadline": "2026-11-03", "status": "pending_confirmation"}
++        for text, quote in [("Prepare report", "Please prepare a report."),
++                            ("Archive evidence", "Please archive evidence."), ("Check totals", "Please check totals.")]], "decisions": []}
++    draft = MeetingInsightDraft(meeting_id=meeting.id, version=1, status="awaiting_review", payload=payload,
++        transcript_hash=hashlib.sha256(meeting.transcript.encode()).hexdigest())
++    session.add_all([participant, draft]); session.commit()
++    db = MagicMock()
++    for method in ("get", "scalar", "scalars", "execute", "commit", "delete"):
++        setattr(db, method, AsyncMock(side_effect=getattr(session, method)))
++    db.add = session.add
++    app = FastAPI(); app.include_router(meeting_insights.router); app.include_router(action_items.router)
++    app.dependency_overrides[get_db] = lambda: db
++    app.dependency_overrides[registered_user] = lambda: user
++    app.dependency_overrides[require_registered] = lambda: user.upn
++    send = AsyncMock(side_effect=AssertionError("Confirmation and reminders must never send mail"))
++    monkeypatch.setattr(reviews.graph, "send_mail", send)
++    # Even with mail enabled in this process, no confirmation/completion path sends.
++    monkeypatch.setattr(reviews.settings, "emails_enabled", True)
++    before = (meeting.state, meeting.approved_by, meeting.approved_at, meeting.summary, meeting.transcript,
++              meeting.email_delivery_status, meeting.approved_recipients)
++    with TestClient(app) as client:
++        states = {"pending": client.get("/action-items?view=all").json()}
++        assert states["pending"]["items"] == []
++        edit = {"version": 1, **json.loads(json.dumps(payload))}
++        edit["actions"][0]["status"] = "confirmed"
++        edit["actions"][1]["status"] = "rejected"
++        response = client.put(f"/reviews/{meeting.id}/insights", json=edit)
++        assert response.status_code == 200, response.text
++        assert client.put(f"/reviews/{meeting.id}/insights", json=edit).status_code == 409
++        assert len(session.scalars(select(ActionItem)).all()) == 1
++        states["confirmed"] = client.get("/action-items?view=all").json()
++        item = states["confirmed"]["items"][0]
++        assert item["task"] == "Prepare report" and item["can_complete"] is True
++        assert item["deadline_iso"] == "2026-11-03"
++        url = f'/action-items/{item["id"]}/completion'
++        response = client.put(url, json={"completed": True}); assert response.status_code == 200
++        states["complete_response"] = response.json()
++        states["completed"] = client.get("/action-items").json()
++        assert states["completed"]["items"][0]["completed_at"]
++        response = client.put(url, json={"completed": False}); assert response.status_code == 200
++        states["reopen_response"] = response.json()
++        states["reopened"] = client.get("/action-items").json()
++        assert states["reopened"]["items"][0]["completed_at"] is None
++        participant.access_type = "revoked"; session.commit()
++        states["revoked"] = client.get("/action-items?view=all").json()
++        assert states["revoked"]["items"] == []
++        assert client.put(url, json={"completed": True}).status_code == 403
++        assert before == (meeting.state, meeting.approved_by, meeting.approved_at, meeting.summary, meeting.transcript,
++                          meeting.email_delivery_status, meeting.approved_recipients)
++        send.assert_not_awaited()
++        destination = os.environ.get("ACTION_FLOW_FIXTURE")
++        if destination:
++            Path(destination).write_text(json.dumps(states, indent=2) + "\n", encoding="utf-8")
++    session.close(); engine.dispose()
+diff --git a/app/tests/test_meeting_insights.py b/app/tests/test_meeting_insights.py
+new file mode 100644
+--- /dev/null
++++ b/app/tests/test_meeting_insights.py
+@@ -0,0 +1,136 @@
++import asyncio
++from datetime import UTC, datetime
++from unittest.mock import AsyncMock, MagicMock, patch
++import pytest
++from fastapi import FastAPI
++from fastapi.testclient import TestClient
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import Session
++from sqlalchemy.pool import StaticPool
++from app import models
++from app.api.deps import require_registered
++from app.api.meeting_insights import router
++from app.db import get_db
++@pytest.fixture
++def insights_api():
++    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
++    tables = [models.Meeting, models.MeetingParticipant, models.ActionItem, models.MeetingInsightDraft]
++    if hasattr(models, "MeetingDecision"):
++        tables.append(models.MeetingDecision)
++    for model in tables:
++        model.__table__.create(engine)
++    session = Session(engine, expire_on_commit=False)
++    actor = {"upn": "alice@example.test"}
++    meeting = models.Meeting(drive_item_id="local-decisions", title="Local meeting",
++        organizer_upn="alice@example.test", state=models.ProcessingState.awaiting_review, summary="Saved notes",
++        transcript="[A] We will prepare a demo.\n[B] 请跟进测试。\n[A] We agreed to use mock.\n[B] 决定先本地审核。", extracted_json={"objective": "Keep old data"},
++        recorded_at=datetime(2026, 10, 22, tzinfo=UTC))
++    session.add(meeting)
++    session.flush()
++    participant = models.MeetingParticipant(meeting_id=meeting.id, user_upn="alice@example.test", access_type="participant")
++    session.add(participant)
++    session.commit()
++    db = MagicMock()
++    db.scalar = AsyncMock(side_effect=session.scalar)
++    db.scalars = AsyncMock(side_effect=session.scalars)
++    db.execute = AsyncMock(side_effect=session.execute)
++    db.get = AsyncMock(side_effect=session.get)
++    db.add = session.add
++    db.delete = AsyncMock(side_effect=session.delete)
++    db.commit = AsyncMock(side_effect=session.commit)
++    app = FastAPI()
++    app.include_router(router)
++    app.dependency_overrides[get_db] = lambda: db
++    app.dependency_overrides[require_registered] = lambda: actor["upn"]
++    with patch("app.api.meeting_insights._is_admin", new=AsyncMock(return_value=False)), TestClient(app) as client:
++        yield client, session, meeting, participant, actor, db
++    session.close()
++    engine.dispose()
++
++def test_generate_edit_confirm_idempotency_and_evidence(insights_api):
++    client, session, meeting, _, _, db = insights_api
++    url = f"/reviews/{meeting.id}/insights"
++    original = (meeting.transcript, meeting.summary, meeting.state, meeting.extracted_json)
++    draft = client.post(url).json()
++    assert draft["status"] == "awaiting_review"
++    assert len(draft["actions"]) == 2 and len(draft["decisions"]) == 2
++    assert all(i["source_quote"] in meeting.transcript and i["owner"] is None and i["deadline"] is None for i in draft["actions"])
++    assert session.scalars(select(models.ActionItem)).all() == []
++    assert client.post(url).json() == draft
++    draft["summary"] = "Human summary"
++    draft["actions"][0]["text"] = "Reviewed demo task"
++    draft["actions"][0]["status"] = "confirmed"
++    result = client.put(url, json=draft)
++    assert result.status_code == 200
++    assert client.put(url, json=draft).status_code == 409
++    assert client.post(url).json()["summary"] == "Human summary"
++    items = session.scalars(select(models.ActionItem)).all()
++    assert len(items) == 1 and items[0].approved and items[0].source_quote == draft["actions"][0]["source_quote"]
++    assert (meeting.transcript, meeting.summary, meeting.state, meeting.extracted_json) == original
++    assert client.get(url).json()["version"] == 2
++    bad = result.json(); bad["actions"][1]["source_quote"] = "forged"
++    assert client.put(url, json=bad).status_code == 422
++    bad = result.json(); bad["actions"][0]["text"] = "overwrite confirmed"
++    assert client.put(url, json=bad).status_code == 409
++    meeting.transcript += " changed"; session.commit()
++    assert client.put(url, json=result.json()).status_code == 409
++
++@pytest.mark.parametrize("error", [RuntimeError("secret"), asyncio.TimeoutError()])
++def test_failure_retry_does_not_change_transcript(insights_api, error):
++    client, session, meeting, _, _, _ = insights_api
++    url = f"/reviews/{meeting.id}/insights"
++    original = meeting.transcript
++    with patch("app.services.meeting_insights.adapter.analyze", new=AsyncMock(side_effect=error)):
++        result = client.post(url)
++    assert result.status_code == 200 and result.json()["status"] == "failed"
++    assert "secret" not in result.text
++    assert meeting.transcript == original and meeting.state == models.ProcessingState.awaiting_review
++    assert client.post(url).json()["status"] == "awaiting_review"
++
++@pytest.mark.parametrize("access", ["shared", "request_view", "revoked", "outsider"])
++def test_permissions(insights_api, access):
++    client, session, meeting, participant, actor, _ = insights_api
++    url = f"/reviews/{meeting.id}/insights"
++    client.post(url)
++    meeting.organizer_upn = "other@example.test"
++    participant.access_type = access if access != "outsider" else "participant"
++    if access == "outsider": actor["upn"] = "outsider@example.test"
++    session.commit()
++    assert client.get(url).status_code == (200 if access == "shared" else 403)
++    assert client.post(url).status_code == 403
++    assert client.put(url, json={"version":1,"summary":"", "actions":[],"decisions":[]}).status_code == 403
++
++def test_empty_transcript(insights_api):
++    client, session, meeting, *_ = insights_api
++    meeting.transcript = " "; session.commit()
++    assert client.post(f"/reviews/{meeting.id}/insights").status_code == 409
++
++def test_migration_roundtrip(insights_api):
++    import importlib.util
++    from pathlib import Path
++    from alembic.migration import MigrationContext
++    from alembic.operations import Operations
++    from sqlalchemy import inspect
++    _, session, meeting, *_ = insights_api
++    path = Path("alembic/versions/62e9a3b8d014_meeting_insight_drafts.py")
++    spec = importlib.util.spec_from_file_location("insight_migration", path)
++    migration = importlib.util.module_from_spec(spec); spec.loader.exec_module(migration)
++    engine = session.get_bind()
++    models.MeetingInsightDraft.__table__.drop(engine)
++    with engine.begin() as conn:
++        with Operations.context(MigrationContext.configure(conn)):
++            migration.upgrade()
++            assert "meeting_insight_drafts" in inspect(conn).get_table_names()
++            migration.downgrade()
++            assert "meeting_insight_drafts" not in inspect(conn).get_table_names()
++    assert session.get(models.Meeting, meeting.id).transcript == meeting.transcript
++
++def test_generation_and_review_lock_parent_row(insights_api):
++    from sqlalchemy.dialects import postgresql
++    client, _, meeting, _, _, db = insights_api
++    url = f"/reviews/{meeting.id}/insights"
++    draft = client.post(url).json()
++    client.put(url, json=draft)
++    queries = [str(call.args[0].compile(dialect=postgresql.dialect())) for call in db.scalar.call_args_list]
++    assert len(queries) == 2
++    assert all("FOR UPDATE" in q and "meetings.id" in q for q in queries)
+diff --git a/artifacts/meeting-insights/.gitignore b/artifacts/meeting-insights/.gitignore
+new file mode 100644
+--- /dev/null
++++ b/artifacts/meeting-insights/.gitignore
+@@ -0,0 +1,7 @@
++pg-runtime/
++pg-data/
++*.pid
++*.log
++debug-*
++parse-failure-source.txt
++page-failure-debug.png
+diff --git a/artifacts/meeting-insights/live-baseline.json b/artifacts/meeting-insights/live-baseline.json
+new file mode 100644
+--- /dev/null
++++ b/artifacts/meeting-insights/live-baseline.json
+@@ -0,0 +1,38 @@
++{
++  "checked_on": "2026-11-03",
++  "worktree_base": "4d1d62ef90158624c0b17b1f05ded646b79ab25c",
++  "api_source": "222cf86ebbdf4098a2ffd58a781a29e8b41957ac",
++  "api_deployment": "1ac9a4b6-a644-498b-bd80-5cc3d3091b44",
++  "worker_deployment_record": "38f8cb63-daec-4b87-b3e0-ee40bb1c1b26",
++  "frontend_source": "7b082d5523f48c8b8639a5c8e1e57ddbbefb9331",
++  "frontend_deployment": "dpl_E67Xpb49qNPBmmtXPG1fe2nk9zFR",
++  "frontend_state": "READY",
++  "database_read_only_query": {
++    "migration_heads": [
++      "92d6a10f4e72"
++    ],
++    "postgres_version": "18.6 (4e5fd08)",
++    "insight_table_exists": false
++  },
++  "online_writes": false,
++  "active_railway_deployments": [
++    {
++      "service": "meeting-intel-worker",
++      "active": [
++        {
++          "id": "38f8cb63-daec-4b87-b3e0-ee40bb1c1b26",
++          "status": "SUCCESS"
++        }
++      ]
++    },
++    {
++      "service": "meeting-intel-api",
++      "active": [
++        {
++          "id": "1ac9a4b6-a644-498b-bd80-5cc3d3091b44",
++          "status": "SUCCESS"
++        }
++      ]
++    }
++  ]
++}
+diff --git a/artifacts/meeting-insights/local-postflight.json b/artifacts/meeting-insights/local-postflight.json
+new file mode 100644
+--- /dev/null
++++ b/artifacts/meeting-insights/local-postflight.json
+@@ -0,0 +1,9 @@
++{
++  "head": "62e9a3b8d014",
++  "meetings_automatically_approved": 0,
++  "email_delivery_claims": 0,
++  "recording_jobs": 0,
++  "existing_audit_events": 10,
++  "meetings_with_duplicate_confirmed_tasks": 0,
++  "confirmed_tasks": 3
++}
+diff --git a/artifacts/meeting-insights/preservation-check.json b/artifacts/meeting-insights/preservation-check.json
+new file mode 100644
+--- /dev/null
++++ b/artifacts/meeting-insights/preservation-check.json
+@@ -0,0 +1,5 @@
++{
++  "other_reviews_functions_unchanged": true,
++  "worker_provider_email_and_admin_diff_empty": true,
++  "source_head": "4d1d62ef90158624c0b17b1f05ded646b79ab25c"
++}
+diff --git a/artifacts/meeting-insights/production-build.txt b/artifacts/meeting-insights/production-build.txt
+new file mode 100644
+--- /dev/null
++++ b/artifacts/meeting-insights/production-build.txt
+@@ -0,0 +1,33 @@
++▲ Next.js 16.3.1 (webpack)
++✓ Running next.config.ts took 36ms
++
++  Creating an optimized production build ...
++✓ Compiled successfully in 3.4s
++  Running TypeScript ...
++  Finished TypeScript in 6.7s ...
++  Collecting page data using 13 workers ...
++  Generating static pages using 13 workers (0/10) ...
++  Generating static pages using 13 workers (2/10) 
++  Generating static pages using 13 workers (4/10) 
++  Generating static pages using 13 workers (7/10) 
++✓ Generating static pages using 13 workers (10/10) in 741ms
++  Finalizing page optimization ...
++  Collecting build traces ...
++
++Route (app)
++┌ ƒ /
++├ ○ /_not-found
++├ ƒ /action-items
++├ ƒ /admin
++├ ƒ /admin/audit-logs
++├ ƒ /api/auth/[...nextauth]
++├ ƒ /api/profile-photo
++├ ○ /icon.png
++├ ○ /login
++├ ƒ /meetings/[id]
++└ ƒ /search
++
++
++○  (Static)   prerendered as static content
++ƒ  (Dynamic)  server-rendered on demand
++
+diff --git a/artifacts/meeting-insights/release-api-requests.json b/artifacts/meeting-insights/release-api-requests.json
+new file mode 100644
+--- /dev/null
++++ b/artifacts/meeting-insights/release-api-requests.json
+@@ -0,0 +1,482 @@
++[
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/recordings/jobs",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/decisions",
++    "status": 200
++  },
++  {
++    "method": "POST",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "PUT",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/recordings/jobs",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/decisions",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "PUT",
++    "path": "/action-items/623e9b31-6e87-47a7-b082-62cbf939b710/completion",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "PUT",
++    "path": "/action-items/623e9b31-6e87-47a7-b082-62cbf939b710/completion",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/recordings/jobs",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/decisions",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "PUT",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 403
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/recordings/jobs",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/decisions",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/recordings/jobs",
++    "status": 200
++  },
++  {
++    "method": "POST",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "PUT",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/recordings/jobs",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "PUT",
++    "path": "/action-items/2fbc5746-7095-491b-9aed-8bd321c0eb40/completion",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "PUT",
++    "path": "/action-items/2fbc5746-7095-491b-9aed-8bd321c0eb40/completion",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/recordings/jobs",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "PUT",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 403
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/recordings/jobs",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/notifications",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  },
++  {
++    "method": "GET",
++    "path": "/action-items",
++    "status": 200
++  }
++]
+diff --git a/artifacts/meeting-insights/release-browser-results.json b/artifacts/meeting-insights/release-browser-results.json
+new file mode 100644
+--- /dev/null
++++ b/artifacts/meeting-insights/release-browser-results.json
+@@ -0,0 +1,212 @@
++{
++  "checks": [
++    {
++      "check": "Real meeting detail generates a persisted English synthetic draft",
++      "result": "passed"
++    },
++    {
++      "check": "Edit, confirm one, reject another and leave pending; failed save retains all edits",
++      "result": "passed"
++    },
++    {
++      "check": "Refresh restores human edits and independent confirmation without approving meeting notes",
++      "result": "passed"
++    },
++    {
++      "check": "Action Items shows only confirmed action with pending note status and existing task management",
++      "result": "passed"
++    },
++    {
++      "check": "Readonly participant can read detail and action status but cannot edit or complete",
++      "result": "passed"
++    },
++    {
++      "check": "390px pages keep controls visible without document overflow; action table scrolls locally",
++      "result": "passed"
++    }
++  ],
++  "external": [],
++  "errors": [],
++  "responses": [
++    {
++      "method": "GET",
++      "path": "/notifications",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/recordings/jobs?meeting_id=a51e45d6-23a6-480f-9f36-ead500054eb3",
++      "status": 200
++    },
++    {
++      "method": "POST",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++      "status": 200
++    },
++    {
++      "method": "PUT",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/notifications",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/recordings/jobs?meeting_id=a51e45d6-23a6-480f-9f36-ead500054eb3",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/notifications",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/action-items?view=all&meeting=&owner=&deadline=&offset=0&limit=50",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/action-items?view=all&meeting=SYNTHETIC+DATA+ONLY+-+page+flow+0253a742&owner=&deadline=&offset=0&limit=50",
++      "status": 200
++    },
++    {
++      "method": "PUT",
++      "path": "/action-items/2fbc5746-7095-491b-9aed-8bd321c0eb40/completion",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/notifications",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/action-items?view=all&meeting=&owner=&deadline=&offset=0&limit=50",
++      "status": 200
++    },
++    {
++      "method": "PUT",
++      "path": "/action-items/2fbc5746-7095-491b-9aed-8bd321c0eb40/completion",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/action-items?view=all&meeting=&owner=&deadline=&offset=0&limit=50",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/notifications",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/recordings/jobs?meeting_id=a51e45d6-23a6-480f-9f36-ead500054eb3",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/notifications",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/action-items?view=all&meeting=&owner=&deadline=&offset=0&limit=50",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/action-items?view=all&meeting=SYNTHETIC+DATA+ONLY+-+page+flow+0253a742&owner=&deadline=&offset=0&limit=50",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/notifications",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/recordings/jobs?meeting_id=a51e45d6-23a6-480f-9f36-ead500054eb3",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/notifications",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/action-items?view=all&meeting=&owner=&deadline=&offset=0&limit=50",
++      "status": 200
++    },
++    {
++      "method": "GET",
++      "path": "/action-items?view=all&meeting=SYNTHETIC+DATA+ONLY+-+page+flow+0253a742&owner=&deadline=&offset=0&limit=50",
++      "status": 200
++    }
++  ]
++}
+diff --git a/artifacts/meeting-insights/release-fixtures.json b/artifacts/meeting-insights/release-fixtures.json
+new file mode 100644
+--- /dev/null
++++ b/artifacts/meeting-insights/release-fixtures.json
+@@ -0,0 +1,10 @@
++{
++  "database": "meeting_insights_54e06bc86557",
++  "ui_title": "SYNTHETIC DATA ONLY - page flow 0253a742",
++  "ui_id": "a51e45d6-23a6-480f-9f36-ead500054eb3",
++  "race_id": "9d8fcb3c-6f41-4026-b711-226eba1286ab",
++  "today": "2026-11-03",
++  "owner": "owner@example.test",
++  "editor": "editor@example.test",
++  "viewer": "viewer@example.test"
++}
+diff --git a/artifacts/meeting-insights/release-postgres-results.json b/artifacts/meeting-insights/release-postgres-results.json
+new file mode 100644
+--- /dev/null
++++ b/artifacts/meeting-insights/release-postgres-results.json
+@@ -0,0 +1,49 @@
++[
++  {
++    "check": "Full migration chain reaches actual deployment head 92d6a10f4e72",
++    "result": "passed"
++  },
++  {
++    "check": "Alembic target-head upgrade/downgrade/upgrade preserves saved data",
++    "result": "passed",
++    "version": "18.6"
++  },
++  {
++    "check": "Two authorized users concurrently generate exactly one draft",
++    "result": "passed",
++    "adapter_calls": 1
++  },
++  {
++    "check": "Concurrent confirmation commits once and rejects stale second reviewer",
++    "result": "passed",
++    "statuses": [
++      200,
++      409
++    ]
++  },
++  {
++    "check": "Duplicate confirmation and repeated generate preserve human edits",
++    "result": "passed"
++  },
++  {
++    "check": "Competing review waits for real PostgreSQL row lock and resumes",
++    "result": "passed",
++    "observed_lock_waiters": 1
++  },
++  {
++    "check": "PostgreSQL lock timeout rolls back competing transaction",
++    "result": "passed"
++  },
++  {
++    "check": "Only confirmed candidate is visible; task complete/reopen respects original permissions",
++    "result": "passed"
++  },
++  {
++    "check": "Analysis timeout preserves transcript and supports safe retry",
++    "result": "passed"
++  },
++  {
++    "check": "Confirmation and task management never approve notes or queue email",
++    "result": "passed"
++  }
++]
+diff --git a/artifacts/meeting-insights/validation-summary.json b/artifacts/meeting-insights/validation-summary.json
+new file mode 100644
+--- /dev/null
++++ b/artifacts/meeting-insights/validation-summary.json
+@@ -0,0 +1,19 @@
++{
++  "backend_unique_passed": 125,
++  "frontend_unique_passed": 148,
++  "frontend_after_final_react_fix": 22,
++  "postgres_checks_passed": 10,
++  "browser_checks_passed": 6,
++  "typescript": "passed",
++  "eslint_changed_implementations": "passed",
++  "production_build": "passed",
++  "production_runtime": "blocked by automatic approval: blocked by policy",
++  "browser_runtime": "next dev --webpack",
++  "release_gate": {
++    "expected_head": "passed",
++    "mismatched_head": "exit 2"
++  },
++  "commit_push_deploy": false,
++  "external_providers": false,
++  "online_writes": false
++}
+diff --git a/docs/meeting-insights-actions-release-20261103.md b/docs/meeting-insights-actions-release-20261103.md
+new file mode 100644
+--- /dev/null
++++ b/docs/meeting-insights-actions-release-20261103.md
+@@ -0,0 +1,81 @@
++# Meeting Insights 与 Action Items 发布候选审查
++
++2026-11-03，UTC+8。实现、相关测试及本地开发服务器浏览器验收完成；生产服务器运行验收被环境策略阻止。没有提交、暂存、推送或部署。
++
++## 工作树与来源
++
++- 干净基线：`4d1d62ef90158624c0b17b1f05ded646b79ab25c`，包含最新审计布局 `7b082d5`。独立分支 `codex/insights-actions-release`，工作树 `C:/Users/93547/.codex/worktrees/insights-actions-release/Meeting-Intel`。
++- 复用 `feature/meeting-insights-foundation` 实际未提交的草稿 API、mock、审核组件及 PostgreSQL/浏览器工具，而非只取该分支旧 HEAD `a1cd4cb`。已先读取两个 2026-11-02 审查报告。
++- 应用主目录此前经过验收的 `audit-consumer.patch`，再逐块整合分析入口、确认接口日期补丁与状态字段。未复制混合主目录的配置、BusinessAI、整个 reviews/models/api/types 或 worker 文件。
++- 未修改原主目录和 Insights 工作树的业务文件。
++
++## 实际线上与迁移核对
++
++认证 Vercel 查询当前域名，前端为 `7b082d5` / `dpl_E67Xpb49qNPBmmtXPG1fe2nk9zFR`，READY。Railway 活动 API 为 `1ac9a4b6-a644-498b-bd80-5cc3d3091b44`，worker 为 `38f8cb63-daec-4b87-b3e0-ee40bb1c1b26`，均 SUCCESS，与审计发布记录一致。
++
++经既有 API 容器执行显式只读事务，仅查询 Alembic head、服务器版本及新表是否存在：实际 head 为 `92d6a10f4e72`，PostgreSQL `18.6 (4e5fd08)`，新草稿表不存在。未读取真实会议或逐字稿，未执行线上迁移、配置写入或 worker 操作。证据：`artifacts/meeting-insights/live-baseline.json`。
++
++`62e9a3b8d014` 尚未发布，原父 revision 为旧分支 `51d8f2a7c903`。本候选将父 revision 接到实际 head `92d6a10f4e72`，单一新 head 为 `62e9a3b8d014`，无需 merge revision 或 stamp 线上数据库。若别的环境已提前应用旧分支的 62 revision，必须先核实其祖先与 schema，不能直接沿用本发布顺序。
++
++本次在全新本机数据库完整重放历史链到 92，再使用真实 Alembic 命令执行 92 → 62 → 92 → head。旧合成会议、参与者、行动项快照不变，新表正确创建、删除、重建。
++
++## 最终规则
++
++保存的逐字稿经既有本地关键词 mock 生成独立待审核草稿；不会调用外部 AI。摘要、行动候选、决策候选可编辑，行动/决策原文证据不可改写。生成时所有候选均待确认，负责人和日期保持 null，不根据发言人或相对时间推断。
++
++人工逐条确认的行动写入真实 ActionItem，服务端来源仍兼容 `mock_insight_human_confirmed`；待确认和拒绝候选不写入。确认后的候选锁定；摘要仍属于独立草稿，不替换会议原摘要。决策确认保留在独立分析草稿中，不自动覆盖已有 Meeting Decisions 面板。
++
++任务列表与完成判断共用确认规则：独立人工确认可先于会议笔记批准，既有已批准纪要中的行动仍兼容。会议查看者可读，有任务管理权限的组织者/获准参会编辑者可完成和重开。owner 文本不授予权限；shared 编辑标记不绕过参会编辑规则；管理员也须有实际会议访问权才能管理任务。
++
++有效、明确的人工 YYYY-MM-DD 同时保存为 deadline_iso；相对文字、时间戳、非法日期只保留原文。任务确认不等于未知 owner/deadline 已补齐，缺失字段不会被伪造，也不会产生提醒。
++
++提醒仍仅本人完整 UPN、未完成、有效明确日期，按设备本地日历分组。完成立即消失，未忽略任务重开后恢复；当日忽略、关闭/恢复、ID 去重、焦点/分钟刷新及身份切换清除旧数据均保留。范围仍为当前页和筛选；开关/忽略仅当前页面会话。
++
++## 逐文件冲突与取舍
++
++- `app/api/reviews.py`：保留线上所有审计、邮件预览指纹及人工审批逻辑，只增加确认 helper 导入并改 can_complete_task。AST 检查其余全部函数不变。
++- `app/api/action_items.py` / `app/services/action_review.py`：复用独立确认谓词，显式加载 raw，保留访问过滤、分页、mine 匹配及父会议 → 行动项锁顺序。新增两类状态字段，管理员撤权不绕过完成权限。
++- `app/api/meeting_insights.py`：复用原生成/确认 API、父行锁、版本及逐字稿指纹校验；只叠加明确日期衔接，未接入真实 provider。
++- `app/models.py`：只追加 MeetingInsightDraft，保留 AuditEvent 和 transcription admission 字段。`app/schemas.py` 只追加两项输出状态。
++- `app/main.py`：只导入/注册分析 router；lifespan、定时同步、worker 行为不变。
++- `alembic/versions/62e9a3b8d014_meeting_insight_drafts.py`：仅新表，父 revision 改为 92；无旧数据 backfill。
++- `frontend/src/lib/api.ts`：在现有审计/监控方法之后追加原 Insights 类型和调用封装，沿用 apiFetch，不覆盖鉴权、超时或错误处理。`types.ts` 只添加可兼容的两项行动状态字段。
++- 会议详情：只追加原审核组件，编辑权限使用服务端 can_edit，不用前端的 shared 编辑字段放大权限。
++- `meeting-insights.tsx`：复用原交互；修复 React lint 发现的渲染时读取 ref，将“服务器已确认集合”改为 state。尚未保存的下拉确认仍不锁字段，成功保存后才锁定。
++- Action Items 页面：保留线上 userKey、草稿保存、加载占位和 Try again；叠加提醒与“行动已确认 / 笔记未批准”标记。共享标题组件只改 Actions 说明。
++- 测试保留原线上草稿/重试用例，只更新确认语义文案；相关详情测试仅增加新 API mock。未删除原回归覆盖。
++
++`app/workers`、`app/pipeline`、`app/config.py`、既有审计/邮件服务及管理员界面 diff 均为空。没有调整正常自动转写、服务开关、admission 或外部连接。保留检查见 `preservation-check.json`。
++
++## 本地验收
++
++复用嵌入式 PostgreSQL 18.6 二进制，创建本工作树专属 data_directory，绑定 127.0.0.1:55483；只创建随机 `meeting_insights_*` 数据库。服务只监听本机，使用合成 example.test 身份、英文逐字稿和 JWT；测试工具禁止外部连接、邮件批准/发送、Reprocess 及 worker 路径。
++
++- 相关后端 124 项通过，另迁入实际确认 → 列表 → 完成/重开用例 1 项通过，共 125 项。普通 pytest 全程禁止网络。
++- 相关前端首次 147 项通过，恢复原线上额外用例后该文件 20 项通过，合计 148 项独立用例；React state 修复后相关 22 项复验通过。没有重跑无关全套。
++- PostgreSQL 10 组检查通过：完整历史链到实际 head、新迁移升级/回退/再升级、并发生成一次、双审核者确认 200/409、重复提交不重复、真实行锁等待、锁超时回滚、权限/任务管理、失败重试、不批准纪要或发送邮件。
++- 真实 Next 页面 → FastAPI → PostgreSQL 的 6 组浏览器检查通过：英文草稿、修改/逐条确认、保存网络失败保留编辑并重试、刷新持久化、原文证据、本人到期提醒、完成刷新与重开恢复、忽略/刷新/恢复、只读权限、390×844 窄屏无文档溢出。没有成功业务响应 stub。
++- 浏览器 external=[]、errors=[]、无业务 API 5xx，无 approve/send-copy/reprocess 请求。API 头像仅本地 404；静态 chunk 如原工具取得完整字节原样转发，未改写业务响应。
++- 最终 TypeScript、相关实现 ESLint、diff whitespace 与 Webpack 生产构建通过。发布预检脚本在正确本地 head 通过，错误 head 返回 exit 2，防止继续发布。
++- 隔离库后检：新 head 62；自动批准 0、邮件 claim 0、recording jobs 0、重复确认任务会议 0，现有 meeting.viewed 审计成功记录 10 条。
++
++证据位于 `artifacts/meeting-insights/`：`release-postgres-results.json`、`release-browser-results.json`、`release-api-requests.json`、`local-postflight.json`、`preservation-check.json`、`production-build.txt` 及提交前 diff 清单。
++
++## 脱敏截图
++
++所有截图仅有合成身份、合成 ID、合成英文会议内容，并标注 SYNTHETIC DATA ONLY，没有真实用户/会议内容。
++
++- `page-generated-draft.png`：未知字段和待审核草稿。
++- `page-save-failure-retains-draft.png`：保存失败保留编辑。
++- `page-refreshed-confirmation.png`：刷新后确认/拒绝/待确认及决策修改。
++- `page-action-items-open.png`：本人到期提示、行动确认、笔记未批准及原文。
++- `page-viewer-readonly.png`、`page-viewer-action-items.png`：只读用户。
++- `page-mobile-detail.png`、`page-mobile-action-items.png`：390px 页面。
++
++## 限制与发布结论
++
++这是可以交给发布审查的完整整合候选，不是已部署版本。生成仍是关键词 mock，只证明工作流，不宣称真实 AI 摘要质量。提醒不全量、不后台投递、不跨设备。已确认候选无法在草稿中重写；逐字稿改变会 409，尚无证据重新绑定 UI。新确认/完成路径未新增专属审计事件类型，既有审计写入保持不变。
++
++自动审批拒绝以隐藏进程启动 next start，仅返回 blocked by policy，无更具体原因。没有修改审批或换方式重复启动生产服务器；浏览器验收使用获准的 next dev --webpack，生产编译/类型/静态生成通过，生产服务器运行验收未完成。这是剩余环境阻碍，应在允许的发布测试环境补做。
++
++发布顺序及可执行命令见 `meeting-insights-actions-runbook.md`。未来授权发布前重新核实实际部署及 DB head；不能拿本次 head 快照替代届时检查。本轮未提交、推送、部署、修改线上数据库/配置/worker，未处理真实逐字稿、调用 BusinessAI 或 Reprocess。
+diff --git a/docs/meeting-insights-actions-runbook.md b/docs/meeting-insights-actions-runbook.md
+new file mode 100644
+--- /dev/null
++++ b/docs/meeting-insights-actions-runbook.md
+@@ -0,0 +1,78 @@
++# Insights / Action Items 验收与发布顺序
++
++本文件的发布命令为未来获得发布授权后的操作说明，本轮没有执行。所有命令从独立整合工作树根目录运行，不使用混合主目录。部署前将已审查变更形成单一明确提交/制品；本轮按用户要求保留未提交状态。
++
++## 本地复验
++
++使用 Python 环境 `C:/Users/93547/project/Meeting-Intel/.venv/Scripts/python.exe`、现有 frontend/node_modules 和 @embedded-postgres/windows-x64@18.6.0-beta.19 的 bin 目录。没有向库中提交依赖、PG runtime、data 或凭据。
++
++本轮集群：`artifacts/meeting-insights/pg-data`，端口 55483；API 8976；Next 8975。PG 仅允许 loopback 的合成验收。新建集群时先 `initdb -D <绝对数据目录> -U postgres -A trust --no-locale --encoding=UTF8`；已有目录不要再次 initdb。使用该 runtime 的 pg_ctl 启动已有集群：
++
++```powershell
++& "$pgBin/pg_ctl.exe" -D "$PWD/artifacts/meeting-insights/pg-data" -l "$PWD/artifacts/meeting-insights/pg-server.log" -o '-p 55483 -h 127.0.0.1' start
++python scripts/meeting_insights_local.py --prepare
++python scripts/meeting_insights_local.py --serve
++```
++
++`--prepare` 每次创建新随机验收库、执行真实 Alembic 链及并发检查。工具拒绝其他 data_directory，不读取 .env，不启动 app.main/worker。`--new-ui` 只在当前隔离库新建一条合成页面会议，供组件改动后的页面复验。
++
++另一个本地终端在 frontend 目录设置仅进程内合成配置：
++
++```powershell
++$env:DATABASE_URL='postgresql://postgres@localhost:55483/offline'
++$env:AUTH_SECRET='synthetic-insights-local-session-only'
++$env:AUTH_TRUST_HOST='true'
++$env:AUTH_MICROSOFT_ENTRA_ID_TENANT_ID='synthetic'
++$env:AUTH_MICROSOFT_ENTRA_ID_ID='synthetic'
++$env:AUTH_MICROSOFT_ENTRA_ID_SECRET='synthetic'
++$env:NEXT_PUBLIC_API_URL='http://127.0.0.1:8976'
++$env:NEXT_TELEMETRY_DISABLED='1'
++node --require ../scripts/meeting_insights_offline_guard.cjs node_modules/next/dist/bin/next dev --webpack --hostname 127.0.0.1 --port 8975
++```
++
++从根目录 `node scripts/meeting_insights_browser.mjs` 运行真实页面检查。仅使用合成 Cookie 和真实本地业务 API；不要改脚本指向线上。停止 dev 后使用同样的合成环境执行 `next build --webpack`。本轮 next start 被自动审批拒绝，不重复尝试或绕过；允许的测试环境需补生产运行验收。
++
++相关 pytest 文件及前端文件见审查报告，不跑全套。UI/服务改动后只重跑受影响项；迁移或锁逻辑变化才重跑 PostgreSQL 验证。停止 API/Next 后用该 runtime 的 `pg_ctl -D <上述目录> -m fast stop` 关闭本机集群。
++
++## 未来发布：固定顺序与停止条件
++
++1. **固定来源。** 在这条独立分支审查提交前 diff 和新增文件清单。确认 worker/pipeline/config/admin 审计无改动；确认发布制品不含本机 PG data、临时日志或 .env；既有 .dockerignore 排除 artifacts。合成身份和验收服务器不得配置为生产入口，本地 API fixture 不能作为生产入口。
++2. **再次只读预检。** 核对既有 Railway 项目 `059e3add-9746-4baa-90e1-58d4fa5f2559` 的 API/worker 部署，Vercel 项目 `prj_clw0nJfdfNmpFenJctjHIo5GrKDP` 及其当前域名。由批准的执行环境注入目标 DATABASE_URL 和既有应用迁移所需环境，不回显凭据，不加载其他工作树的 .env。
++3. **备份与单次迁移。** 先按既有流程做好目标库备份。在包含新 migration 的明确源码/制品上，预检成功后只执行一次升级。不得在旧容器（没有 62 文件）直接调用不存在的 revision，也不得 stamp。
++
++```powershell
++python scripts/check_insights_release.py --expect-head 92d6a10f4e72 --draft-table absent
++if ($LASTEXITCODE -ne 0) { throw 'Target schema differs; stop release' }
++python -m alembic upgrade 62e9a3b8d014
++if ($LASTEXITCODE -ne 0) { throw 'Migration failed; stop release' }
++python scripts/check_insights_release.py --expect-head 62e9a3b8d014 --draft-table present
++if ($LASTEXITCODE -ne 0) { throw 'Post-migration check failed; stop release' }
++```
++
++脚本仅读取显式 DATABASE_URL，事务为 READ ONLY，不打印连接异常细节；head/表状态不符合预期返回 2。若目标库已经是 62，先确认代码谱系和表结构，不能通过跳过预检来继续执行这个“尚未升级”流程。
++
++4. **仅更新 API。** 使用已审查制品部署现有 API 服务，不新建服务/项目，不改运行配置。此加表迁移对旧 worker 向后兼容，不需要暂停、重启或重新部署 worker。
++
++```powershell
++railway up --project 059e3add-9746-4baa-90e1-58d4fa5f2559 --service meeting-intel-api --environment production --ci
++if ($LASTEXITCODE -ne 0) { throw 'API deployment failed; do not publish frontend' }
++```
++
++只读确认 API 健康、旧审计接口权限和已部署源码；不拿真实会议生成草稿、不触发 Reprocess、邮件或供应商事件来制造样本。
++
++5. **再更新前端。** 使用现有 Vercel 团队和项目，保持原域名及既有生产环境值；不要把本地 NEXT_PUBLIC_API_URL/合成 AUTH_SECRET 部署。用干净发布终端，不能沿用本地验收终端的环境。
++
++```powershell
++$env:VERCEL_ORG_ID='team_XujywMw2w5S41P4KwL6ys9rM'
++$env:VERCEL_PROJECT_ID='prj_clw0nJfdfNmpFenJctjHIo5GrKDP'
++vercel deploy --prod --scope team-22c0 --cwd frontend
++if ($LASTEXITCODE -ne 0) { throw 'Frontend deployment failed' }
++```
++
++6. **发布后核对。** 明确记录部署 ID、源提交、迁移 head、旧审计布局和权限仍保留，worker 仍是原活动部署且其原有自动转写配置不变。当前 BusinessAI/邮件配置保持原值，不为本功能开启或关闭它们。真实用户验收及生产服务器运行检查须另有允许的环境与授权范围。
++
++## 回退
++
++默认先回退前端和 API 至各自原部署，保留新增表。原 worker 不动。新增表向后兼容，应用回退不要求删除草稿；独立确认 ActionItem 也不应删除。
++
++数据库回退已在隔离库验证为 `python -m alembic downgrade 92d6a10f4e72`，它会删除草稿表并丢失其中人工审核记录。因此线上不自动执行：已有使用数据时先导出/备份并制定恢复方案，再决定是否需要 schema 回退。没有草稿数据的受控环境才可按已审核流程回退。删除草稿后重新生成可能再次创建行动项，不能把生产 downgrade/重生成当作去重或恢复策略。
+diff --git a/frontend/src/app/action-items/__tests__/confirmed-action-flow.test.tsx b/frontend/src/app/action-items/__tests__/confirmed-action-flow.test.tsx
+new file mode 100644
+--- /dev/null
++++ b/frontend/src/app/action-items/__tests__/confirmed-action-flow.test.tsx
+@@ -0,0 +1,61 @@
++import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
++import { afterEach, expect, it, vi } from "vitest";
++import { getApprovedActionItems, setTaskCompletion } from "@/lib/api";
++import type { ApprovedActionItemsPage, TaskCompletion } from "@/lib/types";
++import fixture from "@/test/fixtures/confirmed-action-flow.json";
++import ActionItemsClient from "../action-items-client";
++
++// These responses were produced by the real synthetic confirmation/list/
++// completion APIs in check_confirmed_actions_integration.py, not hand-written.
++const flow = fixture as unknown as Record<string, ApprovedActionItemsPage> & {
++  complete_response: TaskCompletion; reopen_response: TaskCompletion;
++};
++vi.mock("@/lib/api", () => ({ getApprovedActionItems: vi.fn(), setTaskCompletion: vi.fn(), ApiError: class extends Error {} }));
++afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); });
++
++it("renders a human-confirmed action with pending notes, removes its reminder on completion and restores on reopen", async () => {
++  vi.useFakeTimers({ toFake: ["Date"] });
++  vi.setSystemTime(new Date(2026, 10, 3, 12));
++  vi.mocked(getApprovedActionItems).mockResolvedValueOnce(flow.pending).mockResolvedValueOnce(flow.confirmed).mockResolvedValueOnce(flow.revoked);
++  vi.mocked(setTaskCompletion).mockResolvedValueOnce(flow.complete_response).mockResolvedValueOnce(flow.reopen_response);
++  render(<ActionItemsClient accessToken="synthetic-token" />);
++  await screen.findByRole("heading", { name: "No confirmed action items yet" });
++  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
++  const reminders = await screen.findByLabelText("Personal action item due reminders");
++  expect(within(reminders).getByText(/Prepare report/)).toBeVisible();
++  expect(screen.getByText(/while meeting notes remain awaiting review/)).toBeVisible();
++  expect(screen.queryByText("Archive evidence")).not.toBeInTheDocument();
++  expect(screen.queryByText("Check totals")).not.toBeInTheDocument();
++  fireEvent.click(screen.getByRole("button", { name: "Mark complete: Prepare report" }));
++  await waitFor(() => expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument());
++  fireEvent.click(screen.getByRole("button", { name: "Reopen: Prepare report" }));
++  await screen.findByLabelText("Personal action item due reminders");
++  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
++  await screen.findByRole("heading", { name: "No confirmed action items yet" });
++  expect(screen.queryByText(/Prepare report/)).not.toBeInTheDocument();
++  expect(setTaskCompletion).toHaveBeenNthCalledWith(1, flow.confirmed.items[0].id, true, "synthetic-token");
++  expect(setTaskCompletion).toHaveBeenNthCalledWith(2, flow.confirmed.items[0].id, false, "synthetic-token");
++});
++
++it("retains the reminder after a failed completion and recovers on retry", async () => {
++  vi.useFakeTimers({ toFake: ["Date"] });
++  vi.setSystemTime(new Date(2026, 10, 3, 12));
++  vi.mocked(getApprovedActionItems).mockResolvedValue(flow.confirmed);
++  vi.mocked(setTaskCompletion).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(flow.complete_response);
++  render(<ActionItemsClient accessToken="synthetic-token" />);
++  await screen.findByLabelText("Personal action item due reminders");
++  fireEvent.click(screen.getByRole("button", { name: "Mark complete: Prepare report" }));
++  await screen.findByRole("alert");
++  expect(screen.getByLabelText("Personal action item due reminders")).toBeVisible();
++  fireEvent.click(screen.getByRole("button", { name: "Mark complete: Prepare report" }));
++  await waitFor(() => expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument());
++});
++
++it("clears the previous identity's tasks before a new identity finishes authorization", async () => {
++  vi.mocked(getApprovedActionItems).mockResolvedValueOnce(flow.confirmed).mockReturnValueOnce(new Promise(() => {}));
++  const { rerender } = render(<ActionItemsClient accessToken="alice" />);
++  await screen.findByRole("button", { name: "Mark complete: Prepare report" });
++  rerender(<ActionItemsClient accessToken="another-user" />);
++  expect(screen.queryByText(/Prepare report/)).not.toBeInTheDocument();
++  expect(screen.queryByLabelText("Personal action item due reminders")).not.toBeInTheDocument();
++});
+diff --git a/frontend/src/app/meetings/[id]/__tests__/meeting-insights.test.tsx b/frontend/src/app/meetings/[id]/__tests__/meeting-insights.test.tsx
+new file mode 100644
+--- /dev/null
++++ b/frontend/src/app/meetings/[id]/__tests__/meeting-insights.test.tsx
+@@ -0,0 +1,31 @@
++import { render, screen, fireEvent, waitFor } from "@testing-library/react";
++import { vi, test, expect } from "vitest";
++import { meetingInsights, type InsightDraft } from "@/lib/api";
++import MeetingInsights from "../meeting-insights";
++vi.mock("@/lib/api", () => ({ meetingInsights: vi.fn() }));
++const draft: InsightDraft = { version: 1, status: "awaiting_review", provider: "mock", summary: "Mock notes", actions: [{ text: "Prepare demo", source_quote: "We will prepare demo", owner: null, deadline: null, status: "pending_confirmation" }], decisions: [] };
++test("generate, edit, confirm, save and lock persisted confirmation", async () => {
++  vi.mocked(meetingInsights).mockResolvedValueOnce(null).mockResolvedValueOnce(draft).mockImplementationOnce(async (_id, _t, _m, body) => ({ ...body!, version: 2 }));
++  render(<MeetingInsights meetingId="m1" token="offline" canEdit />);
++  fireEvent.click(await screen.findByText("Analyze saved transcript (mock)"));
++  await screen.findByDisplayValue("Prepare demo");
++  expect(screen.getByText("Source: We will prepare demo")).toBeInTheDocument();
++  fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "reviewer@example.test" } });
++  fireEvent.change(screen.getByRole("combobox"), { target: { value: "confirmed" } });
++  expect(screen.getByLabelText("Owner")).not.toBeDisabled();
++  fireEvent.click(screen.getByText("Save review and confirmations"));
++  await waitFor(() => expect(screen.getByLabelText("Owner")).toBeDisabled());
++  expect(vi.mocked(meetingInsights).mock.calls[2][3]?.actions[0].status).toBe("confirmed");
++});
++test("viewer is readonly and failed saves preserve edits", async () => {
++  vi.mocked(meetingInsights).mockResolvedValue(draft);
++  const { unmount } = render(<MeetingInsights meetingId="m1" token="offline" canEdit={false} />);
++  expect(await screen.findByDisplayValue("Mock notes")).toBeDisabled();
++  expect(screen.queryByText("Save review and confirmations")).not.toBeInTheDocument(); unmount();
++  vi.mocked(meetingInsights).mockResolvedValueOnce(draft).mockRejectedValueOnce(new Error("409"));
++  render(<MeetingInsights meetingId="m1" token="offline" canEdit />);
++  fireEvent.change(await screen.findByLabelText("Analysis summary"), { target: { value: "Human edits" } });
++  fireEvent.click(screen.getByText("Save review and confirmations"));
++  await screen.findByRole("alert");
++  expect(screen.getByLabelText("Analysis summary")).toHaveValue("Human edits");
++});
+diff --git a/frontend/src/app/meetings/[id]/meeting-insights.tsx b/frontend/src/app/meetings/[id]/meeting-insights.tsx
+new file mode 100644
+--- /dev/null
++++ b/frontend/src/app/meetings/[id]/meeting-insights.tsx
+@@ -0,0 +1,56 @@
++"use client";
++import { useEffect, useRef, useState } from "react";
++import { meetingInsights, type InsightDraft, type InsightCandidate } from "@/lib/api";
++export default function MeetingInsights({ meetingId, token, canEdit }: { meetingId: string; token: string; canEdit: boolean }) {
++  const [draft, setDraft] = useState<InsightDraft | null>(null);
++  const [busy, setBusy] = useState(false);
++  const [loaded, setLoaded] = useState(false);
++  const [dirty, setDirty] = useState(false);
++  const [error, setError] = useState("");
++  const lock = useRef(false);
++  const [confirmed, setConfirmed] = useState(() => new Set<string>());
++  function remember(d: InsightDraft | null) { setConfirmed(new Set(d ? (["actions", "decisions"] as const).flatMap(k => d[k].flatMap((i, n) => i.status === "confirmed" ? [`${k}:${n}`] : [])) : [])); return d; }
++  useEffect(() => { let active = true;
++    meetingInsights(meetingId, token).then(d => { if (active) { setDraft(remember(d)); setLoaded(true); } })
++      .catch(() => { if (active) setError("Unable to load analysis. Reload to retry."); });
++    return () => { active = false; };
++  }, [meetingId, token]);
++  async function run(method: string) {
++    if (lock.current) return;
++    lock.current = true; setBusy(true); setError("");
++    try { setDraft(remember(await meetingInsights(meetingId, token, method, method === "PUT" && draft ? draft : undefined))); setDirty(false); }
++    catch { setError("Could not save or generate. Your edits are retained. Reload if another reviewer or transcript changed."); }
++    finally { lock.current = false; setBusy(false); }
++  }
++  function edit(kind: "actions" | "decisions", index: number, patch: Partial<InsightCandidate>) {
++    if (!draft) return;
++    setDraft({ ...draft, [kind]: draft[kind].map((item, n) => n === index ? { ...item, ...patch } : item) }); setDirty(true);
++  }
++  return <section className="rounded-xl border p-5 space-y-4" aria-label="Meeting analysis">
++    <h2 className="text-lg font-semibold">Meeting analysis · Mock</h2>
++    <p className="text-sm text-muted-foreground">Saved transcript only · Separate review draft · Unknown fields: 待确认</p>
++    {error && <p role="alert">{error}</p>}
++    {!loaded && !error && <p>Loading analysis…</p>}
++    {loaded && !draft && <p>No analysis draft yet.</p>}
++    {canEdit && loaded && (!draft || draft.status === "failed") && <button disabled={busy} onClick={() => run("POST")}>{busy ? "Analyzing…" : "Analyze saved transcript (mock)"}</button>}
++    {draft && <>
++      <p>Analysis: {draft.status} · Version {draft.version}</p>
++      {draft.status === "failed" ? <p>Analysis failed. Saved transcript is intact. Retry available.</p> : <>
++        <label className="block">Summary<textarea className="block w-full border rounded p-2" aria-label="Analysis summary" value={draft.summary} disabled={!canEdit || busy} onChange={e => { setDraft({ ...draft, summary: e.target.value }); setDirty(true); }} /></label>
++        {(["actions", "decisions"] as const).map(kind => <div key={kind} className="space-y-3"><h3 className="font-semibold">{kind === "actions" ? "Action candidates" : "Decision candidates"}</h3>
++          {!draft[kind].length && <p>No candidates.</p>}
++          {draft[kind].map((item, index) => <fieldset key={index} disabled={!canEdit || busy || confirmed.has(`${kind}:${index}`)} className="border rounded p-3 space-y-2">
++            <label className="block">Candidate<textarea className="block w-full border p-2" value={item.text} onChange={e => edit(kind, index, { text: e.target.value })} /></label>
++            <blockquote className="border-l-2 pl-3 text-sm">Source: {item.source_quote}</blockquote>
++            {kind === "actions" && <><label className="block">Owner<input className="border ml-2" placeholder="待确认" value={item.owner ?? ""} onChange={e => edit(kind, index, { owner: e.target.value || null })} /></label>
++            <label className="block">Deadline<input className="border ml-2" placeholder="待确认" value={item.deadline ?? ""} onChange={e => edit(kind, index, { deadline: e.target.value || null })} /></label></>}
++            <label>Review status <select value={item.status} onChange={e => edit(kind, index, { status: e.target.value as InsightCandidate["status"] })}>
++              <option value="pending_confirmation">待确认</option><option value="confirmed">Confirmed</option><option value="rejected">Rejected</option>
++            </select></label>
++          </fieldset>)}
++        </div>)}
++        {canEdit && <><p className="text-sm">Saving confirmed action candidates adds them to reviewed actions. Confirmed candidates are locked.</p><button disabled={busy || !dirty} onClick={() => run("PUT")}>{busy ? "Saving…" : "Save review and confirmations"}</button></>}
++      </>}
++    </>}
++  </section>;
++}
+diff --git a/frontend/src/test/fixtures/confirmed-action-flow.json b/frontend/src/test/fixtures/confirmed-action-flow.json
+new file mode 100644
+--- /dev/null
++++ b/frontend/src/test/fixtures/confirmed-action-flow.json
+@@ -0,0 +1,82 @@
++{
++  "pending": {
++    "items": [],
++    "has_more": false,
++    "viewer_upn": "alice@taxconsulting.co.za"
++  },
++  "confirmed": {
++    "items": [
++      {
++        "completed_at": null,
++        "completed_by_id": null,
++        "can_complete": true,
++        "id": "b4c10328-fd4e-4181-8e89-6fe9c6e5f54e",
++        "task": "Prepare report",
++        "meeting_id": "99c13b2c-3251-494a-bcba-b81aaf1d4cb9",
++        "meeting_title": "Synthetic pending notes",
++        "owner": "alice@taxconsulting.co.za",
++        "deadline_iso": "2026-11-03",
++        "deadline_text": "2026-11-03",
++        "source_quote": "Please prepare a report.",
++        "confidence": "medium"
++      }
++    ],
++    "has_more": false,
++    "viewer_upn": "alice@taxconsulting.co.za"
++  },
++  "complete_response": {
++    "completed_at": "2026-11-03T07:42:22.156151Z",
++    "completed_by_id": "928caff7-6d1b-46fe-968d-90bf2d186d89",
++    "can_complete": true
++  },
++  "completed": {
++    "items": [
++      {
++        "completed_at": "2026-11-03T07:42:22.156151Z",
++        "completed_by_id": "928caff7-6d1b-46fe-968d-90bf2d186d89",
++        "can_complete": true,
++        "id": "b4c10328-fd4e-4181-8e89-6fe9c6e5f54e",
++        "task": "Prepare report",
++        "meeting_id": "99c13b2c-3251-494a-bcba-b81aaf1d4cb9",
++        "meeting_title": "Synthetic pending notes",
++        "owner": "alice@taxconsulting.co.za",
++        "deadline_iso": "2026-11-03",
++        "deadline_text": "2026-11-03",
++        "source_quote": "Please prepare a report.",
++        "confidence": "medium"
++      }
++    ],
++    "has_more": false,
++    "viewer_upn": "alice@taxconsulting.co.za"
++  },
++  "reopen_response": {
++    "completed_at": null,
++    "completed_by_id": null,
++    "can_complete": true
++  },
++  "reopened": {
++    "items": [
++      {
++        "completed_at": null,
++        "completed_by_id": null,
++        "can_complete": true,
++        "id": "b4c10328-fd4e-4181-8e89-6fe9c6e5f54e",
++        "task": "Prepare report",
++        "meeting_id": "99c13b2c-3251-494a-bcba-b81aaf1d4cb9",
++        "meeting_title": "Synthetic pending notes",
++        "owner": "alice@taxconsulting.co.za",
++        "deadline_iso": "2026-11-03",
++        "deadline_text": "2026-11-03",
++        "source_quote": "Please prepare a report.",
++        "confidence": "medium"
++      }
++    ],
++    "has_more": false,
++    "viewer_upn": "alice@taxconsulting.co.za"
++  },
++  "revoked": {
++    "items": [],
++    "has_more": false,
++    "viewer_upn": "alice@taxconsulting.co.za"
++  }
++}
+diff --git a/scripts/check_insights_release.py b/scripts/check_insights_release.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/check_insights_release.py
+@@ -0,0 +1,64 @@
++"""Read-only release gate. DATABASE_URL must be supplied explicitly by the operator.
++
++Never loads .env files, migrates schema, imports app.main, or starts a worker.
++"""
++import argparse
++import asyncio
++import json
++import os
++from pathlib import Path
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT))
++
++from sqlalchemy import text
++from sqlalchemy.engine import make_url
++from sqlalchemy.ext.asyncio import create_async_engine
++from app.database import create_database_engine
++
++
++async def check(args):
++    url = os.environ.get("DATABASE_URL")
++    if not url:
++        raise ValueError("DATABASE_URL must be supplied explicitly")
++    if args.local_no_tls:
++        parsed = make_url(url)
++        if parsed.host != "127.0.0.1" or parsed.port != 55483 or not parsed.database.startswith("meeting_insights_"):
++            raise ValueError("Local mode accepts only the isolated acceptance database")
++        engine = create_async_engine(url, connect_args={"ssl": False})
++    else:
++        engine = create_database_engine(url)
++    try:
++        async with engine.begin() as conn:
++            await conn.execute(text("SET TRANSACTION READ ONLY"))
++            if args.local_no_tls:
++                directory = Path(await conn.scalar(text("SHOW data_directory"))).resolve()
++                if directory != (ROOT / "artifacts/meeting-insights/pg-data").resolve():
++                    raise ValueError("Not the isolated acceptance cluster")
++            heads = list((await conn.execute(text("SELECT version_num FROM alembic_version"))).scalars())
++            exists = bool(await conn.scalar(text("SELECT to_regclass('public.meeting_insight_drafts')")))
++            report = {"heads": heads, "draft_table_exists": exists, "read_only": True}
++            report["ok"] = heads == [args.expect_head] and exists == (args.draft_table == "present")
++            print(json.dumps(report))
++            return 0 if report["ok"] else 2
++    finally:
++        await engine.dispose()
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--expect-head", required=True)
++    parser.add_argument("--draft-table", choices=("absent", "present"), required=True)
++    parser.add_argument("--local-no-tls", action="store_true")
++    args = parser.parse_args()
++    try:
++        return asyncio.run(check(args))
++    except Exception:
++        # Connection exceptions may include credentials; never print their repr.
++        print(json.dumps({"ok": False, "error": "Read-only preflight failed; connection details suppressed"}))
++        return 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/meeting_insights_browser.mjs b/scripts/meeting_insights_browser.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/meeting_insights_browser.mjs
+@@ -0,0 +1,143 @@
++// Full Next pages -> real FastAPI -> isolated PostgreSQL. Synthetic identities only.
++import fs from 'node:fs/promises';
++import path from 'node:path';
++import assert from 'node:assert/strict';
++import {chromium} from '../frontend/node_modules/playwright/index.mjs';
++import {expect as baseExpect} from '../frontend/node_modules/@playwright/test/index.mjs';
++import {encode} from '../frontend/node_modules/next-auth/jwt.js';
++const output=path.resolve('artifacts/meeting-insights');
++const fixtures=JSON.parse(await fs.readFile(path.join(output,'release-fixtures.json'),'utf8'));
++const API='http://127.0.0.1:8976',WEB='http://127.0.0.1:8975';
++const expect=baseExpect.configure({timeout:20000});
++const checks=[],external=[],errors=[],responses=[];
++const taskName='SYNTHETIC confirmed demo task '+fixtures.ui_id.slice(0,8);
++const browser=await chromium.launch({headless:true});
++async function userPage(role){
++ const upn=fixtures[role];
++ const token=await encode({secret:'synthetic-insights-local-session-only',salt:'meeting-intel.session-token.v2',token:{email:upn,name:'Synthetic '+role,accessToken:'mock:'+upn,accessTokenExpires:Date.now()+3600000}});
++ const ctx=await browser.newContext({viewport:{width:1440,height:1000}});
++ // Do not intercept local JS chunks: Chromium interception truncated a dev chunk at 64 KiB.
++ await ctx.route(/^https?:\/\/(?!127\.0\.0\.1(?::|\/)|localhost(?::|\/))/,route=>{external.push(new URL(route.request().url()).origin);return route.abort();});
++ await ctx.route('**/_next/static/**',async route=>{const response=await route.fetch();const body=await response.body();return route.fulfill({response,body});});
++ await ctx.route('**/api/profile-photo',route=>route.fulfill({status:404,body:''}));
++ await ctx.addCookies([{name:'meeting-intel.session-token.v2',value:token,domain:'127.0.0.1',path:'/',httpOnly:true,secure:false,sameSite:'Lax'}]);
++
++ const page=await ctx.newPage();const cdp=await ctx.newCDPSession(page);await cdp.send('Debugger.enable');cdp.on('Debugger.scriptFailedToParse',async event=>{console.log('PARSE FAILURE',JSON.stringify(event));const source=await cdp.send('Debugger.getScriptSource',{scriptId:event.scriptId}).catch(()=>({scriptSource:''}));await fs.writeFile(path.join(output,'parse-failure-source.txt'),source.scriptSource);});page.on('pageerror',e=>{errors.push(e.message);console.log('BROWSER ERROR',e.stack)});page.on('response',r=>{if(r.url().startsWith(API))responses.push({method:r.request().method(),path:r.url().replace(API,''),status:r.status()});});
++ return page;
++}
++async function check(name,run){await run();checks.push({check:name,result:'passed'});console.log('PASS',name);}
++async function call(page,role,resource,method='GET',body){return page.request.fetch(API+resource,{method,headers:{Authorization:'Bearer mock:'+fixtures[role]},data:body});}
++async function filterMeeting(page){
++ await page.getByRole('textbox',{name:'Meeting',exact:true}).fill(fixtures.ui_title);
++ await page.getByRole('button',{name:'Apply filters',exact:true}).click();
++ await expect(page.getByRole('status').filter({hasText:'Showing 1–1'})).toBeVisible();
++}
++async function shot(page,name){await page.addStyleTag({content:'body:before{content:"SYNTHETIC DATA ONLY - local Next / FastAPI / isolated PostgreSQL";display:block;background:#fff5c2;color:#17324b;padding:8px 16px;font:12px system-ui}'});await page.screenshot({path:path.join(output,name+'.png'),fullPage:true});}
++const page=await userPage('owner');
++if(process.argv.includes('--inspect')) {
++ const resources=[];page.on('request',r=>resources.push({event:'request',url:r.url(),type:r.resourceType()}));page.on('requestfinished',r=>resources.push({event:'finished',url:r.url()}));page.on('requestfailed',r=>resources.push({event:'failed',url:r.url(),error:r.failure()}));
++ try {
++ await page.goto(WEB+'/meetings/'+fixtures.ui_id);await page.getByLabel('Analysis summary').waitFor({timeout:30000});console.log('INSPECT initial loaded');
++ await page.reload({waitUntil:'networkidle'});await page.getByLabel('Analysis summary').waitFor({timeout:30000});console.log('INSPECT refreshed loaded');
++ } finally {await fs.writeFile(path.join(output,'debug-resources.json'),JSON.stringify(resources,null,2));await fs.writeFile(path.join(output,'debug-page.html'),await page.content());await browser.close();}
++ process.exit(0);
++}
++try{
++ const url=WEB+'/meetings/'+fixtures.ui_id;
++ let source,version;
++ await check('Real meeting detail generates a persisted English synthetic draft',async()=>{
++   await page.goto(url);
++   const panel=page.getByRole('region',{name:'Meeting analysis'});
++   await panel.getByRole('button',{name:'Analyze saved transcript (mock)'}).click();
++   await panel.getByLabel('Analysis summary').waitFor();
++   const result=await call(page,'owner',`/reviews/${fixtures.ui_id}/insights`);assert.equal(result.status(),200);
++   const draft=await result.json();assert.equal(draft.status,'awaiting_review');assert.equal(draft.actions.length,3);
++   assert(draft.actions.every(i=>i.owner===null&&i.deadline===null&&i.status==='pending_confirmation'));source=draft.actions[0].source_quote;
++   await shot(page,'page-generated-draft');
++ });
++ await check('Edit, confirm one, reject another and leave pending; failed save retains all edits',async()=>{
++   const panel=page.getByRole('region',{name:'Meeting analysis'}),fields=panel.locator('fieldset');
++   await panel.getByLabel('Analysis summary').fill('SYNTHETIC human-reviewed English summary');
++   await fields.nth(0).getByRole('textbox',{name:'Candidate',exact:true}).fill(taskName);
++   await fields.nth(0).getByLabel('Owner').fill('owner@example.test');
++   await fields.nth(0).getByLabel('Deadline').fill(fixtures.today);
++   await fields.nth(0).getByRole('combobox').selectOption('confirmed');
++   await fields.nth(1).getByRole('combobox').selectOption('rejected');
++   await fields.nth(3).getByRole('textbox',{name:'Candidate',exact:true}).fill('SYNTHETIC reviewed decision: use mock data only');
++   await fields.nth(3).getByRole('combobox').selectOption('confirmed');
++   // Transport failure only; no stubbed API response or fake persisted state.
++   await page.route('**/reviews/*/insights',route=>route.request().method()==='PUT'?route.abort('failed'):route.continue());
++   await panel.getByRole('button',{name:'Save review and confirmations'}).click();
++   await expect(panel.getByRole('alert')).toContainText('Your edits are retained');
++   await expect(panel.getByLabel('Analysis summary')).toHaveValue('SYNTHETIC human-reviewed English summary');
++   await expect(fields.nth(0).getByRole('combobox')).toHaveValue('confirmed');
++   await shot(page,'page-save-failure-retains-draft');
++   await page.unroute('**/reviews/*/insights');
++   await panel.getByRole('button',{name:'Save review and confirmations'}).click();
++   await expect(panel.getByText('Analysis: awaiting_review · Version 2')).toBeVisible();
++   await expect(fields.nth(0).getByRole('textbox',{name:'Candidate',exact:true})).toBeDisabled();
++   const draft=await (await call(page,'owner',`/reviews/${fixtures.ui_id}/insights`)).json();version=draft.version;assert.equal(version,2);
++ });
++ await check('Refresh restores human edits and independent confirmation without approving meeting notes',async()=>{
++   await page.reload({waitUntil:'networkidle'});
++   const panel=page.getByRole('region',{name:'Meeting analysis'});
++   await expect(panel.getByLabel('Analysis summary')).toHaveValue('SYNTHETIC human-reviewed English summary');
++   await expect(panel.locator('fieldset').nth(0).getByRole('combobox')).toHaveValue('confirmed');
++   await expect(panel.locator('fieldset').nth(1).getByRole('combobox')).toHaveValue('rejected');
++   await expect(panel.locator('fieldset').nth(2).getByRole('combobox')).toHaveValue('pending_confirmation');
++   await expect(panel.locator('fieldset').nth(3).getByRole('textbox',{name:'Candidate',exact:true})).toHaveValue('SYNTHETIC reviewed decision: use mock data only');
++   const meeting=await (await call(page,'owner',`/reviews/${fixtures.ui_id}`)).json();assert.equal(meeting.state,'awaiting_review');assert.equal(meeting.summary,'Saved original notes - synthetic only');
++   await shot(page,'page-refreshed-confirmation');
++ });
++ await check('Action Items shows only confirmed action with pending note status and existing task management',async()=>{
++   await page.getByRole('link',{name:'Action Items',exact:true}).click();
++   await page.waitForURL(WEB+'/action-items');await filterMeeting(page);
++   const row=page.getByRole('row').filter({hasText:taskName});
++   await row.waitFor();
++   await expect(row).toContainText('Action: human confirmed');await expect(row).toContainText('Meeting notes: not approved');await expect(row).toContainText('Open');
++   await row.getByText('View source evidence').click();await expect(row).toContainText(source);
++   const data=await (await call(page,'owner','/action-items?view=all')).json();
++   const items=data.items.filter(i=>i.meeting_id===fixtures.ui_id);assert.equal(items.length,1);assert.equal(items[0].can_complete,true);assert.equal(items[0].meeting_notes_approved,false);
++   await expect(page.getByLabel('Personal action item due reminders')).toContainText(taskName);
++   await shot(page,'page-action-items-open');
++   await row.getByRole('button',{name:/Mark complete/}).click();await expect(row.getByRole('button',{name:/Reopen/})).toBeVisible();
++   await expect(page.getByLabel('Personal action item due reminders')).toHaveCount(0);
++   await page.reload({waitUntil:'networkidle'});const reloaded=page.getByRole('row').filter({hasText:taskName});await expect(reloaded).toContainText('Completed');
++   await reloaded.getByRole('button',{name:/Reopen/}).click();await expect(reloaded.getByRole('button',{name:/Mark complete/})).toBeVisible();
++   await expect(page.getByLabel('Personal action item due reminders')).toContainText(taskName);
++   await page.getByRole('button',{name:'Dismiss these reminders for today'}).click();
++   await expect(page.getByLabel('Personal action item due reminders')).toHaveCount(0);
++   await page.getByRole('button',{name:'Refresh',exact:true}).click();
++   await expect(page.getByRole('button',{name:'Refresh',exact:true})).toBeEnabled();
++   await expect(page.getByLabel('Personal action item due reminders')).toHaveCount(0);
++   await page.getByRole('button',{name:'Restore dismissed reminders'}).click();
++   await expect(page.getByLabel('Personal action item due reminders')).toContainText(taskName);
++ });
++ await check('Readonly participant can read detail and action status but cannot edit or complete',async()=>{
++   const viewer=await userPage('viewer');await viewer.goto(url);
++   const panel=viewer.getByRole('region',{name:'Meeting analysis'});
++   await expect(panel.getByLabel('Analysis summary')).toBeDisabled();
++   assert.equal(await panel.getByRole('button',{name:'Save review and confirmations'}).count(),0);
++   const body=await (await call(viewer,'viewer',`/reviews/${fixtures.ui_id}/insights`)).json();
++   assert.equal((await call(viewer,'viewer',`/reviews/${fixtures.ui_id}/insights`,'PUT',body)).status(),403);
++   await shot(viewer,'page-viewer-readonly');await viewer.getByRole('link',{name:'Action Items',exact:true}).click();await filterMeeting(viewer);
++   const row=viewer.getByRole('row').filter({hasText:taskName});await row.waitFor();assert.equal(await row.getByRole('button').count(),0);
++   await shot(viewer,'page-viewer-action-items');
++ });
++ await check('390px pages keep controls visible without document overflow; action table scrolls locally',async()=>{
++   await page.setViewportSize({width:390,height:844});await page.goto(url);
++   await page.getByRole('region',{name:'Meeting analysis'}).getByLabel('Analysis summary').waitFor();
++   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
++   await shot(page,'page-mobile-detail');
++   await page.getByRole('link',{name:'Action Items',exact:true}).click();await filterMeeting(page);await page.getByRole('row').filter({hasText:taskName}).waitFor();
++   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
++   const table=page.getByRole('table');assert(await table.evaluate(e=>e.parentElement.scrollWidth>e.parentElement.clientWidth));
++   await shot(page,'page-mobile-action-items');
++ });
++ assert.deepEqual(external,[]);assert.deepEqual(errors,[]);assert.equal(responses.filter(r=>r.status>=500).length,0);
++ assert(!responses.some(r=>/approve|reprocess|send-copy/.test(r.path)));
++} catch(error){await shot(page,'page-failure-debug');throw error;}
++finally{
++ await fs.writeFile(path.join(output,'release-browser-results.json'),JSON.stringify({checks,external,errors,responses},null,2));
++ await browser.close();
++}
+diff --git a/scripts/meeting_insights_local.py b/scripts/meeting_insights_local.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/meeting_insights_local.py
+@@ -0,0 +1,247 @@
++"""Isolated PostgreSQL + real HTTP acceptance fixture. Never import app.main/workers.
++Use --prepare to create a new disposable database and verify races; --serve for UI.
++Only localhost:55483 and the explicitly created embedded cluster are accepted.
++"""
++import asyncio
++import copy
++import importlib.util
++import json
++import os
++from pathlib import Path
++import socket
++import sys
++from uuid import uuid4
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT))
++OUT = ROOT / "artifacts/meeting-insights"
++FIXTURE = OUT / "release-fixtures.json"
++HOST, PORT = "127.0.0.1", 55483
++# Guard even accidental provider calls; no DNS/external connections in this process.
++_original_connect = socket.socket.connect
++_original_resolve = socket.getaddrinfo
++def safe_connect(sock, address):
++    if isinstance(address, tuple) and address[0] in ("127.0.0.1", "::1"):
++        return _original_connect(sock, address)
++    raise AssertionError("External network forbidden in insights acceptance")
++def safe_resolve(host, *args, **kwargs):
++    if host not in ("127.0.0.1", "::1", "localhost", None):
++        raise AssertionError("External DNS forbidden in insights acceptance")
++    return _original_resolve(host, *args, **kwargs)
++socket.socket.connect = safe_connect
++socket.getaddrinfo = safe_resolve
++
++prepare = "--prepare" in sys.argv
++metadata = {"database": "meeting_insights_" + uuid4().hex[:12]} if prepare else json.loads(FIXTURE.read_text(encoding="utf-8"))
++name = metadata["database"]
++assert name.startswith("meeting_insights_") and name.replace("_", "").isalnum()
++url = f"postgresql+asyncpg://postgres@127.0.0.1:{PORT}/{name}"
++from app import config
++from app import database as local_database
++from sqlalchemy.ext.asyncio import create_async_engine
++from sqlalchemy.engine import make_url
++def local_engine(value, **options):
++    parsed = make_url(value)
++    assert parsed.host == HOST and parsed.port == PORT and parsed.database == name
++    options["connect_args"] = {"ssl": False}
++    return create_async_engine(value, **options)
++local_database.create_database_engine = local_engine
++# _env_file=None: never load shared environment files or existing credentials.
++settings = config.Settings(_env_file=None, tenant_id="synthetic", client_id="synthetic", client_secret="synthetic", database_url=url,
++    auth_mode="mock", graph_impl="mock", allowed_domain="example.test", emails_enabled=False,
++    auto_send_email=False, enable_auto_reconcile=False)
++config.get_settings = lambda: settings
++from fastapi import FastAPI, Request
++from fastapi.middleware.cors import CORSMiddleware
++from fastapi.responses import JSONResponse
++from sqlalchemy import select, text, func
++from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
++from app.db import Base, get_db
++from app.models import Meeting, MeetingParticipant, RegisteredUser, ActionItem, MeetingInsightDraft, ProcessingState
++from app.api import reviews, meeting_insights, action_items, recording_jobs, notifications
++from app.services import meeting_insights as service
++engine = create_async_engine(url, connect_args={"server_settings": {"application_name": "insights_local_validation", "statement_timeout": "15000"}})
++sessions = async_sessionmaker(engine, expire_on_commit=False)
++async def database():
++    async with sessions() as db:
++        yield db
++app = FastAPI()
++app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:8975"], allow_headers=["*"], allow_methods=["GET", "POST", "PUT"])
++app.dependency_overrides[get_db] = database
++for router in (reviews.router, meeting_insights.router, action_items.router, recording_jobs.router, notifications.router):
++    app.include_router(router)
++requests = []
++@app.middleware("http")
++async def allow_only_fixture_routes(request: Request, call_next):
++    path, method = request.url.path, request.method
++    safe = method == "OPTIONS" or (method == "GET" and (path.startswith("/reviews/") or path in ("/action-items", "/recordings/jobs", "/notifications"))) or (method in ("PUT", "POST") and path.endswith("/insights")) or (method == "PUT" and path.startswith("/action-items/") and path.endswith("/completion"))
++    if not safe:
++        return JSONResponse({"detail": "Not available in offline acceptance"}, status_code=403)
++    response = await call_next(request)
++    requests.append({"method": method, "path": path, "status": response.status_code})
++    (OUT / "release-api-requests.json").write_text(json.dumps(requests, indent=2), encoding="utf-8")
++    return response
++
++async def seed(db, label):
++    owner, editor, viewer = [f"{role}@example.test" for role in ("owner", "editor", "viewer")]
++    m = Meeting(drive_item_id="synthetic-" + uuid4().hex, title="SYNTHETIC DATA ONLY - " + label + " " + uuid4().hex[:8],
++        organizer_upn=owner, state=ProcessingState.awaiting_review, summary="Saved original notes - synthetic only",
++        transcript="[Speaker A] We will prepare a synthetic demo.\n[Speaker B] Please prepare the synthetic evidence.\n[Speaker A] Please review the synthetic checklist.\n[Speaker B] We decided to review locally.\n[Speaker A] We agreed to use mock data.",
++        attendees_raw=[owner, editor], extracted_json={"synthetic_only": True})
++    db.add(m); await db.flush()
++    for upn, access, edit in [(owner,"participant","none"),(editor,"participant","approved"),(viewer,"shared","none")]:
++        db.add(MeetingParticipant(meeting_id=m.id, user_upn=upn, access_type=access, edit_access_status=edit))
++    await db.commit()
++    return m.id
++
++async def verify():
++    import asyncpg
++    from alembic.migration import MigrationContext
++    from alembic.operations import Operations
++    from httpx import AsyncClient, ASGITransport
++    admin = await asyncpg.connect(host=HOST, port=PORT, user="postgres", database="postgres")
++    directory = Path(await admin.fetchval("show data_directory")).resolve()
++    assert directory == (OUT / "pg-data").resolve(), "Not the isolated embedded cluster"
++    await admin.execute('CREATE DATABASE "' + name + '"')
++    await admin.close()
++    results = []
++    def passed(label, **details):
++        results.append({"check": label, "result": "passed", **details}); print("PASS", label)
++    from alembic import command
++    from alembic.config import Config
++    cfg = Config(str(ROOT / "alembic.ini"))
++    cfg.set_main_option("script_location", str(ROOT / "alembic"))
++    async def migrate(direction, revision):
++        await asyncio.to_thread(getattr(command, direction), cfg, revision)
++    await migrate("upgrade", "92d6a10f4e72")
++    async with engine.connect() as conn:
++        assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == "92d6a10f4e72"
++    passed("Full migration chain reaches actual deployment head 92d6a10f4e72")
++    async with sessions() as db:
++        for role in ("owner", "editor", "viewer", "outsider"):
++            db.add(RegisteredUser(upn=f"{role}@example.test", display_name="Synthetic " + role, is_admin=False))
++        await db.commit()
++        legacy_id = await seed(db, "migration preservation")
++        db.add(ActionItem(meeting_id=legacy_id,task="Synthetic legacy action retained",approved=False,source_quote="Synthetic old evidence")); await db.commit()
++    async def snapshot(conn):
++        return await conn.scalar(text("SELECT jsonb_build_object('meetings',(SELECT jsonb_agg(to_jsonb(m) ORDER BY id) FROM meetings m),'participants',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM meeting_participants p),'actions',(SELECT jsonb_agg(to_jsonb(a) ORDER BY id) FROM action_items a))::text"))
++    async with engine.connect() as conn:
++        before = await snapshot(conn)
++    await migrate("upgrade", "62e9a3b8d014")
++    async with engine.begin() as conn:
++        assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == "62e9a3b8d014"
++        assert before == await snapshot(conn)
++        await conn.execute(text("INSERT INTO meeting_insight_drafts VALUES (:mid,1,'awaiting_review','synthetic-hash',:payload,NULL)"),
++            {"mid": legacy_id, "payload": '{"summary":"synthetic","actions":[],"decisions":[]}'})
++    await migrate("downgrade", "92d6a10f4e72")
++    async with engine.connect() as conn:
++        assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == "92d6a10f4e72"
++        assert await conn.scalar(text("select to_regclass('meeting_insight_drafts')")) is None
++        assert before == await snapshot(conn)
++    await migrate("upgrade", "head")
++    async with engine.connect() as conn:
++        assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == "62e9a3b8d014"
++        passed("Alembic target-head upgrade/downgrade/upgrade preserves saved data", version=await conn.scalar(text("show server_version")))
++    async with sessions() as db:
++        race_id = await seed(db, "concurrency")
++        ui_id = await seed(db, "page flow")
++        fail_id = await seed(db, "failure retry")
++    transport = ASGITransport(app=app)
++    async with AsyncClient(transport=transport, base_url="http://offline") as client:
++        async def call(method, path, actor="owner", body=None):
++            return await client.request(method, path, headers={"Authorization":f"Bearer mock:{actor}@example.test"}, json=body)
++        endpoint = f"/reviews/{race_id}/insights"
++        original = service.adapter
++        class CountingAdapter:
++            calls = 0
++            async def analyze(self, transcript):
++                self.calls += 1
++                await asyncio.sleep(.2)
++                return await original.analyze(transcript)
++        counted = CountingAdapter(); service.adapter = counted
++        a,b = await asyncio.gather(call("POST",endpoint),call("POST",endpoint,"editor"))
++        service.adapter = original
++        assert a.status_code == b.status_code == 200 and a.json() == b.json() and counted.calls == 1
++        passed("Two authorized users concurrently generate exactly one draft", adapter_calls=counted.calls)
++        body = a.json(); body["summary"] = "Human revised synthetic notes"; body["actions"][0]["status"] = "confirmed"; body["actions"][0]["owner"] = "owner@example.test"; body["actions"][0]["deadline"] = "2026-11-03"
++        body["actions"][1]["status"] = "rejected"
++        # Third candidate remains pending and must not enter Action Items.
++        a,b = await asyncio.gather(call("PUT",endpoint,body=body),call("PUT",endpoint,"editor",body))
++        assert sorted([a.status_code,b.status_code]) == [200,409]
++        passed("Concurrent confirmation commits once and rejects stale second reviewer", statuses=sorted([a.status_code,b.status_code]))
++        assert (await call("PUT",endpoint,body=body)).status_code == 409
++        current=(await call("GET",endpoint)).json()
++        assert current["version"] == 2 and current["summary"] == body["summary"]
++        assert (await call("POST",endpoint)).json() == current
++        passed("Duplicate confirmation and repeated generate preserve human edits")
++        # Two real connections: hold parent lock, observe wait, release it.
++        async with sessions() as lock_db:
++            await lock_db.scalar(select(Meeting).where(Meeting.id == race_id).with_for_update())
++            task = asyncio.create_task(call("PUT", endpoint, "editor", current))
++            await asyncio.sleep(.25)
++            assert not task.done()
++            async with sessions() as monitor:
++                waiters = await monitor.scalar(text("select count(*) from pg_stat_activity where datname=current_database() and wait_event_type='Lock'"))
++            assert waiters >= 1
++            await lock_db.commit()
++            response = await asyncio.wait_for(task, 5)
++            assert response.status_code == 200
++            passed("Competing review waits for real PostgreSQL row lock and resumes", observed_lock_waiters=waiters)
++        # Explicit short timeout on a separate competing connection must rollback safely.
++        async with sessions() as lock_db:
++            await lock_db.scalar(select(Meeting).where(Meeting.id == race_id).with_for_update())
++            async with sessions() as waiting:
++                await waiting.execute(text("SET LOCAL lock_timeout = '100ms'"))
++                try:
++                    await waiting.scalar(select(Meeting).where(Meeting.id == race_id).with_for_update())
++                    raise AssertionError("Expected lock timeout")
++                except Exception as exc:
++                    assert "lock timeout" in str(exc).lower()
++                    await waiting.rollback()
++            await lock_db.rollback()
++        passed("PostgreSQL lock timeout rolls back competing transaction")
++        rows=(await call("GET","/action-items?view=all")).json()["items"]
++        assert len(rows)==1 and rows[0]["confirmation_source"]=="insight_review" and not rows[0]["meeting_notes_approved"] and rows[0]["can_complete"]
++        assert rows[0]["deadline_iso"] == "2026-11-03"
++        aid=rows[0]["id"]
++        assert (await call("PUT",f"/action-items/{aid}/completion",body={"completed":True})).status_code==200
++        assert (await call("PUT",f"/action-items/{aid}/completion",body={"completed":False})).status_code==200
++        viewer=(await call("GET","/action-items?view=all","viewer")).json()["items"]
++        assert len(viewer)==1 and not viewer[0]["can_complete"]
++        assert (await call("PUT",f"/action-items/{aid}/completion","viewer",{"completed":True})).status_code==403
++        assert (await call("GET","/action-items?view=all","outsider")).json()["items"]==[]
++        passed("Only confirmed candidate is visible; task complete/reopen respects original permissions")
++        class FailingAdapter:
++            async def analyze(self, transcript): raise TimeoutError("synthetic timeout")
++        service.adapter=FailingAdapter()
++        fail_url=f"/reviews/{fail_id}/insights"
++        assert (await call("POST",fail_url)).json()["status"]=="failed"
++        service.adapter=original
++        assert (await call("POST",fail_url)).json()["status"]=="awaiting_review"
++        passed("Analysis timeout preserves transcript and supports safe retry")
++    async with sessions() as db:
++        m=await db.get(Meeting,race_id)
++        assert m.state==ProcessingState.awaiting_review and m.approved_at is None and m.approved_by is None
++        assert m.summary=="Saved original notes - synthetic only" and m.transcript.startswith("[Speaker A]")
++        assert m.email_delivery_status is None
++        passed("Confirmation and task management never approve notes or queue email")
++    async with sessions() as db:
++        ui_title=(await db.get(Meeting,ui_id)).title
++    metadata.update({"ui_title":ui_title,"ui_id":str(ui_id), "race_id":str(race_id), "today":"2026-11-03","owner":"owner@example.test","editor":"editor@example.test","viewer":"viewer@example.test"})
++    FIXTURE.write_text(json.dumps(metadata,indent=2),encoding="utf-8")
++    (OUT/"release-postgres-results.json").write_text(json.dumps(results,indent=2,ensure_ascii=False),encoding="utf-8")
++    await engine.dispose()
++
++if __name__ == "__main__":
++    if prepare: asyncio.run(verify())
++    elif "--new-ui" in sys.argv:
++        async def new_ui():
++            async with sessions() as db:
++                mid = await seed(db, "page flow")
++                metadata["ui_id"] = str(mid)
++                metadata["ui_title"] = (await db.get(Meeting,mid)).title
++            FIXTURE.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
++            await engine.dispose()
++        asyncio.run(new_ui())
++    elif "--serve" in sys.argv:
++        import uvicorn
++        uvicorn.run(app,host="127.0.0.1",port=8976,log_level="warning")
+diff --git a/scripts/meeting_insights_offline_guard.cjs b/scripts/meeting_insights_offline_guard.cjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/meeting_insights_offline_guard.cjs
+@@ -0,0 +1,21 @@
++// Process-local guard for synthetic Next acceptance; no shared env or remote fetch.
++const fs = require('node:fs');
++const read = fs.readFileSync;
++fs.readFileSync = function(file, options) {
++  if (typeof file === 'string' && /[\\/]\.env(?:\.[^\\/]*)?$/.test(file)) return typeof options === 'string' || options?.encoding ? '' : Buffer.alloc(0);
++  return read.apply(this, arguments);
++};
++const local = value => { const u = new URL(typeof value === 'string' || value instanceof URL ? value : value.url); return ['127.0.0.1','localhost','[::1]'].includes(u.hostname); };
++const originalFetch = global.fetch;
++global.fetch = function(input, ...rest) { if (!local(input)) throw new Error('External fetch forbidden during synthetic acceptance'); return originalFetch.call(this,input,...rest); };
++for (const protocol of ['node:http','node:https']) {
++ const api = require(protocol);
++ for (const key of ['request','get']) {
++   const original = api[key];
++   api[key] = function(input,...rest) {
++     const host = typeof input === 'string' || input instanceof URL ? new URL(input).hostname : input?.hostname || input?.host || 'localhost';
++     if (!['127.0.0.1','localhost','::1'].includes(host)) throw new Error('External HTTP forbidden during synthetic acceptance');
++     return original.call(this,input,...rest);
++   };
++ }
++}

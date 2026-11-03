@@ -1,0 +1,482 @@
+[
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/recordings/jobs",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/decisions",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "PUT",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/recordings/jobs",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/decisions",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "PUT",
+    "path": "/action-items/623e9b31-6e87-47a7-b082-62cbf939b710/completion",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "PUT",
+    "path": "/action-items/623e9b31-6e87-47a7-b082-62cbf939b710/completion",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/recordings/jobs",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/decisions",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "PUT",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 403
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/recordings/jobs",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/decisions",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/8db24380-10c2-4b03-9849-72acd91b693a/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/recordings/jobs",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "PUT",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/recordings/jobs",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "PUT",
+    "path": "/action-items/2fbc5746-7095-491b-9aed-8bd321c0eb40/completion",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "PUT",
+    "path": "/action-items/2fbc5746-7095-491b-9aed-8bd321c0eb40/completion",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/recordings/jobs",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "PUT",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 403
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/recordings/jobs",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/action-items",
+    "status": 200
+  }
+]

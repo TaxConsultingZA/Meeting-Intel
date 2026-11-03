@@ -63,7 +63,7 @@ def test_complete_idempotent_reopen_and_approval_unchanged(api):
     db.add.assert_not_called()
 
 
-@pytest.mark.parametrize("role,allowed", [("organiser", True), ("admin", True), ("editor", True),
+@pytest.mark.parametrize("role,allowed", [("organiser", True), ("admin", False), ("editor", True),
     ("viewer", False), ("owner_only", False), ("shared_editor", False), ("revoked", False), ("outsider", False)])
 def test_authority_requires_existing_view_and_editor_access(api, role, allowed):
     client, session, user, meeting, participant, item, db = api
@@ -117,3 +117,60 @@ def test_authentication_and_registration_required_for_completion(api):
                           headers={"Authorization": "Bearer mock:missing@taxconsulting.co.za"})
     assert response.status_code == 403
     assert item.completed_at is None
+
+
+@pytest.mark.parametrize("role,allowed", [("organiser", True), ("editor", True), ("admin_with_access", True),
+    ("viewer", False), ("shared_editor", False), ("revoked", False), ("outsider", False), ("admin_revoked", False)])
+def test_confirmed_action_before_notes_approval(api, role, allowed):
+    client, session, user, meeting, participant, item, db = api
+    meeting.state = ProcessingState.awaiting_review
+    meeting.approved_by = None; meeting.approved_at = None
+    meeting.organizer_upn = "other@taxconsulting.co.za"
+    item.raw = {"origin": "mock_insight_human_confirmed"}
+    item.owner = user.upn; item.deadline_iso = "2026-11-03"
+    if role == "organiser": participant.is_organizer = True
+    if role == "editor": participant.edit_access_status = "approved"
+    if role.startswith("admin"): user.is_admin = True
+    if role == "shared_editor": participant.access_type = "shared"; participant.edit_access_status = "approved"
+    if role in {"revoked", "admin_revoked"}: participant.access_type = "revoked"; participant.edit_access_status = "approved"
+    if role == "outsider": participant.user_upn = "outsider@taxconsulting.co.za"
+    session.commit()
+    before = (meeting.summary, meeting.transcript, meeting.extracted_json, meeting.email_delivery_status)
+    rows = client.get("/action-items?view=all").json()["items"]
+    if role in {"revoked", "outsider", "admin_revoked"}:
+        assert rows == []
+    else:
+        assert len(rows) == 1 and rows[0]["can_complete"] is allowed
+        assert rows[0]["deadline_iso"] == "2026-11-03"
+    assert put(client, item).status_code == (200 if allowed else 403)
+    if allowed:
+        assert client.get("/action-items").json()["items"][0]["completed_at"]
+        assert put(client, item, False).status_code == 200
+        assert client.get("/action-items").json()["items"][0]["completed_at"] is None
+    else:
+        assert item.completed_at is None
+        db.commit.assert_not_awaited()
+    assert meeting.state == ProcessingState.awaiting_review
+    assert meeting.approved_by is None and meeting.approved_at is None
+    assert before == (meeting.summary, meeting.transcript, meeting.extracted_json, meeting.email_delivery_status)
+
+
+@pytest.mark.parametrize("approved,origin", [(False, "mock_insight_human_confirmed"),
+    (True, "unconfirmed"), (True, "rejected"), (False, "rejected"), (True, None)])
+def test_candidates_cannot_bypass_independent_confirmation(api, approved, origin):
+    client, session, _, meeting, _, item, db = api
+    meeting.state = ProcessingState.awaiting_review
+    item.approved = approved; item.raw = {"origin": origin}
+    session.commit()
+    assert client.get("/action-items?view=all").json()["items"] == []
+    assert put(client, item).status_code == 409
+    assert put(client, item, False).status_code == 409
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.parametrize("value,expected", [("2026-11-03", "2026-11-03"),
+    ("2028-02-29", "2028-02-29"), ("2026-02-29", None), ("2026-02-30", None),
+    ("next week", None), ("20261103", None), ("2026-11-03T00:00:00Z", None), (None, None)])
+def test_confirmed_deadline_requires_explicit_valid_date(value, expected):
+    from app.services.action_review import confirmed_deadline_iso
+    assert confirmed_deadline_iso(value) == expected

@@ -621,3 +621,9 @@ export function getProcessingMonitor(token: string, filters: import("./types").A
   }
   return apiFetch(`/admin/processing-monitor?${params}`, token, { signal, cache: "no-store" });
 }
+
+export type InsightCandidate = { text: string; source_quote: string; owner: string | null; deadline: string | null; status: "pending_confirmation" | "confirmed" | "rejected" };
+export type InsightDraft = { version: number; status: string; provider: string; summary: string; actions: InsightCandidate[]; decisions: InsightCandidate[] };
+export function meetingInsights(id: string, token: string, method = "GET", draft?: InsightDraft): Promise<InsightDraft | null> {
+  return apiFetch(`/reviews/${encodeURIComponent(id)}/insights`, token, { method, cache: "no-store", ...(draft ? { body: JSON.stringify(draft) } : {}) });
+}

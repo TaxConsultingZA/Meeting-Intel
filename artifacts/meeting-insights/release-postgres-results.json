@@ -1,0 +1,49 @@
+[
+  {
+    "check": "Full migration chain reaches actual deployment head 92d6a10f4e72",
+    "result": "passed"
+  },
+  {
+    "check": "Alembic target-head upgrade/downgrade/upgrade preserves saved data",
+    "result": "passed",
+    "version": "18.6"
+  },
+  {
+    "check": "Two authorized users concurrently generate exactly one draft",
+    "result": "passed",
+    "adapter_calls": 1
+  },
+  {
+    "check": "Concurrent confirmation commits once and rejects stale second reviewer",
+    "result": "passed",
+    "statuses": [
+      200,
+      409
+    ]
+  },
+  {
+    "check": "Duplicate confirmation and repeated generate preserve human edits",
+    "result": "passed"
+  },
+  {
+    "check": "Competing review waits for real PostgreSQL row lock and resumes",
+    "result": "passed",
+    "observed_lock_waiters": 1
+  },
+  {
+    "check": "PostgreSQL lock timeout rolls back competing transaction",
+    "result": "passed"
+  },
+  {
+    "check": "Only confirmed candidate is visible; task complete/reopen respects original permissions",
+    "result": "passed"
+  },
+  {
+    "check": "Analysis timeout preserves transcript and supports safe retry",
+    "result": "passed"
+  },
+  {
+    "check": "Confirmation and task management never approve notes or queue email",
+    "result": "passed"
+  }
+]

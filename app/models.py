@@ -440,3 +440,13 @@ class AuditEvent(Base):
     correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     event_key: Mapped[str] = mapped_column(String(255))
     event_metadata: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, server_default=text("'{}'::jsonb"))
+
+
+class MeetingInsightDraft(Base):
+    __tablename__ = "meeting_insight_drafts"
+    meeting_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    transcript_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    reviewed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)

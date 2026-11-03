@@ -168,6 +168,8 @@ class ActionItemOut(TaskCompletionOut):
 
 
 class ApprovedActionItemOut(TaskCompletionOut):
+    confirmation_source: Literal["insight_review", "meeting_notes"] = "meeting_notes"
+    meeting_notes_approved: bool = False
     id: UUID
     task: str
     meeting_id: UUID

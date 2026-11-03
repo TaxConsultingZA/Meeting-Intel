@@ -30,6 +30,7 @@ from ..email_templates import build_meeting_email
 from ..utils.identity import normalize_upn, normalize_upns
 from ..services.job_control import public_job_error, processing_failure_info
 from ..services.access import NO_VIEW_ACCESS_TYPES, has_view_access
+from ..services.action_review import task_is_reviewed
 from ..services.activity_audit import add_activity
 from ..services.email_audit import add_email_event, submission_failure
 from .deps import current_user, require_registered  # noqa: F401 — re-exported; tests may import from here
@@ -369,9 +370,9 @@ def _require_editor(m: Meeting, upn: str, *, is_admin: bool = False) -> None:
 
 
 def can_complete_task(m: Meeting, item: ActionItem, upn: str | None, *, is_admin: bool = False) -> bool:
-    if not upn or not item.approved or m.state not in (ProcessingState.approved, ProcessingState.sent):
+    if not upn or not task_is_reviewed(m, item):
         return False
-    if not is_admin and not any(normalize_upn(p.user_upn) == upn and _has_view_access(p) for p in m.participants):
+    if not any(normalize_upn(p.user_upn) == upn and _has_view_access(p) for p in m.participants):
         return False
     try:
         _require_editor(m, upn, is_admin=is_admin)

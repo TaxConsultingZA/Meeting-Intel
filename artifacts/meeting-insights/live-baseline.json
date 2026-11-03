@@ -1,0 +1,38 @@
+{
+  "checked_on": "2026-11-03",
+  "worktree_base": "4d1d62ef90158624c0b17b1f05ded646b79ab25c",
+  "api_source": "222cf86ebbdf4098a2ffd58a781a29e8b41957ac",
+  "api_deployment": "1ac9a4b6-a644-498b-bd80-5cc3d3091b44",
+  "worker_deployment_record": "38f8cb63-daec-4b87-b3e0-ee40bb1c1b26",
+  "frontend_source": "7b082d5523f48c8b8639a5c8e1e57ddbbefb9331",
+  "frontend_deployment": "dpl_E67Xpb49qNPBmmtXPG1fe2nk9zFR",
+  "frontend_state": "READY",
+  "database_read_only_query": {
+    "migration_heads": [
+      "92d6a10f4e72"
+    ],
+    "postgres_version": "18.6 (4e5fd08)",
+    "insight_table_exists": false
+  },
+  "online_writes": false,
+  "active_railway_deployments": [
+    {
+      "service": "meeting-intel-worker",
+      "active": [
+        {
+          "id": "38f8cb63-daec-4b87-b3e0-ee40bb1c1b26",
+          "status": "SUCCESS"
+        }
+      ]
+    },
+    {
+      "service": "meeting-intel-api",
+      "active": [
+        {
+          "id": "1ac9a4b6-a644-498b-bd80-5cc3d3091b44",
+          "status": "SUCCESS"
+        }
+      ]
+    }
+  ]
+}

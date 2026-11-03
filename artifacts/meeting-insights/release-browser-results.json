@@ -1,0 +1,212 @@
+{
+  "checks": [
+    {
+      "check": "Real meeting detail generates a persisted English synthetic draft",
+      "result": "passed"
+    },
+    {
+      "check": "Edit, confirm one, reject another and leave pending; failed save retains all edits",
+      "result": "passed"
+    },
+    {
+      "check": "Refresh restores human edits and independent confirmation without approving meeting notes",
+      "result": "passed"
+    },
+    {
+      "check": "Action Items shows only confirmed action with pending note status and existing task management",
+      "result": "passed"
+    },
+    {
+      "check": "Readonly participant can read detail and action status but cannot edit or complete",
+      "result": "passed"
+    },
+    {
+      "check": "390px pages keep controls visible without document overflow; action table scrolls locally",
+      "result": "passed"
+    }
+  ],
+  "external": [],
+  "errors": [],
+  "responses": [
+    {
+      "method": "GET",
+      "path": "/notifications",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/recordings/jobs?meeting_id=a51e45d6-23a6-480f-9f36-ead500054eb3",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+      "status": 200
+    },
+    {
+      "method": "PUT",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/notifications",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/recordings/jobs?meeting_id=a51e45d6-23a6-480f-9f36-ead500054eb3",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/notifications",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/action-items?view=all&meeting=&owner=&deadline=&offset=0&limit=50",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/action-items?view=all&meeting=SYNTHETIC+DATA+ONLY+-+page+flow+0253a742&owner=&deadline=&offset=0&limit=50",
+      "status": 200
+    },
+    {
+      "method": "PUT",
+      "path": "/action-items/2fbc5746-7095-491b-9aed-8bd321c0eb40/completion",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/notifications",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/action-items?view=all&meeting=&owner=&deadline=&offset=0&limit=50",
+      "status": 200
+    },
+    {
+      "method": "PUT",
+      "path": "/action-items/2fbc5746-7095-491b-9aed-8bd321c0eb40/completion",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/action-items?view=all&meeting=&owner=&deadline=&offset=0&limit=50",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/notifications",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/recordings/jobs?meeting_id=a51e45d6-23a6-480f-9f36-ead500054eb3",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/notifications",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/action-items?view=all&meeting=&owner=&deadline=&offset=0&limit=50",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/action-items?view=all&meeting=SYNTHETIC+DATA+ONLY+-+page+flow+0253a742&owner=&deadline=&offset=0&limit=50",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/notifications",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/recordings/jobs?meeting_id=a51e45d6-23a6-480f-9f36-ead500054eb3",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/decisions",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/reviews/a51e45d6-23a6-480f-9f36-ead500054eb3/insights",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/notifications",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/action-items?view=all&meeting=&owner=&deadline=&offset=0&limit=50",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/action-items?view=all&meeting=SYNTHETIC+DATA+ONLY+-+page+flow+0253a742&owner=&deadline=&offset=0&limit=50",
+      "status": 200
+    }
+  ]
+}

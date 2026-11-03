@@ -1,0 +1,19 @@
+{
+  "backend_unique_passed": 125,
+  "frontend_unique_passed": 148,
+  "frontend_after_final_react_fix": 22,
+  "postgres_checks_passed": 10,
+  "browser_checks_passed": 6,
+  "typescript": "passed",
+  "eslint_changed_implementations": "passed",
+  "production_build": "passed",
+  "production_runtime": "blocked by automatic approval: blocked by policy",
+  "browser_runtime": "next dev --webpack",
+  "release_gate": {
+    "expected_head": "passed",
+    "mismatched_head": "exit 2"
+  },
+  "commit_push_deploy": false,
+  "external_providers": false,
+  "online_writes": false
+}

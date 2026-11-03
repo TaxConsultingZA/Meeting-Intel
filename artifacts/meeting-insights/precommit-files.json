@@ -1,0 +1,313 @@
+{
+  "branch": "codex/insights-actions-release",
+  "base": "4d1d62ef90158624c0b17b1f05ded646b79ab25c",
+  "staged_files": [],
+  "files": [
+    {
+      "path": "app/api/action_items.py",
+      "status": "modified",
+      "bytes": 5759,
+      "sha256": "5441aa0eeecbf0b87384ee0370aa28b74990eed59df47b7d9c5c61ada3b563e6"
+    },
+    {
+      "path": "app/api/reviews.py",
+      "status": "modified",
+      "bytes": 54145,
+      "sha256": "99e5be6589136a9e7e7dcd16a4952bb1953f0e106f9636ed3f8f9ecb16a1d6f3"
+    },
+    {
+      "path": "app/main.py",
+      "status": "modified",
+      "bytes": 7602,
+      "sha256": "631931c15dabfb912c0cec1688d383ac01f52a639d935e8ba9c1b7aa2ccaeb54"
+    },
+    {
+      "path": "app/models.py",
+      "status": "modified",
+      "bytes": 24100,
+      "sha256": "323e0ef2eaf0ec70fe6d27fd56d39114c8d994e0ab346e1e8dd4e0442ef1b77c"
+    },
+    {
+      "path": "app/schemas.py",
+      "status": "modified",
+      "bytes": 11800,
+      "sha256": "b4fc4cd5b435a87f802a4ad6554fe1401264929906e1310edcc7ee74213c661a"
+    },
+    {
+      "path": "app/tests/test_action_items_readonly.py",
+      "status": "modified",
+      "bytes": 6417,
+      "sha256": "b325a3cc4ac5e37a1d8a97c3e3838bbd87b1dea3d248d612af11694f69f740f4"
+    },
+    {
+      "path": "app/tests/test_task_completion.py",
+      "status": "modified",
+      "bytes": 9883,
+      "sha256": "8c29f41e3da3d210155bf0fe88ca285630889fe1a997d43f53291fdba3e3e6d2"
+    },
+    {
+      "path": "frontend/src/app/action-items/__tests__/action-item-reminders.test.tsx",
+      "status": "modified",
+      "bytes": 6894,
+      "sha256": "a655fe6b9cbe804345df2bc6dc15b06b6e7b4af14c7d0d5dbc2fec2ca31b29c8"
+    },
+    {
+      "path": "frontend/src/app/action-items/__tests__/action-items-client.test.tsx",
+      "status": "modified",
+      "bytes": 14792,
+      "sha256": "1edd7aa63750c1721b6073114ff0f7bd8f4ab32446095831ac8875dfee500e07"
+    },
+    {
+      "path": "frontend/src/app/action-items/action-items-client.tsx",
+      "status": "modified",
+      "bytes": 13331,
+      "sha256": "baf5ba95bcf788fe7aee39a4e0bbaaf437d942d6934fc0da935a1e477f0202d8"
+    },
+    {
+      "path": "frontend/src/app/meetings/[id]/__tests__/meeting-detail-client.test.tsx",
+      "status": "modified",
+      "bytes": 49496,
+      "sha256": "762195319f764200a5bcb7ea5c2b573d31098a6268cf984f00c3ec41b80bd12c"
+    },
+    {
+      "path": "frontend/src/app/meetings/[id]/meeting-detail-client.tsx",
+      "status": "modified",
+      "bytes": 53944,
+      "sha256": "0a3e4b112399f2f89aea81f7577897f9779939ddfd2edb97465758baadd4f77a"
+    },
+    {
+      "path": "frontend/src/components/meeting-page-feedback.tsx",
+      "status": "modified",
+      "bytes": 4019,
+      "sha256": "f7065d39ef9f80615d382c516242de20d2229a4208815bbec559e39438590399"
+    },
+    {
+      "path": "frontend/src/lib/__tests__/action-item-reminders.test.ts",
+      "status": "modified",
+      "bytes": 3010,
+      "sha256": "47c3cb2529c6ab4b7b4b2b29bcd975cf17f6e61dc684bbce20c94517ea19d42c"
+    },
+    {
+      "path": "frontend/src/lib/action-item-reminders.ts",
+      "status": "modified",
+      "bytes": 1614,
+      "sha256": "fa139b4a465a611f8837342839b8cddefaeea8ee189cd7b661973cbb7849a9e2"
+    },
+    {
+      "path": "frontend/src/lib/api.ts",
+      "status": "modified",
+      "bytes": 26933,
+      "sha256": "c7e9a99a4657cf7e83d0290e8d6b5062e87600d938bfb34c2b7ce81855be189e"
+    },
+    {
+      "path": "frontend/src/lib/types.ts",
+      "status": "modified",
+      "bytes": 12956,
+      "sha256": "4637cc90508ca50cb3ea74c606650d34495b96a8d92ca536cf9a6e9f0f50224a"
+    },
+    {
+      "path": "alembic/versions/62e9a3b8d014_meeting_insight_drafts.py",
+      "status": "new",
+      "bytes": 800,
+      "sha256": "cab2f612da3187d4e4bf3a873856a7995229d82a4d4dbfd70a05e0ba8993ca33"
+    },
+    {
+      "path": "app/api/meeting_insights.py",
+      "status": "new",
+      "bytes": 5313,
+      "sha256": "e350bbec3961528ed3614386988d5652a6c064aa39bb23eef8d5df9a44c02978"
+    },
+    {
+      "path": "app/services/action_review.py",
+      "status": "new",
+      "bytes": 1387,
+      "sha256": "8bbdffa4b46cb87759302e99c1f5aa33a8af0cc97ef5471baa35a840c493b685"
+    },
+    {
+      "path": "app/services/meeting_insights.py",
+      "status": "new",
+      "bytes": 932,
+      "sha256": "fd4e22c293dc59b33470b91d49d0a34523aab85e8825901f8c3460712ffc8d53"
+    },
+    {
+      "path": "app/tests/test_confirmed_action_flow.py",
+      "status": "new",
+      "bytes": 5509,
+      "sha256": "e27e95f80b864b2d160d5a9cc6da7d7923c692a0b00e04348d9d216f4d9b9e60"
+    },
+    {
+      "path": "app/tests/test_meeting_insights.py",
+      "status": "new",
+      "bytes": 7323,
+      "sha256": "6aa822c1070a04f261c886efc797fcb77df0a3452837fa1c43e8b4b5bad59a7f"
+    },
+    {
+      "path": "artifacts/meeting-insights/.gitignore",
+      "status": "new",
+      "bytes": 96,
+      "sha256": "61329adddb09f7e5c21d3a1c4fa0a35f63a555ef225455fec87498b92e49c67e"
+    },
+    {
+      "path": "artifacts/meeting-insights/live-baseline.json",
+      "status": "new",
+      "bytes": 1078,
+      "sha256": "86580b69b5c9f8dfeb59b08b543e4caa97b5191db3fc2109a31123f4b97dda31"
+    },
+    {
+      "path": "artifacts/meeting-insights/local-postflight.json",
+      "status": "new",
+      "bytes": 234,
+      "sha256": "2dd405e19787ee7e90dd7b81f3c999a9b32d78138424bace584f99e45e2c6136"
+    },
+    {
+      "path": "artifacts/meeting-insights/page-action-items-open.png",
+      "status": "new",
+      "bytes": 86064,
+      "sha256": "ba2496dabbd681f73e7b39e282325ee3f3ef1776955aebf916659843b66c31d9"
+    },
+    {
+      "path": "artifacts/meeting-insights/page-generated-draft.png",
+      "status": "new",
+      "bytes": 216495,
+      "sha256": "1d66f16fac295b587b7ac95a5829fb9f362b8ca96c9733903aba266dcd4884f7"
+    },
+    {
+      "path": "artifacts/meeting-insights/page-mobile-action-items.png",
+      "status": "new",
+      "bytes": 70030,
+      "sha256": "b6a4756532a36641f968135efed3293e22f97f9ebdcb862229f5564efdb2d490"
+    },
+    {
+      "path": "artifacts/meeting-insights/page-mobile-detail.png",
+      "status": "new",
+      "bytes": 195660,
+      "sha256": "3ab558885a7f1e03a3a235ea013da72743beca659dfe2a9a12db4da9452d74f8"
+    },
+    {
+      "path": "artifacts/meeting-insights/page-refreshed-confirmation.png",
+      "status": "new",
+      "bytes": 219297,
+      "sha256": "3ab739a6d42fe02e26adb8e2c2b4ede21c5ea1e89a961abf5763043da75edb09"
+    },
+    {
+      "path": "artifacts/meeting-insights/page-save-failure-retains-draft.png",
+      "status": "new",
+      "bytes": 206596,
+      "sha256": "4c422590f70edb0dc9eca91588c57f7d61e99391d5a0a22acc105ed9a8833154"
+    },
+    {
+      "path": "artifacts/meeting-insights/page-viewer-action-items.png",
+      "status": "new",
+      "bytes": 74952,
+      "sha256": "a34915ec4e66cba76fe7850063502cc6d141c50663f7956e0e796402c05ef650"
+    },
+    {
+      "path": "artifacts/meeting-insights/page-viewer-readonly.png",
+      "status": "new",
+      "bytes": 209333,
+      "sha256": "0b3419307a11d8be4eff1566ba0abbad4f397e39ff853bbadc6ec7071f50e08f"
+    },
+    {
+      "path": "artifacts/meeting-insights/preservation-check.json",
+      "status": "new",
+      "bytes": 168,
+      "sha256": "4fbab9a0b46116eb55683cd4e762a5737d5f6cccb8cf923725d5c02d7842147a"
+    },
+    {
+      "path": "artifacts/meeting-insights/production-build.txt",
+      "status": "new",
+      "bytes": 935,
+      "sha256": "985e2b70304af860d8d5da513abf81a120c29f81b4be3854b6452e6a772ba51d"
+    },
+    {
+      "path": "artifacts/meeting-insights/release-api-requests.json",
+      "status": "new",
+      "bytes": 9955,
+      "sha256": "d4a204606228853fe52e72b76db816bdc47893f9a4e9ba409dd3a0e34bbe6515"
+    },
+    {
+      "path": "artifacts/meeting-insights/release-browser-results.json",
+      "status": "new",
+      "bytes": 5481,
+      "sha256": "a96447b2272816aa5bc4ad34ca8ca9d7791301326f6f434703115b4c8cab69a9"
+    },
+    {
+      "path": "artifacts/meeting-insights/release-fixtures.json",
+      "status": "new",
+      "bytes": 348,
+      "sha256": "8c44a296e8bfc9b7ac8b8feb6c3e8b9ea8bd92b53707f92189292df0f2e733b2"
+    },
+    {
+      "path": "artifacts/meeting-insights/release-postgres-results.json",
+      "status": "new",
+      "bytes": 1324,
+      "sha256": "a78df4e5ae1579a3fb7c0d386033edcd652c5638b0fdb3f36d878298d0e3f11f"
+    },
+    {
+      "path": "artifacts/meeting-insights/validation-summary.json",
+      "status": "new",
+      "bytes": 588,
+      "sha256": "b591003a3b1f1e4bd95bc0bdfac947aeec4f3e614973c1317e1d78fc504ac357"
+    },
+    {
+      "path": "docs/meeting-insights-actions-release-20261103.md",
+      "status": "new",
+      "bytes": 9891,
+      "sha256": "3d092fc91450344eb0bb9aefde686a12b0ee1006371b29755d293e71aa3a9c17"
+    },
+    {
+      "path": "docs/meeting-insights-actions-runbook.md",
+      "status": "new",
+      "bytes": 6579,
+      "sha256": "e00eca2ae320114e14edf5de935308b0fed982709004d15fcfef7f5ac1956704"
+    },
+    {
+      "path": "frontend/src/app/action-items/__tests__/confirmed-action-flow.test.tsx",
+      "status": "new",
+      "bytes": 4421,
+      "sha256": "ed36b1bf6f11bb3ef3d1c577231a3094b626c665ad7b2220e62293741d59852b"
+    },
+    {
+      "path": "frontend/src/app/meetings/[id]/__tests__/meeting-insights.test.tsx",
+      "status": "new",
+      "bytes": 2474,
+      "sha256": "2c5840eace72991f62fd0f2ef348f20a342b2d01b7e59c7020fc2e64fc89adbb"
+    },
+    {
+      "path": "frontend/src/app/meetings/[id]/meeting-insights.tsx",
+      "status": "new",
+      "bytes": 4846,
+      "sha256": "cd2ac0b0cd6330f770ec946267f4f2fd61a6c103f7b1b515c54004299e62cda2"
+    },
+    {
+      "path": "frontend/src/test/fixtures/confirmed-action-flow.json",
+      "status": "new",
+      "bytes": 2522,
+      "sha256": "34907141fc25700a25637dd40c14892531d2c78db2dc0d6345ea4f900d6eaf5a"
+    },
+    {
+      "path": "scripts/check_insights_release.py",
+      "status": "new",
+      "bytes": 2625,
+      "sha256": "3e973527998f9203e318b416f2f02be90e292d72d7999b310ce615860c0ca5b1"
+    },
+    {
+      "path": "scripts/meeting_insights_browser.mjs",
+      "status": "new",
+      "bytes": 12791,
+      "sha256": "db1cb27751e12f4ea15a2f6a88efa47b18da780cf217f0c0cd356107f22b6992"
+    },
+    {
+      "path": "scripts/meeting_insights_local.py",
+      "status": "new",
+      "bytes": 15803,
+      "sha256": "f028a918bdf2b822a9cba664e67af2e671e1a4fbbc025a575f785b7c37671b6b"
+    },
+    {
+      "path": "scripts/meeting_insights_offline_guard.cjs",
+      "status": "new",
+      "bytes": 1333,
+      "sha256": "774efe8082254fa3212b6fed8d5242555cae0f036c907d71224bdd938bc1d6f0"
+    }
+  ]
+}

@@ -71,6 +71,8 @@ export interface ActionItemOut extends TaskCompletion {
 
 /** Approved source actions for the read-only cross-meeting page. */
 export interface ApprovedActionItem extends TaskCompletion {
+  confirmation_source?: "insight_review" | "meeting_notes";
+  meeting_notes_approved?: boolean;
   id: string;
   meeting_id: string;
   meeting_title: string | null;

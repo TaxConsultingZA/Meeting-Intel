@@ -1,0 +1,82 @@
+{
+  "pending": {
+    "items": [],
+    "has_more": false,
+    "viewer_upn": "alice@taxconsulting.co.za"
+  },
+  "confirmed": {
+    "items": [
+      {
+        "completed_at": null,
+        "completed_by_id": null,
+        "can_complete": true,
+        "id": "b4c10328-fd4e-4181-8e89-6fe9c6e5f54e",
+        "task": "Prepare report",
+        "meeting_id": "99c13b2c-3251-494a-bcba-b81aaf1d4cb9",
+        "meeting_title": "Synthetic pending notes",
+        "owner": "alice@taxconsulting.co.za",
+        "deadline_iso": "2026-11-03",
+        "deadline_text": "2026-11-03",
+        "source_quote": "Please prepare a report.",
+        "confidence": "medium"
+      }
+    ],
+    "has_more": false,
+    "viewer_upn": "alice@taxconsulting.co.za"
+  },
+  "complete_response": {
+    "completed_at": "2026-11-03T07:42:22.156151Z",
+    "completed_by_id": "928caff7-6d1b-46fe-968d-90bf2d186d89",
+    "can_complete": true
+  },
+  "completed": {
+    "items": [
+      {
+        "completed_at": "2026-11-03T07:42:22.156151Z",
+        "completed_by_id": "928caff7-6d1b-46fe-968d-90bf2d186d89",
+        "can_complete": true,
+        "id": "b4c10328-fd4e-4181-8e89-6fe9c6e5f54e",
+        "task": "Prepare report",
+        "meeting_id": "99c13b2c-3251-494a-bcba-b81aaf1d4cb9",
+        "meeting_title": "Synthetic pending notes",
+        "owner": "alice@taxconsulting.co.za",
+        "deadline_iso": "2026-11-03",
+        "deadline_text": "2026-11-03",
+        "source_quote": "Please prepare a report.",
+        "confidence": "medium"
+      }
+    ],
+    "has_more": false,
+    "viewer_upn": "alice@taxconsulting.co.za"
+  },
+  "reopen_response": {
+    "completed_at": null,
+    "completed_by_id": null,
+    "can_complete": true
+  },
+  "reopened": {
+    "items": [
+      {
+        "completed_at": null,
+        "completed_by_id": null,
+        "can_complete": true,
+        "id": "b4c10328-fd4e-4181-8e89-6fe9c6e5f54e",
+        "task": "Prepare report",
+        "meeting_id": "99c13b2c-3251-494a-bcba-b81aaf1d4cb9",
+        "meeting_title": "Synthetic pending notes",
+        "owner": "alice@taxconsulting.co.za",
+        "deadline_iso": "2026-11-03",
+        "deadline_text": "2026-11-03",
+        "source_quote": "Please prepare a report.",
+        "confidence": "medium"
+      }
+    ],
+    "has_more": false,
+    "viewer_upn": "alice@taxconsulting.co.za"
+  },
+  "revoked": {
+    "items": [],
+    "has_more": false,
+    "viewer_upn": "alice@taxconsulting.co.za"
+  }
+}

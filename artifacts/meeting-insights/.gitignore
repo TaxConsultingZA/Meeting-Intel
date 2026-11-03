@@ -1,0 +1,7 @@
+pg-runtime/
+pg-data/
+*.pid
+*.log
+debug-*
+parse-failure-source.txt
+page-failure-debug.png

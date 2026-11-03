@@ -1,0 +1,23 @@
+{
+  "checked_at": "2026-11-03T06:58:35.054895+00:00",
+  "requests": [
+    {
+      "path": "/health",
+      "status": 200
+    },
+    {
+      "path": "/admin/audit-events",
+      "status": 401
+    },
+    {
+      "path": "/admin/processing-monitor",
+      "status": 401
+    }
+  ],
+  "unsigned_frontend": {
+    "status": 200,
+    "login_redirect": false,
+    "streamed_login_redirect": true,
+    "visible_audit_heading": false
+  }
+}

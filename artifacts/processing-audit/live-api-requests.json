@@ -1,0 +1,1 @@
+[{"time": "2026-11-03T06:50:05.339949496Z", "path": "/admin/audit-events", "status": 401}, {"time": "2026-11-03T06:50:05.339954039Z", "path": "/admin/processing-monitor", "status": 401}, {"time": "2026-11-03T06:54:42.646592420Z", "path": "/admin/audit-events", "status": 200}, {"time": "2026-11-03T06:54:42.981713673Z", "path": "/admin/processing-monitor", "status": 200}]

@@ -179,3 +179,12 @@
 用户补充要求恢复原自动处理：worker RECORDING_PROCESSING_ENABLED 已恢复 true；配置恢复部署 38f8cb63-daec-4b87-b3e0-ee40bb1c1b26 成功，SSH printenv 实查 true；仍为 222cf86 worker 代码。没有因前端补丁重新部署 API/worker，没有手工创建任务或调用录音、AI、邮件接口。邮件与 BusinessAI 开关保持关闭。
 
 管理员线上页面验收暂未完成：浏览器扩展两次报告 Debugger unattached；窗口恢复工具因无法可靠识别 URL 而停止。已请用户将管理员 Chrome 页面恢复前台，不把数据库只读预检或本地截图冒充真实管理员页面验收。
+
+
+### 最终发布与验收证据
+
+前端补发 76e7e0d / dpl_FbDeV88PeJM4v5aj7vAS1jSUwhUX 已 READY 并绑定原域名，API 未再部署。用户实际打开管理员页面后，06:54:42 UTC 服务日志记录两个审计 GET 均 200；未认证两个 GET 均 401。证据只保留时间/路径/状态，详见 artifacts/processing-audit/live-api-requests.json、unsigned-live-check.json。普通用户与账号切换保持“本地通过，线上未验收”。浏览器工具仍无法可靠识别 URL，管理员完整视觉交互未验收，没有绕过工具限制。
+
+worker 配置恢复部署 38f8cb63-daec-4b87-b3e0-ee40bb1c1b26 SUCCESS，容器实查 processing=true、emails=false、BusinessAI=false，源文件哈希仍匹配 222cf86。发布后数据库 head 不变，active_jobs=0，事件分类聚合与预检一致；不制造样本。
+
+五类事件的逐项状态、真实线上证据与待观察项见 artifacts/processing-audit/release-result.md；机器可读部署版本见 deployment-result.json。新证据提交仅归档发布结果，不要求再次部署任何服务。

@@ -1,0 +1,45 @@
+{
+  "source": {
+    "api_worker": "222cf86ebbdf4098a2ffd58a781a29e8b41957ac",
+    "frontend": "76e7e0d9a780b454480d1c3a4439e1c26d9c86b7"
+  },
+  "railway": {
+    "project": "059e3add-9746-4baa-90e1-58d4fa5f2559",
+    "environment": "production",
+    "api": {
+      "deployment": "1ac9a4b6-a644-498b-bd80-5cc3d3091b44",
+      "status": "SUCCESS"
+    },
+    "worker": {
+      "paused_deployment": "87e70a7c-4b38-4a9c-bc90-506f4b83c7d9",
+      "restored_deployment": "38f8cb63-daec-4b87-b3e0-ee40bb1c1b26",
+      "status": "SUCCESS",
+      "container_processing_enabled": true,
+      "emails_enabled": false,
+      "businessai_enabled": false
+    }
+  },
+  "vercel": {
+    "project": "prj_clw0nJfdfNmpFenJctjHIo5GrKDP",
+    "deployment": "dpl_FbDeV88PeJM4v5aj7vAS1jSUwhUX",
+    "status": "READY",
+    "target": "production",
+    "alias": "https://meeting-intel-staging.vercel.app",
+    "url": "https://meeting-intel-staging-bt8u4238x-team-22c0.vercel.app"
+  },
+  "acceptance": {
+    "admin_api_statuses": [
+      200,
+      200
+    ],
+    "unsigned_api_statuses": [
+      401,
+      401
+    ],
+    "admin_visual_interactions": "not verified: browser tooling could not reliably read current URL",
+    "ordinary_user_and_identity_switch": "local passed; no online ordinary user session",
+    "migration_head": "92d6a10f4e72",
+    "migrations_executed": false,
+    "manual_recording_provider_email_calls": false
+  }
+}

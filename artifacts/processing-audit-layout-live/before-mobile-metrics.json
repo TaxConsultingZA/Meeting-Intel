@@ -1,0 +1,6 @@
+{
+  "width": 390,
+  "tableOverflow": 781,
+  "pageScrollWidthMinusInnerWidth": -15,
+  "note": "Measured before release; negative page delta is the browser scrollbar, not overflow."
+}

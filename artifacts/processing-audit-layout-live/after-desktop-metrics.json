@@ -1,0 +1,24 @@
+{
+  "eventCanScroll": true,
+  "eventCount": 29,
+  "eventHeight": 870,
+  "eventOverflow": 0,
+  "firstRowCount": 2,
+  "firstRowHeight": 241.33334350585935,
+  "fullResource": true,
+  "headers": [
+    "Time",
+    "Actor",
+    "Action",
+    "Resource",
+    "Outcome",
+    "Details"
+  ],
+  "jobCanScroll": true,
+  "jobCount": 7,
+  "jobHeight": 241,
+  "jobOverflow": 0,
+  "pageOverflow": 0,
+  "sevenRows": 869.0000457763672,
+  "width": 1280
+}

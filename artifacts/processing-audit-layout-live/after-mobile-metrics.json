@@ -1,0 +1,22 @@
+{
+  "detailButtons": 29,
+  "eventCanScroll": true,
+  "eventHeight": 633,
+  "eventOverflow": 0,
+  "fields": [
+    "Time",
+    "Actor",
+    "Action",
+    "Resource",
+    "Outcome",
+    "Details"
+  ],
+  "firstCardHeight": 305.3333435058594,
+  "firstRowCount": 1,
+  "fullResource": true,
+  "jobCanScroll": true,
+  "jobHeight": 305,
+  "jobOverflow": 0,
+  "pageOverflow": 0,
+  "width": 390
+}

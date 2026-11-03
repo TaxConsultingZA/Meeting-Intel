@@ -14,17 +14,25 @@ const audit = {id,occurred_at:time,event_type:'provider.submitted',outcome:'succ
 const api = `export class ApiError extends Error {};
 export async function getAuditEvents(token, filters, cursor) { window.auditQueries ??= []; window.auditQueries.push(filters); if(cursor) return {"items": [], "has_more": false, "next_cursor": null, "window_start": "2026-11-02T08:00:00Z", "window_end": "2026-11-02T08:00:00Z"}; return ${JSON.stringify({items:Array.from({length:29},(_,i)=>({...audit,id:`00000000-0000-4000-8000-${String(i+1).padStart(12,"0")}`})),has_more:true,next_cursor:"synthetic-next",window_start:time,window_end:time})}; }
 export async function getProcessingMonitor(token, filters) { if(window.failMonitor) throw new Error('SECRET'); return ${JSON.stringify({items:Array.from({length:6},(_,i)=>({...job,job_id:`00000000-0000-4000-8000-${String(i+1).padStart(12,"0")}`})),has_more:false,window_start:time,window_end:time})}; }`;
-const server = await createServer({root, configFile:false, esbuild:{jsx:'automatic'}, resolve:{alias:[{find:'@/lib/api',replacement:'virtual:audit-api'}, {find:'next/link',replacement:'virtual:audit-link'}, {find:'@',replacement:path.join(root,'src')}]}, plugins:[{name:'synthetic-audit-fixture',resolveId(id){if(id.startsWith('virtual:')) return id; if(id==='/audit-preview.tsx') return id;}, load(id){if(id==='virtual:audit-api')return api; if(id==='virtual:audit-link')return `import React from 'react'; export default function Link({children,...props}) { return React.createElement('a',props,children); }`; if(id==='/audit-preview.tsx')return `import React from 'react'; import {createRoot} from 'react-dom/client'; import Audit from '/src/app/admin/audit-logs/audit-logs-client.tsx'; import '/src/app/globals.css'; createRoot(document.getElementById('root')).render(<Audit accessToken="synthetic"/>);`;},configureServer(server){server.middlewares.use((req,res,next)=>{if(req.url==='/'){res.setHeader('Content-Type','text/html');res.end('<html><head><meta name="viewport" content="width=device-width, initial-scale=1"/></head><body><div id="root"></div><script type="module" src="/audit-preview.tsx"></script></body></html>');} else next();});}}],server:{host:'127.0.0.1',port:3060,strictPort:true}});
+const server = await createServer({root, configFile:false, esbuild:{jsx:'automatic'}, resolve:{alias:[{find:'@/lib/api',replacement:'virtual:audit-api'}, {find:'next/link',replacement:'virtual:audit-link'}, {find:'@',replacement:path.join(root,'src')}]}, plugins:[{name:'synthetic-audit-fixture',resolveId(id){if(id.startsWith('virtual:')) return id; if(id==='/audit-preview.tsx') return id;}, load(id){if(id==='virtual:audit-api')return api; if(id==='virtual:audit-link')return `import React from 'react'; export default function Link({children,...props}) { return React.createElement('a',props,children); }`; if(id==='/audit-preview.tsx')return `import React from 'react'; import {createRoot} from 'react-dom/client'; import Audit from '/src/app/admin/audit-logs/audit-logs-client.tsx'; import '/src/app/globals.css'; createRoot(document.getElementById('root')).render(<Audit accessToken="synthetic"/>);`;},configureServer(server){server.middlewares.use((req,res,next)=>{if(req.url==='/'){res.setHeader('Content-Type','text/html');res.end('<html><head><meta name="viewport" content="width=device-width, initial-scale=1"/></head><body><nav style="position:sticky;top:0;z-index:50;height:120px;background:#003366;color:white">Admin</nav><div id="root"></div><script type="module" src="/audit-preview.tsx"></script></body></html>');} else next();});}}],server:{host:'127.0.0.1',port:3061,strictPort:true}});
 let browser;
 try {
  await server.listen(); browser=await chromium.launch({headless:true});
  const page=await browser.newPage();
  await page.route('**/*',r=>new URL(r.request().url()).hostname==='127.0.0.1'?r.continue():r.abort());
- await page.goto('http://127.0.0.1:3060');
+ await page.goto('http://127.0.0.1:3061');
  const results=[];
  for(const [name,width,height] of [['desktop',1280,900],['mobile',390,844]]){
   await page.setViewportSize({width,height});
   await page.waitForFunction(()=>document.querySelectorAll('[aria-label="Scrollable audit events"] tbody tr').length===29);
+  await page.waitForFunction(()=>!!document.querySelector('[aria-label="Scrollable audit events"]').style.maxHeight);
+  await page.getByRole('region',{name:'Scrollable audit events'}).press('PageDown');
+  await page.waitForFunction(()=>document.querySelector('[aria-label="Scrollable audit events"]').scrollTop>0);
+  const clearOfNav=await page.getByRole('region',{name:'Scrollable audit events'}).evaluate(el=>{
+   const h=innerWidth>=1024?el.previousElementSibling:el.previousElementSibling.previousElementSibling;
+   return h.getBoundingClientRect().top>=document.querySelector('nav').getBoundingClientRect().bottom-1;
+  });
+  if(!clearOfNav)throw Error('List heading obscured by navigation after keyboard focus');
   for(const [position,ratio] of [['top',0],['middle',0.5],['bottom',1]]){
    const data=await page.getByRole('region',{name:'Scrollable audit events'}).evaluate((el,ratio)=>{
     el.scrollTop=(el.scrollHeight-el.clientHeight)*ratio;

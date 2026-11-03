@@ -49,6 +49,10 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
     // Keep five actual rows visible even when long outcomes wrap or fonts resize.
     const measure = () => {
       viewport.parentElement?.style.setProperty("--audit-body-width", `${viewport.clientWidth}px`);
+      const desktop = typeof window.matchMedia === "undefined" || window.matchMedia("(min-width: 1024px)").matches;
+      const heading = desktop ? viewport.previousElementSibling : viewport.previousElementSibling?.previousElementSibling;
+      const navHeight = document.querySelector("nav")?.getBoundingClientRect().height ?? 0;
+      viewport.style.scrollMarginTop = `${navHeight + (heading?.getBoundingClientRect().height ?? 0) + 8}px`;
       const rows = table.tBodies[0]?.rows;
       if (!rows?.length || loading || error) return;
       const lastVisible = rows[Math.min(5, rows.length) - 1];
@@ -243,6 +247,7 @@ export default function AuditLogsClient({ accessToken }: { accessToken: string }
         </table>
       </div>
       <div ref={eventsViewport} role="region" aria-label="Scrollable audit events" tabIndex={0}
+        onFocusCapture={() => eventsViewport.current?.scrollIntoView?.({ block: "nearest" })}
         className="relative max-h-[42rem] overflow-y-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#003366] [&>[data-slot=table-container]]:overflow-visible" style={{ scrollbarGutter: "stable" }}>
       <Table className="block w-full table-fixed text-xs lg:table" aria-label="Audit events">
         <colgroup className="hidden lg:table-column-group">{[14, 12, 13, 22, 24, 15].map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup>

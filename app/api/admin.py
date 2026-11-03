@@ -21,6 +21,7 @@ from ..schemas import AdminRevokeAccessIn, BusinessUnitOut, RegisteredUserOut, R
 from ..services.sync_state import list_sync_status
 from ..services.job_control import RETRYABLE_JOB_STATES
 from ..services.access import NO_VIEW_ACCESS_TYPES
+from ..services.activity_audit import add_activity
 from ..services.audit_queries import query_audit_events
 from ..schemas import AuditEventsPageOut
 from ..utils.identity import normalize_upn
@@ -54,6 +55,9 @@ async def list_audit_events(
     actor_type: Literal["user", "system"] | None = None,
     actor_id: str | None = Query(default=None, min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$"),
     actor_upn: str | None = Query(default=None, max_length=255, pattern=r"^[^\s@]+@[^\s@]+$"),
+    job_id: UUID | None = None,
+    recording_id: str | None = Query(default=None, min_length=1, max_length=255),
+    status: Literal["pending", "processing", "failed", "cancelled", "completed"] | None = None,
     db: AsyncSession = Depends(get_db),
     _upn: str = Depends(_require_admin),
 ):
@@ -63,10 +67,30 @@ async def list_audit_events(
         return await query_audit_events(
             db, limit=limit, cursor=cursor, start=start, end=end,
             event_type=event_type, outcome=outcome, actor_type=actor_type,
-            actor_id=actor_id, actor_upn=actor_upn,
+            actor_id=actor_id, actor_upn=actor_upn, job_id=job_id, recording_id=recording_id, status=status,
         )
     except (ValueError, OverflowError) as exc:
         raise HTTPException(422, "Invalid audit query: check date range, cursor, and filters") from exc
+
+
+@router.get("/processing-monitor")
+async def processing_monitor(
+    response: Response,
+    job_id: UUID | None = None,
+    recording_id: str | None = Query(default=None, min_length=1, max_length=255),
+    status: Literal["pending", "processing", "failed", "cancelled", "completed"] | None = None,
+    start: AwareDatetime | None = Query(default=None, alias="from"),
+    end: AwareDatetime | None = Query(default=None, alias="to"),
+    db: AsyncSession = Depends(get_db),
+    _upn: str = Depends(_require_admin),
+):
+    from ..services.processing_monitor import query_processing_monitor
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return await query_processing_monitor(db, job_id=job_id, recording_id=recording_id,
+                                              status=status, start=start, end=end)
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid monitoring date range") from exc
 
 
 async def _ensure_not_last_admin(db: AsyncSession, user: RegisteredUser) -> None:
@@ -292,6 +316,7 @@ async def revoke_meeting_access(meeting_id: str, user_upn: str, body: AdminRevok
         participant.edit_access_status = "denied"
     participant.edit_decided_at = now
     participant.edit_decided_by = admin_upn
+    add_activity(db, meeting_id=meeting.id, upn=admin_upn, action="access.revoked", target_upn=user_upn)
     await db.commit()
     return {"ok": True, "access_type": body.access_type, "status": "revoked"}
 

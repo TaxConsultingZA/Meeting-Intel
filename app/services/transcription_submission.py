@@ -10,7 +10,8 @@ from ..config import get_settings
 from sqlalchemy import select
 
 from ..db import SessionLocal
-from ..models import RecordingJob
+from ..models import RecordingJob, AuditEvent
+from .audit import add_audit_event
 from ..pipeline.transcribe import AssemblyAITranscriber, TranscriptSegment, ProviderTranscriptionError
 
 
@@ -33,6 +34,22 @@ async def checkpoint(job_id, lease_token, *, reserve=False, **values):
             job.provider_status = "submitting"
         for key, value in values.items():
             setattr(job, key, value)
+        # One durable fact per status, inside the existing row lock/lease fence.
+        # "reserved" explicitly does not assert the HTTP request was sent.
+        state = "reserved" if reserve else values.get("provider_status")
+        action = {"reserved": "reserved", "submitted": "submitted",
+                  "submission_unknown": "submission_unknown", "completed": "completed",
+                  "error": "failed", "poll_unknown": "poll_unknown"}.get(state)
+        if action:
+            key = f"provider.{action}:{job.id}"
+            existing = await db.scalar(select(AuditEvent.id).where(AuditEvent.event_key == key))
+            if existing is None:
+                add_audit_event(db, event_type=f"provider.{action}",
+                    outcome="unknown" if action in {"submission_unknown", "poll_unknown"} else
+                            "failed" if action == "failed" else "requested" if reserve else "succeeded",
+                    actor_type="system", actor_id="recording_worker",
+                    resource_type="recording_job", resource_id=job.id,
+                    job_id=job.id, correlation_id=job.id, event_key=key)
         await db.commit()
 
 

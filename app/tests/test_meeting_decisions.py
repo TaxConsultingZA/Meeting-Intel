@@ -22,7 +22,7 @@ from app.db import get_db
 @pytest.fixture
 def decisions_api():
     engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    tables = [models.Meeting, models.MeetingParticipant, models.ActionItem]
+    tables = [models.Meeting, models.MeetingParticipant, models.ActionItem, models.AuditEvent]
     if hasattr(models, "MeetingDecision"):
         tables.append(models.MeetingDecision)
     for model in tables:
@@ -264,7 +264,8 @@ def test_decisions_migration_extends_the_deployed_single_head():
     from alembic.script import ScriptDirectory
 
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert scripts.get_heads() == ["51d8f2a7c903"]
+    assert scripts.get_heads() == ["92d6a10f4e72"]
     revisions = list(scripts.iterate_revisions("heads", "81c5f02a9d31"))
-    assert [revision.revision for revision in revisions] == ["51d8f2a7c903"]
-    assert revisions[0].down_revision == "81c5f02a9d31"
+    assert [revision.revision for revision in revisions] == ["92d6a10f4e72", "51d8f2a7c903"]
+    assert revisions[0].down_revision == "51d8f2a7c903"
+    assert revisions[1].down_revision == "81c5f02a9d31"

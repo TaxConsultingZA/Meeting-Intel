@@ -3,6 +3,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from ..ai.contracts import FailureCode
 from .audit import add_audit_event
+from ..ai.audit_usage import reported_usage
 from .job_control import JobCancelled, processing_stage
 
 
@@ -12,8 +13,10 @@ async def audited_extraction(db, *, meeting_id, job_id, lease_token, commit,
     run_id = (uuid5(NAMESPACE_URL, f"meeting-intel:extraction:{job_id}:{lease_token}")
               if lease_token is not None else uuid4())
 
+    usage = {}
+
     def stage(action, outcome, error_category=None):
-        metadata = {}
+        metadata = dict(usage) if action in {"completed", "failed"} else {}
         if error_category is not None:
             metadata["error_category"] = error_category
         add_audit_event(
@@ -27,6 +30,7 @@ async def audited_extraction(db, *, meeting_id, job_id, lease_token, commit,
 
     stage("requested", "requested")
     await commit()  # Durable before invocation, without holding the job lock during AI.
+    usage_token = reported_usage.set(usage)
     try:
         with processing_stage("extraction"):
             result = await extract(meeting_id, segments, **kwargs)
@@ -39,6 +43,8 @@ async def audited_extraction(db, *, meeting_id, job_id, lease_token, commit,
         stage("failed", "failed", category)
         await commit()
         raise
+    finally:
+        reported_usage.reset(usage_token)
     # asyncio cancellation propagates without a false failure event.
     stage("completed", "succeeded")
     await commit()  # No success from a superseded/cancelled worker.

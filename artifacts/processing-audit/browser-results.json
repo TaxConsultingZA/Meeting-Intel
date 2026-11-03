@@ -1,0 +1,10 @@
+{
+  "synthetic": true,
+  "desktop": "1280x900",
+  "narrow": "390x844",
+  "noOverflow": true,
+  "filters": true,
+  "errorRetry": true,
+  "externalRequests": [],
+  "pageErrors": []
+}

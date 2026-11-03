@@ -612,3 +612,12 @@ export async function revokeAdminMeetingAccess(
     method: "POST", body: JSON.stringify({ access_type: accessType }),
   });
 }
+
+
+export function getProcessingMonitor(token: string, filters: import("./types").AuditFilters = {}, signal?: AbortSignal): Promise<import("./types").ProcessingMonitorPage> {
+  const params = new URLSearchParams();
+  for (const key of ["from", "to", "job_id", "recording_id", "status"] as const) {
+    if (filters[key]) params.set(key, filters[key]);
+  }
+  return apiFetch(`/admin/processing-monitor?${params}`, token, { signal, cache: "no-store" });
+}

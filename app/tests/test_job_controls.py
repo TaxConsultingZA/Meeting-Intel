@@ -30,7 +30,7 @@ def test_failure_context_is_safe_and_roundtrips_without_changing_exception(stage
     assert processing_failure_info(message) == expected
     job = row(status="processing", attempts=1)
     worker._retry_or_fail(job, original)
-    assert job.status == "pending"
+    assert job.status == "failed"  # No automatic paid submission retry.
     assert processing_failure_info(job.last_error) == expected
     job.attempts = job.max_attempts
     worker._retry_or_fail(job, original)

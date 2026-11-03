@@ -422,10 +422,39 @@ export interface AuditEventsPage {
 }
 
 export interface AuditFilters {
+  job_id?: string;
+  recording_id?: string;
+  status?: string;
   from?: string;
   to?: string;
   event_type?: string;
   outcome?: AuditOutcome;
   actor_upn?: string;
   actor_id?: string;
+}
+
+
+export interface ProcessingMonitorJob {
+  job_id: string;
+  status: string;
+  attempts: number;
+  created_at: string;
+  confirmed_submissions: number | null;
+  submission_evidence: string;
+  submission_uncertain: boolean;
+  provider_status: string | null;
+  audio_duration_seconds: number | null;
+  ai_submissions_with_reported_usage?: number | null;
+  token_usage: { event_id: string; occurred_at: string; prompt_tokens?: number; completion_tokens?: number; total_tokens: number }[];
+  processing_duration_seconds: number | null;
+  failure: { stage: string; category: string } | null;
+  actual_cost: null;
+  estimated_cost: null;
+  cost_status: "unknown";
+}
+export interface ProcessingMonitorPage {
+  items: ProcessingMonitorJob[];
+  has_more: boolean;
+  window_start: string;
+  window_end: string;
 }

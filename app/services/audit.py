@@ -10,8 +10,9 @@ from ..models import AuditEvent
 
 _OUTCOMES = frozenset({"requested", "succeeded", "failed", "unknown"})
 _METADATA_KEYS = frozenset({
-    "source", "parent_job_id", "attempt", "retry_scheduled", "previous_state",
+    "subject_actor_id", "source", "parent_job_id", "attempt", "retry_scheduled", "previous_state",
     "new_state", "email_category", "recipient_count", "fingerprint",
+    "prompt_tokens", "completion_tokens", "total_tokens",
     "error_category", "drive_id", "drive_item_id", "reason",
 })
 

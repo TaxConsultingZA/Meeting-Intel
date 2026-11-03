@@ -157,7 +157,8 @@ async def test_import_helper_caller_owned_transaction(monkeypatch):
     monkeypatch.setattr(jobs, "claim_item", AsyncMock(return_value=True))
     assert await jobs.enqueue_recording_job(db, drive_item_id="item", drive_id="drive",
         owner_upn="owner@example.test", source="manual", commit=False, job_id=new_id)
-    assert db.add.call_args.args[0].id == new_id
+    assert db.add.call_args_list[0].args[0].id == new_id
+    assert db.add.call_args_list[1].args[0].job_id == new_id
     db.flush.assert_awaited_once()
     db.commit.assert_not_awaited()
 

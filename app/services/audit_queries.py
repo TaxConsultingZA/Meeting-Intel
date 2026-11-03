@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlalchemy import select, tuple_
 from sqlalchemy.orm import load_only
 
-from ..models import AuditEvent
+from ..models import AuditEvent, RecordingJob
 from ..schemas import AuditEventOut, AuditEventsPageOut
 
 
@@ -17,7 +17,7 @@ _TOKEN_VALUES = {
     "source": {"manual", "manual_retry", "manual_reprocess", "webhook", "calendar_processing", "reconcile"},
     "previous_state": {"pending", "processing", "failed", "cancelled", "completed"},
     "new_state": {"pending", "processing", "failed", "cancelled", "completed"},
-    "error_category": {"processing_error", "interrupted", "attempts_exhausted", "reprocess_conflict"},
+    "error_category": {"processing_error", "interrupted", "attempts_exhausted", "reprocess_conflict", "timeout", "rate_limited", "unavailable", "access_unavailable", "configuration", "invalid_output", "unknown", "connection_unavailable", "provider_rejected", "submission_uncertain"},
     "reason": {"lease_expired", "existing_result_preserved"},
 }
 
@@ -31,17 +31,18 @@ def safe_metadata(value):
         item = value.get(key)
         if isinstance(item, str) and item in allowed:
             result[key] = item
-    for key in ("attempt", "recipient_count"):
+    for key in ("attempt", "recipient_count", "prompt_tokens", "completion_tokens", "total_tokens"):
         item = value.get(key)
         if type(item) is int and 0 <= item <= 2**31 - 1:
             result[key] = item
     if type(value.get("retry_scheduled")) is bool:
         result["retry_scheduled"] = value["retry_scheduled"]
-    try:
-        if isinstance(value.get("parent_job_id"), str):
-            result["parent_job_id"] = str(UUID(value["parent_job_id"]))
-    except ValueError:
-        pass
+    for key in ("parent_job_id", "subject_actor_id"):
+        try:
+            if isinstance(value.get(key), str):
+                result[key] = str(UUID(value[key]))
+        except ValueError:
+            pass
     return result
 
 
@@ -69,13 +70,14 @@ def _decode(value):
 
 async def query_audit_events(db, *, limit=50, cursor=None, start=None, end=None,
                              event_type=None, outcome=None, actor_type=None,
-                             actor_id=None, actor_upn=None):
+                             actor_id=None, actor_upn=None, job_id=None, recording_id=None, status=None):
     if not 1 <= limit <= 100:
         raise ValueError("Limit must be between 1 and 100")
     if actor_upn is not None:
         actor_upn = actor_upn.strip().lower()
     filters = {"event_type": event_type, "outcome": outcome, "actor_type": actor_type,
-               "actor_id": actor_id, "actor_upn": actor_upn}
+               "actor_id": actor_id, "actor_upn": actor_upn,
+               "job_id": str(job_id) if job_id else None, "recording_id": recording_id, "status": status}
     fingerprint = hashlib.sha256(json.dumps(filters, sort_keys=True).encode()).hexdigest()
     boundary = None
     if cursor:
@@ -106,8 +108,19 @@ async def query_audit_events(db, *, limit=50, cursor=None, start=None, end=None,
         AuditEvent.job_id, AuditEvent.correlation_id, AuditEvent.event_metadata,
     )).where(AuditEvent.occurred_at >= start, AuditEvent.occurred_at < end)
     for name, value in filters.items():
+        if name in {"recording_id", "status"}:
+            continue
         if value is not None:
+            if name == "job_id":
+                value = UUID(value)
             statement = statement.where(getattr(AuditEvent, name) == value)
+    if recording_id is not None or status is not None:
+        jobs = select(RecordingJob.id)
+        if recording_id is not None:
+            jobs = jobs.where(RecordingJob.drive_item_id == recording_id)
+        if status is not None:
+            jobs = jobs.where(RecordingJob.status == status)
+        statement = statement.where(AuditEvent.job_id.in_(jobs))
     if boundary is not None:
         statement = statement.where(tuple_(AuditEvent.occurred_at, AuditEvent.id) < boundary)
     statement = statement.order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc()).limit(limit + 1)

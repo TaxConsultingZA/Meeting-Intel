@@ -9,6 +9,7 @@ from ..pipeline.transcribe import TranscriptSegment
 from ..schemas import RichExtractionResult
 from .contracts import FailureCode, ProcessingOutput, ProcessingRequest, Segment
 from .processing import process
+from .audit_usage import capture_usage
 from .providers import AIProvider, ProviderFailure
 from .providers import LocalMockProvider  # noqa: F401 - existing bridge test seam
 from .registry import ProviderRegistryError, local_runtime_configuration
@@ -81,6 +82,7 @@ async def extract_with_foundation(
         if segment.text.strip()
     ))
     outcome = await process(request, _SummaryActionsOnly(provider))
+    capture_usage(getattr(provider, "reported_usage", None))
     if outcome.metadata.status != "succeeded" or outcome.output is None:
         code = outcome.metadata.failure.code if outcome.metadata.failure else FailureCode.UNKNOWN
         raise FoundationExtractionError(code)

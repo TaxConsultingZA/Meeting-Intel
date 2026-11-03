@@ -182,3 +182,17 @@ async def test_real_query_paginates_equal_timestamps_without_duplicates():
                 break
         assert ids == list(range(7, 0, -1))
     engine.dispose()
+
+
+async def test_job_recording_status_filters_bind_and_cursor_detects_changed_job():
+    db = MagicMock()
+    first = row()
+    db.scalars = AsyncMock(return_value=MagicMock(all=lambda: [first, row()]))
+    job = uuid4()
+    page = await query_audit_events(db, limit=1, job_id=job, recording_id="synthetic-item", status="failed",
+        start=first.occurred_at-timedelta(days=1), end=first.occurred_at+timedelta(days=1))
+    compiled = db.scalars.await_args.args[0].compile(dialect=postgresql.dialect())
+    assert "audit_events.job_id =" in str(compiled) and "recording_jobs.status =" in str(compiled)
+    assert "synthetic-item" in compiled.params.values() and job in compiled.params.values()
+    with pytest.raises(ValueError):
+        await query_audit_events(db, cursor=page.next_cursor, job_id=uuid4(), recording_id="synthetic-item", status="failed")

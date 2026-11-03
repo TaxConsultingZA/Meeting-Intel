@@ -1,0 +1,8 @@
+
+ RUN  v4.1.8 C:/Users/93547/.codex/worktrees/processing-audit-monitoring/Meeting-Intel/frontend
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 46 skipped (47)
+   Start at  14:43:37
+   Duration  3.31s (transform 342ms, setup 186ms, import 915ms, tests 435ms, environment 1.39s)

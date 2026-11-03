@@ -96,8 +96,11 @@ class TestRecordingQueue:
         )
 
         assert queued is True
-        db.add.assert_called_once()
-        persisted = db.add.call_args.args[0]
+        from app.models import AuditEvent, RecordingJob
+        persisted, audit = [call.args[0] for call in db.add.call_args_list]
+        assert isinstance(persisted, RecordingJob) and isinstance(audit, AuditEvent)
+        assert audit.event_type == "recording.created" and audit.job_id == persisted.id
+        assert audit.event_metadata == {"source": "manual", "new_state": "pending"}
         assert persisted.owner_upn == "owner@taxconsulting.co.za"
         await_args = jobs.claim_item.await_args
         assert await_args.kwargs["commit"] is False

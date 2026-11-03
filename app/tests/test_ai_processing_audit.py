@@ -134,3 +134,16 @@ async def test_actual_guard_fences_audit_before_provider():
     extract.assert_not_awaited()
     db.rollback.assert_awaited_once()
     db.commit.assert_not_awaited()
+
+
+async def test_reported_usage_persists_once_without_provider_content(audit_db):
+    from app.ai.audit_usage import capture_usage, reported_usage
+    async def extract(*args, **kwargs):
+        capture_usage({"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5, "key": "SECRET"})
+        return "SECRET result"
+    await invoke(audit_db, extract, job_id=uuid4(), lease_token=uuid4())
+    rows = list(audit_db.scalars(select(AuditEvent)))
+    assert [r.event_metadata for r in rows if r.event_type == "ai.extraction_completed"] == [
+        {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}]
+    assert reported_usage.get() is None
+    assert "SECRET" not in str([r.event_metadata for r in rows])

@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import RecordingJob
 from .ledger import claim_item
+from .audit import add_audit_event
 
 
 ACTIVE_JOB_STATUSES = ("pending", "processing")
@@ -34,14 +35,16 @@ async def enqueue_recording_job(
     )
     if not claimed:
         return False
+    created_id = job_id or uuid4()
     db.add(RecordingJob(
-        **({"id": job_id} if job_id is not None else {}),
+        id=created_id,
         drive_item_id=drive_item_id,
         drive_id=drive_id,
         owner_upn=owner_upn,
         source=source,
         **admission(authorized_by),
     ))
+    _audit_created(db, created_id, source)
     if commit:
         await db.commit()
     else:
@@ -86,6 +89,7 @@ async def enqueue_retry_job(
     if created_id is None:
         await db.rollback()
         return False
+    _audit_created(db, created_id, source)
     if commit:
         await db.commit()
     return created_id is not None
@@ -95,3 +99,11 @@ def admission(actor: str | None) -> dict:
     """Source/manual strings grant nothing without explicit caller authorization."""
     return (dict(admission_version=1, authorized_at=datetime.now(timezone.utc),
                  authorized_by=actor) if actor else {})
+
+
+def _audit_created(db, job_id, source):
+    add_audit_event(db, event_type="recording.created", outcome="succeeded",
+        actor_type="system", actor_id="recording_queue",
+        resource_type="recording_job", resource_id=job_id, job_id=job_id,
+        correlation_id=job_id, event_key=f"recording.created:{job_id}",
+        metadata={"source": source, "new_state": "pending"})

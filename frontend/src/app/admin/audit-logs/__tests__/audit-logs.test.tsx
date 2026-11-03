@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { ApiError, getAuditEvents } from "@/lib/api";
+import { ApiError, getAuditEvents, getProcessingMonitor } from "@/lib/api";
 import type { AuditEvent, AuditEventsPage } from "@/lib/types";
 import AuditLogsClient, { parseAuditDate } from "../audit-logs-client";
 import { OutcomeBadge, safeMetadata, eventTitle, resourceLabel, outcomeDescription, failureDescription, failureStage, recoveryDescription, metadataValue } from "../audit-display";
@@ -20,7 +20,7 @@ it("exposes AI audit filters and completed recording cancellation", async () => 
   }, undefined, expect.any(AbortSignal)));
 });
 
-vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), getAuditEvents: vi.fn() }));
+vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), getAuditEvents: vi.fn(), getProcessingMonitor: vi.fn() }));
 
 const event: AuditEvent = {
   id: "00000000-0000-0000-0000-000000000001", occurred_at: "2026-10-06T10:00:00Z",
@@ -33,7 +33,7 @@ const event: AuditEvent = {
 function page(items: AuditEvent[] = [event], next_cursor: string | null = null): AuditEventsPage {
   return { items, next_cursor, has_more: !!next_cursor, window_start: "2026-10-01T00:00:00Z", window_end: "2026-10-07T00:00:00Z" };
 }
-beforeEach(() => { vi.mocked(getAuditEvents).mockResolvedValue(page()); });
+beforeEach(() => { vi.mocked(getProcessingMonitor).mockResolvedValue({ items: [], has_more: false, window_start: "2026-10-01T00:00:00Z", window_end: "2026-10-07T00:00:00Z" }); vi.mocked(getAuditEvents).mockResolvedValue(page()); });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
 it("renders native admin layout and system outcomes", async () => {
@@ -315,4 +315,61 @@ it("does not guess missing stages, causes, or recovery information", () => {
   expect(failureDescription(missing)).toBe("No failure category was provided.");
   expect(recoveryDescription(missing)).toBe("No recovery information was provided.");
   expect(recoveryDescription({ ...event, metadata: { retry_scheduled: false } })).toBe("No retry scheduled by this event.");
+});
+
+
+it("filters monitoring and events by job, recording and current status", async () => {
+  render(<AuditLogsClient accessToken="token" />);
+  await screen.findByText("Recording worker");
+  fireEvent.change(screen.getByLabelText("Job ID"), { target: { value: event.id } });
+  fireEvent.change(screen.getByLabelText("Recording item ID"), { target: { value: "synthetic-item" } });
+  fireEvent.change(screen.getByLabelText("Current job status"), { target: { value: "failed" } });
+  fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+  const filters = { job_id: event.id, recording_id: "synthetic-item", status: "failed" };
+  await waitFor(() => expect(getProcessingMonitor).toHaveBeenLastCalledWith("token", filters, expect.any(AbortSignal)));
+  expect(getAuditEvents).toHaveBeenLastCalledWith("token", filters, undefined, expect.any(AbortSignal));
+});
+
+it("shows unknown billing and safe reported usage without accumulating on refresh", async () => {
+  vi.mocked(getProcessingMonitor).mockResolvedValue({ items: [{ job_id: event.id, status: "failed", attempts: 3,
+    created_at: event.occurred_at, confirmed_submissions: null, submission_evidence: "unknown", submission_uncertain: true,
+    provider_status: "submission_unknown", audio_duration_seconds: 18, processing_duration_seconds: null,
+    token_usage: [{ event_id: "usage", occurred_at: event.occurred_at, prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }],
+    failure: null, actual_cost: null, estimated_cost: null, cost_status: "unknown" }], has_more: false,
+    window_start: event.occurred_at, window_end: event.occurred_at });
+  render(<AuditLogsClient accessToken="token" />);
+  expect(await screen.findByText(/Confirmed transcription submissions: Unknown/)).toBeVisible();
+  expect(screen.getByText(/Actual cost: Unknown/)).toBeVisible();
+  expect(screen.getByText(/Input 3 \/ Output 2 \/ Total 5/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() => expect(getProcessingMonitor).toHaveBeenCalledTimes(2));
+  expect(await screen.findAllByText(/Input 3 \/ Output 2 \/ Total 5/)).toHaveLength(1);
+});
+
+it("retries monitoring failure without exposing raw exceptions", async () => {
+  vi.mocked(getProcessingMonitor).mockRejectedValueOnce(new Error("SECRET"));
+  render(<AuditLogsClient accessToken="token" />);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Unable to load processing monitoring");
+  expect(screen.queryByText(/SECRET/)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Retry monitoring" }));
+  expect(await screen.findByText("No jobs match these filters.")).toBeVisible();
+});
+
+
+it("hides old monitoring data immediately when the access token changes", async () => {
+  const { rerender } = render(<AuditLogsClient accessToken="token" />);
+  await screen.findByText("No jobs match these filters.");
+  vi.mocked(getProcessingMonitor).mockReturnValue(new Promise(() => {}));
+  rerender(<AuditLogsClient accessToken="new-token" />);
+  expect(screen.queryByText("No jobs match these filters.")).not.toBeInTheDocument();
+  expect(screen.getByText("Loading processing monitoring…")).toBeVisible();
+});
+
+
+it("exposes manual activity and access history without unsafe metadata", async () => {
+  render(<AuditLogsClient accessToken="token" />);
+  expect(await screen.findByRole("option", { name: "Meeting viewed" })).toHaveValue("meeting.viewed");
+  expect(screen.getByRole("option", { name: "Email preview viewed (not sent)" })).toHaveValue("email.previewed");
+  expect(screen.getByRole("option", { name: "Meeting access revoked" })).toHaveValue("access.revoked");
+  expect(safeMetadata({ subject_actor_id: "00000000-0000-4000-8000-000000000001", raw: "SECRET", prompt: "PRIVATE" })).toEqual([["subject_actor_id", "00000000-0000-4000-8000-000000000001"]]);
 });

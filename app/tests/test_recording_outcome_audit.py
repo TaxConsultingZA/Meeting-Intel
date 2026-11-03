@@ -51,7 +51,8 @@ async def test_failure_is_staged_with_retry_decision_and_sanitized(monkeypatch, 
         assert event.actor_type == "system" and event.actor_id == "recording_worker"
         assert event.resource_type == "recording_job"
         assert event.resource_id == event.correlation_id == event.job_id == row.id
-        assert event.event_metadata["retry_scheduled"] == (attempt < 3)
+        assert event.event_metadata["retry_scheduled"] is False  # Paid submissions require explicit reconciliation.
+        assert row.status == "failed"
         assert event.event_metadata["new_state"] == row.status
         assert "SECRET" not in str(event.event_metadata)
 

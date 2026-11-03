@@ -78,6 +78,7 @@ class TestAllMeetingsEndpoint:
         from app.api import reviews
 
         db = AsyncMock()
+        db.add = MagicMock()
         db.scalars.return_value = MagicMock(
             unique=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         )
@@ -107,11 +108,12 @@ class TestAllMeetingsEndpoint:
             user_upn="removed@taxconsulting.co.za", access_type="revoked"
         )])
         db = AsyncMock()
+        db.add = MagicMock()
         db.scalar = AsyncMock(return_value=meeting)
 
         with pytest.raises(HTTPException) as exc:
             await reviews._authorize(
-                db, "meeting-1", "removed@taxconsulting.co.za"
+                db, "11111111-1111-4111-8111-111111111111", "removed@taxconsulting.co.za"
             )
         assert exc.value.status_code == 403
 
@@ -120,6 +122,7 @@ class TestAllMeetingsEndpoint:
         from app.api import reviews
 
         db = AsyncMock()
+        db.add = MagicMock()
         db.scalars.return_value = MagicMock(
             unique=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         )
@@ -139,7 +142,7 @@ class TestAllMeetingsEndpoint:
             edit_requested_at=None,
         )
         meeting = SimpleNamespace(
-            id="meeting-1", recorded_at=None, title="Review", error=None,
+            id="11111111-1111-4111-8111-111111111111", recorded_at=None, title="Review", error=None,
             state=ProcessingState.awaiting_review,
             organizer_upn="owner@taxconsulting.co.za",
             attendees_raw=["alice@taxconsulting.co.za"],
@@ -161,6 +164,7 @@ class TestHistoricalMeetingsEndpoint:
         from app.api import reviews
 
         db = AsyncMock()
+        db.add = MagicMock()
         db.scalars.return_value = MagicMock(
             unique=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         )
@@ -190,7 +194,7 @@ class TestHistoricalMeetingsEndpoint:
         from app.models import ProcessingState
 
         meeting = SimpleNamespace(
-            id="meeting-1",
+            id="11111111-1111-4111-8111-111111111111",
             recorded_at=None,
             title="Historical review",
             state=ProcessingState.sent,
@@ -199,7 +203,7 @@ class TestHistoricalMeetingsEndpoint:
 
         out = _to_historical_out(meeting)
 
-        assert out.id == "meeting-1"
+        assert out.id == "11111111-1111-4111-8111-111111111111"
         assert out.title == "Historical review"
         assert out.transcript is None
         assert out.extracted_json is None
@@ -236,7 +240,7 @@ class TestToOut:
         from app.models import ProcessingState
 
         meeting = SimpleNamespace(
-            id="meeting-1",
+            id="11111111-1111-4111-8111-111111111111",
             title="test",
             state=ProcessingState.awaiting_review,
             summary=None,
@@ -381,7 +385,7 @@ class TestAdminMeetingControl:
         from app.models import ProcessingState
 
         return MagicMock(
-            id="meeting-1", drive_item_id="item-1", title="Private meeting",
+            id="11111111-1111-4111-8111-111111111111", drive_item_id="item-1", title="Private meeting",
             organizer_upn="owner@taxconsulting.co.za", attendees_raw=["owner@taxconsulting.co.za"],
             participants=[], action_items=[SimpleNamespace(
                 id="action-1", task="Follow up", owner=None, deadline_text=None,
@@ -399,14 +403,15 @@ class TestAdminMeetingControl:
         admin = SimpleNamespace(is_admin=True)
         meeting = self._meeting()
         db = AsyncMock()
+        db.add = MagicMock()
         db.scalar = AsyncMock(side_effect=[admin, meeting])
 
-        result = await reviews.get_meeting("meeting-1", db=db, upn="admin@taxconsulting.co.za")
+        result = await reviews.get_meeting("11111111-1111-4111-8111-111111111111", db=db, upn="admin@taxconsulting.co.za")
 
         assert result.transcript == "Transcript" and result.summary == "AI notes"
         assert result.action_items and result.can_edit and result.can_approve
         assert result.is_organizer is False
-        db.add.assert_not_called()
+        assert db.add.call_args.args[0].event_type == "meeting.viewed"
 
     @pytest.mark.parametrize("edit_path", ["transcript", "action_item", "speaker_mappings"])
     async def test_admin_uses_existing_edit_paths(self, monkeypatch, edit_path):
@@ -415,14 +420,15 @@ class TestAdminMeetingControl:
 
         meeting = self._meeting()
         meeting.attendees_raw = ["owner@taxconsulting.co.za"]
-        item = SimpleNamespace(id="action-1", meeting_id="meeting-1", task="Old", edited_by=None)
+        item = SimpleNamespace(id="action-1", meeting_id="11111111-1111-4111-8111-111111111111", task="Old", edited_by=None)
         db = AsyncMock()
+        db.add = MagicMock()
         db.get = AsyncMock(return_value=item)
         monkeypatch.setattr(reviews, "_is_admin", AsyncMock(return_value=True))
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
 
         if edit_path == "transcript":
-            await reviews.edit_transcript("meeting-1", TranscriptEdit(transcript="Updated"), db=db,
+            await reviews.edit_transcript("11111111-1111-4111-8111-111111111111", TranscriptEdit(transcript="Updated"), db=db,
                                           upn="admin@taxconsulting.co.za")
             assert meeting.transcript == "Updated"
         elif edit_path == "action_item":
@@ -431,7 +437,7 @@ class TestAdminMeetingControl:
             assert item.task == "Updated" and item.edited_by == "admin@taxconsulting.co.za"
         else:
             result = await reviews.save_speaker_mappings(
-                "meeting-1", SpeakerMappingIn(mappings={"Speaker A": "owner@taxconsulting.co.za"}),
+                "11111111-1111-4111-8111-111111111111", SpeakerMappingIn(mappings={"Speaker A": "owner@taxconsulting.co.za"}),
                 db=db, upn="admin@taxconsulting.co.za",
             )
             assert result["speaker_mappings"] == {"Speaker A": "owner@taxconsulting.co.za"}
@@ -446,6 +452,7 @@ class TestAdminMeetingControl:
         meeting.id = uuid4()
         db = AsyncMock()
         db.add = MagicMock()
+        db.add = MagicMock()
         db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="admin-oid")
         send_mail = AsyncMock()
         monkeypatch.setattr(reviews, "_is_admin", AsyncMock(return_value=True))
@@ -455,7 +462,7 @@ class TestAdminMeetingControl:
         monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
 
         result = await reviews.approve(
-            "meeting-1", db=db, upn="admin@taxconsulting.co.za",
+            "11111111-1111-4111-8111-111111111111", db=db, upn="admin@taxconsulting.co.za",
             body=ApproveMeetingIn(recipients=["owner@taxconsulting.co.za"], expected_fingerprint=reviews._email_fingerprint(meeting.id, ["owner@taxconsulting.co.za"], "Subject", "Body")),
         )
 
@@ -480,7 +487,7 @@ class TestEditAccessWorkflow:
             edit_decided_by=None,
         )
         meeting = MagicMock(
-            id="meeting-1",
+            id="11111111-1111-4111-8111-111111111111",
             organizer_upn="owner@taxconsulting.co.za",
             attendees_raw=["owner@taxconsulting.co.za", "guest@taxconsulting.co.za"],
             participants=[participant],
@@ -500,11 +507,11 @@ class TestEditAccessWorkflow:
         db.commit = AsyncMock()
 
         result = await reviews.request_historical_access(
-            "meeting-1", MeetingAccessRequestIn(access_type=requested_access),
+            "11111111-1111-4111-8111-111111111111", MeetingAccessRequestIn(access_type=requested_access),
             db=db, upn="guest@taxconsulting.co.za",
         )
 
-        participant = db.add.call_args.args[0]
+        participant = next(c.args[0] for c in db.add.call_args_list if hasattr(c.args[0], "access_type"))
         assert participant.access_type == f"request_{requested_access}"
         assert participant.edit_access_status == "pending"
         assert result == {
@@ -531,7 +538,7 @@ class TestEditAccessWorkflow:
         db.commit = AsyncMock()
 
         result = await reviews.request_historical_access(
-            "meeting-1", MeetingAccessRequestIn(access_type="view"),
+            "11111111-1111-4111-8111-111111111111", MeetingAccessRequestIn(access_type="view"),
             db=db, upn="guest@taxconsulting.co.za",
         )
 
@@ -562,7 +569,7 @@ class TestEditAccessWorkflow:
 
         with pytest.raises(HTTPException) as exc:
             await reviews.request_historical_access(
-                "meeting-1", MeetingAccessRequestIn(access_type="view"),
+                "11111111-1111-4111-8111-111111111111", MeetingAccessRequestIn(access_type="view"),
                 db=db, upn="guest@taxconsulting.co.za",
             )
 
@@ -574,10 +581,11 @@ class TestEditAccessWorkflow:
 
         meeting, participant = self._meeting()
         db = AsyncMock()
+        db.add = MagicMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
 
         result = await reviews.request_edit_access(
-            "meeting-1", db=db, upn="guest@taxconsulting.co.za"
+            "11111111-1111-4111-8111-111111111111", db=db, upn="guest@taxconsulting.co.za"
         )
 
         assert result == {"ok": True, "status": "pending"}
@@ -592,11 +600,12 @@ class TestEditAccessWorkflow:
         meeting, _ = self._meeting(access_type="shared")
         meeting.attendees_raw = ["owner@taxconsulting.co.za"]
         db = AsyncMock()
+        db.add = MagicMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
 
         with pytest.raises(HTTPException) as exc:
             await reviews.request_edit_access(
-                "meeting-1", db=db, upn="guest@taxconsulting.co.za"
+                "11111111-1111-4111-8111-111111111111", db=db, upn="guest@taxconsulting.co.za"
             )
 
         assert exc.value.status_code == 403
@@ -607,10 +616,11 @@ class TestEditAccessWorkflow:
 
         meeting, _ = self._meeting(status="pending")
         db = AsyncMock()
+        db.add = MagicMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
 
         result = await reviews.request_edit_access(
-            "meeting-1", db=db, upn="guest@taxconsulting.co.za"
+            "11111111-1111-4111-8111-111111111111", db=db, upn="guest@taxconsulting.co.za"
         )
 
         assert result["status"] == "pending"
@@ -622,10 +632,11 @@ class TestEditAccessWorkflow:
 
         meeting, participant = self._meeting(status="pending")
         db = AsyncMock()
+        db.add = MagicMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
 
         result = await reviews.decide_edit_access(
-            "meeting-1", "guest@taxconsulting.co.za",
+            "11111111-1111-4111-8111-111111111111", "guest@taxconsulting.co.za",
             EditAccessDecisionIn(approved=True), db=db,
             upn="owner@taxconsulting.co.za",
         )
@@ -646,6 +657,7 @@ class TestEditAccessWorkflow:
         meeting, participant = self._meeting(access_type=request_type, status="pending")
         admin = MagicMock(upn="admin@taxconsulting.co.za", is_admin=True)
         db = AsyncMock()
+        db.add = MagicMock()
         db.scalar = AsyncMock(side_effect=[admin, meeting])
         monkeypatch.setattr(
             reviews, "_authorize",
@@ -653,7 +665,7 @@ class TestEditAccessWorkflow:
         )
 
         result = await reviews.decide_edit_access(
-            "meeting-1", "guest@taxconsulting.co.za",
+            "11111111-1111-4111-8111-111111111111", "guest@taxconsulting.co.za",
             EditAccessDecisionIn(approved=approved), db=db,
             upn="admin@taxconsulting.co.za",
         )
@@ -680,12 +692,13 @@ class TestEditAccessWorkflow:
         meeting, _ = self._meeting(access_type="request_edit", status=decided_status)
         admin = MagicMock(upn="admin@taxconsulting.co.za", is_admin=True)
         db = AsyncMock()
+        db.add = MagicMock()
         db.scalar = AsyncMock(side_effect=[admin, meeting])
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(side_effect=HTTPException(403)))
 
         with pytest.raises(HTTPException) as exc:
             await reviews.decide_edit_access(
-                "meeting-1", "guest@taxconsulting.co.za",
+                "11111111-1111-4111-8111-111111111111", "guest@taxconsulting.co.za",
                 EditAccessDecisionIn(approved=True), db=db,
                 upn="admin@taxconsulting.co.za",
             )
@@ -705,10 +718,11 @@ class TestEditAccessWorkflow:
 
         meeting, participant = self._meeting(access_type=request_type, status="pending")
         db = AsyncMock()
+        db.add = MagicMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
 
         result = await reviews.decide_edit_access(
-            "meeting-1", "guest@taxconsulting.co.za",
+            "11111111-1111-4111-8111-111111111111", "guest@taxconsulting.co.za",
             EditAccessDecisionIn(approved=True), db=db,
             upn="owner@taxconsulting.co.za",
         )
@@ -727,10 +741,11 @@ class TestEditAccessWorkflow:
 
         meeting, _ = self._meeting(access_type="request_view", status="pending")
         db = AsyncMock()
+        db.add = MagicMock()
         db.scalar.return_value = meeting
 
         with pytest.raises(HTTPException) as exc:
-            await reviews._authorize(db, "meeting-1", "guest@taxconsulting.co.za")
+            await reviews._authorize(db, "11111111-1111-4111-8111-111111111111", "guest@taxconsulting.co.za")
 
         assert exc.value.status_code == 403
 
@@ -752,10 +767,11 @@ class TestEditAccessWorkflow:
 
         meeting, participant = self._meeting(status="pending")
         db = AsyncMock()
+        db.add = MagicMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
 
         result = await reviews.decide_edit_access(
-            "meeting-1", "guest@taxconsulting.co.za",
+            "11111111-1111-4111-8111-111111111111", "guest@taxconsulting.co.za",
             EditAccessDecisionIn(approved=False), db=db,
             upn="owner@taxconsulting.co.za",
         )
@@ -770,11 +786,12 @@ class TestEditAccessWorkflow:
 
         meeting, _ = self._meeting(status="none")
         db = AsyncMock()
+        db.add = MagicMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
 
         with pytest.raises(HTTPException) as exc:
             await reviews.decide_edit_access(
-                "meeting-1", "guest@taxconsulting.co.za",
+                "11111111-1111-4111-8111-111111111111", "guest@taxconsulting.co.za",
                 EditAccessDecisionIn(approved=True), db=db,
                 upn="owner@taxconsulting.co.za",
             )
@@ -792,7 +809,7 @@ class TestEditAccessWorkflow:
 
         with pytest.raises(HTTPException) as exc:
             await reviews.decide_edit_access(
-                "meeting-1", "guest@taxconsulting.co.za",
+                "11111111-1111-4111-8111-111111111111", "guest@taxconsulting.co.za",
                 EditAccessDecisionIn(approved=True), db=AsyncMock(),
                 upn="guest@taxconsulting.co.za",
             )
@@ -805,10 +822,11 @@ class TestEditAccessWorkflow:
 
         meeting, _ = self._meeting(status="approved")
         db = AsyncMock()
+        db.add = MagicMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
 
         result = await reviews.edit_transcript(
-            "meeting-1", TranscriptEdit(transcript="Updated"), db=db,
+            "11111111-1111-4111-8111-111111111111", TranscriptEdit(transcript="Updated"), db=db,
             upn="guest@taxconsulting.co.za",
         )
 
@@ -823,11 +841,12 @@ class TestEditAccessWorkflow:
 
         meeting, _ = self._meeting(status="pending")
         db = AsyncMock()
+        db.add = MagicMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
 
         with pytest.raises(HTTPException) as exc:
             await reviews.edit_transcript(
-                "meeting-1", TranscriptEdit(transcript="Bypass"), db=db,
+                "11111111-1111-4111-8111-111111111111", TranscriptEdit(transcript="Bypass"), db=db,
                 upn="guest@taxconsulting.co.za",
             )
 
@@ -841,6 +860,7 @@ class TestEditAccessWorkflow:
         meeting, _ = self._meeting(status="approved")
         meeting.extracted_json = {}
         db = AsyncMock()
+        db.add = MagicMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
 
         mappings = {
@@ -848,7 +868,7 @@ class TestEditAccessWorkflow:
             "Speaker B": "owner@taxconsulting.co.za",
         }
         result = await reviews.save_speaker_mappings(
-            "meeting-1", SpeakerMappingIn(mappings=mappings), db=db,
+            "11111111-1111-4111-8111-111111111111", SpeakerMappingIn(mappings=mappings), db=db,
             upn="guest@taxconsulting.co.za",
         )
 
@@ -888,7 +908,7 @@ class TestEditAccessWorkflow:
 
         with pytest.raises(HTTPException) as exc:
             await reviews.save_speaker_mappings(
-                "meeting-1", SpeakerMappingIn(mappings=mappings), db=AsyncMock(),
+                "11111111-1111-4111-8111-111111111111", SpeakerMappingIn(mappings=mappings), db=AsyncMock(),
                 upn="guest@taxconsulting.co.za",
             )
 
@@ -902,13 +922,14 @@ class TestEditAccessWorkflow:
         meeting, _ = self._meeting(status="approved")
         meeting.action_items = []
         db = AsyncMock()
+        db.add = MagicMock()
         send_mail = AsyncMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
         monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
 
         with pytest.raises(HTTPException) as exc:
             await reviews.approve(
-                "meeting-1", db=db, upn="guest@taxconsulting.co.za",
+                "11111111-1111-4111-8111-111111111111", db=db, upn="guest@taxconsulting.co.za",
                 body=ApproveMeetingIn(recipients=[
                     "owner@taxconsulting.co.za", "guest@taxconsulting.co.za"
                 ]),
@@ -983,7 +1004,7 @@ class TestSpeakerSamples:
 
         with pytest.raises(HTTPException) as exc:
             await reviews.speaker_sample(
-                "meeting-1", "Speaker A", db=AsyncMock(),
+                "11111111-1111-4111-8111-111111111111", "Speaker A", db=AsyncMock(),
                 upn="guest@taxconsulting.co.za",
             )
 
@@ -1023,6 +1044,7 @@ class TestApprovalDelivery:
         meeting = self._meeting()
         db = AsyncMock()
         db.add = MagicMock()
+        db.add = MagicMock()
         db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
         send_mail = AsyncMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
@@ -1031,12 +1053,13 @@ class TestApprovalDelivery:
         monkeypatch.setattr(reviews, "build_meeting_email", lambda _: ("Subject", "Body"))
         preview = await reviews.email_preview(meeting.id, db=db,
             upn=meeting.organizer_upn, recipients=["guest@taxconsulting.co.za"])
+        db.commit.reset_mock()  # Preview audit is committed before the approval attempt.
         if change in {"subject", "html"}:
             monkeypatch.setattr(reviews, "build_meeting_email", lambda _: (
                 "Changed" if change == "subject" else "Subject",
                 "Changed" if change == "html" else "Body"))
         if change == "meeting_id":
-            meeting.id = "another-meeting"
+            meeting.id = "22222222-2222-4222-8222-222222222222"
         recipients = [] if change == "recipients" else preview.recipients
         with pytest.raises(HTTPException) as exc:
             await reviews.approve(meeting.id, db=db, upn=meeting.organizer_upn,
@@ -1058,6 +1081,7 @@ class TestApprovalDelivery:
         meeting = self._meeting()
         db = AsyncMock()
         db.add = MagicMock()
+        db.add = MagicMock()
         db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
         send_mail = AsyncMock()
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
@@ -1077,6 +1101,7 @@ class TestApprovalDelivery:
 
         meeting = self._meeting()
         db = AsyncMock()
+        db.add = MagicMock()
         db.add = MagicMock()
         db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
         send_mail = AsyncMock()
@@ -1119,6 +1144,7 @@ class TestApprovalDelivery:
         meeting = self._meeting()
         db = AsyncMock()
         db.add = MagicMock()
+        db.add = MagicMock()
         db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
         monkeypatch.setattr(reviews.settings, "emails_enabled", True)
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
@@ -1127,7 +1153,7 @@ class TestApprovalDelivery:
 
         with pytest.raises(HTTPException) as exc:
             await reviews.approve(
-                "meeting-1",
+                "11111111-1111-4111-8111-111111111111",
                 db=db,
                 upn="owner@taxconsulting.co.za",
                 body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"], expected_fingerprint=reviews._email_fingerprint(meeting.id, ["guest@taxconsulting.co.za"], "Subject", "Body")),
@@ -1149,6 +1175,7 @@ class TestApprovalDelivery:
         meeting = self._meeting()
         db = AsyncMock()
         db.add = MagicMock()
+        db.add = MagicMock()
         db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
         send_mail = AsyncMock()
         monkeypatch.setattr(reviews.settings, "emails_enabled", True)
@@ -1157,7 +1184,7 @@ class TestApprovalDelivery:
         monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
 
         result = await reviews.approve(
-            "meeting-1",
+            "11111111-1111-4111-8111-111111111111",
             db=db,
             upn="owner@taxconsulting.co.za",
             body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"], expected_fingerprint=reviews._email_fingerprint(meeting.id, ["guest@taxconsulting.co.za"], "Subject", "Body")),
@@ -1179,6 +1206,7 @@ class TestApprovalDelivery:
         meeting.email_delivery_status = "sending"
         db = AsyncMock()
         db.add = MagicMock()
+        db.add = MagicMock()
         db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
         monkeypatch.setattr(reviews.settings, "emails_enabled", True)
         monkeypatch.setattr(reviews, "_authorize", AsyncMock(return_value=meeting))
@@ -1188,7 +1216,7 @@ class TestApprovalDelivery:
 
         with pytest.raises(HTTPException) as exc:
             await reviews.approve(
-                "meeting-1", db=db, upn="owner@taxconsulting.co.za",
+                "11111111-1111-4111-8111-111111111111", db=db, upn="owner@taxconsulting.co.za",
                 body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"], expected_fingerprint=reviews._email_fingerprint(meeting.id, ["guest@taxconsulting.co.za"], "Subject", "Body")),
             )
 
@@ -1205,6 +1233,7 @@ class TestApprovalDelivery:
         meeting.extracted_json = {"local_test_data": True}
         db = AsyncMock()
         db.add = MagicMock()
+        db.add = MagicMock()
         db.scalar.return_value = SimpleNamespace(id=uuid4(), entra_oid="owner-oid", is_admin=False)
         send_mail = AsyncMock()
         monkeypatch.setattr(reviews.settings, "emails_enabled", True)
@@ -1213,7 +1242,7 @@ class TestApprovalDelivery:
         monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
 
         result = await reviews.approve(
-            "meeting-1", db=db, upn="owner@taxconsulting.co.za",
+            "11111111-1111-4111-8111-111111111111", db=db, upn="owner@taxconsulting.co.za",
             body=ApproveMeetingIn(recipients=["guest@taxconsulting.co.za"], expected_fingerprint=reviews._email_fingerprint(meeting.id, ["guest@taxconsulting.co.za"], "Subject", "Body")),
         )
 
@@ -1233,7 +1262,7 @@ class TestApprovedAttendeeSelfCopy:
             edit_access_status=status,
         )
         meeting = MagicMock(
-            id="meeting-1",
+            id="11111111-1111-4111-8111-111111111111",
             organizer_upn="owner@taxconsulting.co.za",
             attendees_raw=["owner@taxconsulting.co.za", "guest@taxconsulting.co.za"],
             participants=[participant],
@@ -1260,7 +1289,7 @@ class TestApprovedAttendeeSelfCopy:
 
         with pytest.raises(HTTPException) as exc:
             await reviews.send_copy_to_self(
-                "meeting-1",
+                "11111111-1111-4111-8111-111111111111",
                 SendMeetingCopyIn(recipient_upn="other@taxconsulting.co.za"),
                 db=db,
                 upn="guest@taxconsulting.co.za",
@@ -1280,7 +1309,7 @@ class TestApprovedAttendeeSelfCopy:
 
         with pytest.raises(HTTPException) as exc:
             await reviews.send_copy_to_self(
-                "meeting-1",
+                "11111111-1111-4111-8111-111111111111",
                 SendMeetingCopyIn(recipient_upn="guest@taxconsulting.co.za"),
                 db=self._db(),
                 upn="guest@taxconsulting.co.za",
@@ -1302,7 +1331,7 @@ class TestApprovedAttendeeSelfCopy:
         monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
 
         result = await reviews.send_copy_to_self(
-            "meeting-1",
+            "11111111-1111-4111-8111-111111111111",
             SendMeetingCopyIn(recipient_upn=" GUEST@taxconsulting.co.za "),
             db=db,
             upn="guest@taxconsulting.co.za",
@@ -1312,7 +1341,7 @@ class TestApprovedAttendeeSelfCopy:
         send_mail.assert_awaited_once_with(
             "notes@taxconsulting.co.za", ["guest@taxconsulting.co.za"], "Subject", "Body"
         )
-        audit = db.add.call_args.args[0]
+        audit = next(c.args[0] for c in db.add.call_args_list if hasattr(c.args[0], "recipient_upn"))
         assert audit.actor_upn == "guest@taxconsulting.co.za"
         assert audit.recipient_upn == "guest@taxconsulting.co.za"
         assert audit.status == "sent"
@@ -1332,12 +1361,12 @@ class TestApprovedAttendeeSelfCopy:
         monkeypatch.setattr(reviews.graph, "send_mail", send_mail)
 
         result = await reviews.send_copy_to_self(
-            "meeting-1",
+            "11111111-1111-4111-8111-111111111111",
             SendMeetingCopyIn(recipient_upn="guest@taxconsulting.co.za"),
             db=db,
             upn="guest@taxconsulting.co.za",
         )
 
         assert result == {"ok": True, "sent": False}
-        assert db.add.call_args.args[0].status == "disabled"
+        assert next(c.args[0] for c in db.add.call_args_list if hasattr(c.args[0], "recipient_upn")).status == "disabled"
         send_mail.assert_not_awaited()

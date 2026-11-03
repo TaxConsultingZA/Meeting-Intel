@@ -30,6 +30,7 @@ from ..email_templates import build_meeting_email
 from ..utils.identity import normalize_upn, normalize_upns
 from ..services.job_control import public_job_error, processing_failure_info
 from ..services.access import NO_VIEW_ACCESS_TYPES, has_view_access
+from ..services.activity_audit import add_activity
 from ..services.email_audit import add_email_event, submission_failure
 from .deps import current_user, require_registered  # noqa: F401 — re-exported; tests may import from here
 
@@ -668,7 +669,10 @@ async def get_meeting(meeting_id: str, db: AsyncSession = Depends(get_db),
                       upn: str = Depends(current_user)):
     is_admin = await _is_admin(db, upn)
     m = await _authorize(db, meeting_id, upn, allow_admin=is_admin)
-    return (await _with_recording_display(db, [m], [_to_out(m, upn, is_admin=is_admin)]))[0]
+    result = (await _with_recording_display(db, [m], [_to_out(m, upn, is_admin=is_admin)]))[0]
+    add_activity(db, meeting_id=m.id, upn=upn, action="meeting.viewed")
+    await db.commit()
+    return result
 
 
 def _email_fingerprint(meeting_id, recipients: list[str], subject: str, html: str, *, decision_revision: str | None = None) -> str:
@@ -693,9 +697,12 @@ async def email_preview(meeting_id: str, db: AsyncSession = Depends(get_db),
     m = await _authorize(db, meeting_id, upn, allow_admin=await _is_admin(db, upn))
     subject, html = build_meeting_email(m)
     recipients = ApproveMeetingIn(recipients=recipients).recipients
-    return EmailPreviewOut(subject=subject, html=html, recipients=sorted(recipients),
+    result = EmailPreviewOut(subject=subject, html=html, recipients=sorted(recipients),
                            fingerprint=_email_fingerprint(m.id, recipients, subject, html,
                                decision_revision=(m.extracted_json or {}).get("manual_decisions_revision")))
+    add_activity(db, meeting_id=m.id, upn=upn, action="email.previewed")
+    await db.commit()
+    return result
 
 
 @router.get("/reviews/{meeting_id}/decisions", response_model=list[MeetingDecisionOut])
@@ -738,6 +745,7 @@ async def save_meeting_decisions(meeting_id: UUID, body: MeetingDecisionsIn, res
     # Parent lock serializes with approval; stale previews must not approve unseen edits.
     meeting.extracted_json = {**(meeting.extracted_json or {}), "manual_decisions_revision": str(uuid4())}
     result = [MeetingDecisionOut.model_validate(row) for row in rows]
+    add_activity(db, meeting_id=meeting.id, upn=upn, action="meeting.decisions_saved")
     await db.commit()
     return result
 
@@ -758,6 +766,7 @@ async def edit_item(item_id: str, edit: ActionItemEdit,
     for field, val in edit.model_dump(exclude_unset=True).items():
         setattr(item, field, val)
     item.edited_by = upn
+    add_activity(db, meeting_id=meeting.id, upn=upn, action="meeting.action_item_edited")
     await db.commit()
     return {"ok": True}
 
@@ -770,6 +779,7 @@ async def edit_transcript(meeting_id: str, body: TranscriptEdit,
     _require_editor(meeting, upn, is_admin=is_admin)
     _require_awaiting_review(meeting)
     meeting.transcript = body.transcript
+    add_activity(db, meeting_id=meeting.id, upn=upn, action="meeting.transcript_edited")
     await db.commit()
     return {"ok": True}
 
@@ -807,6 +817,7 @@ async def save_speaker_mappings(meeting_id: str, body: SpeakerMappingIn,
     extracted = dict(meeting.extracted_json or {})
     extracted["speaker_mappings"] = mappings
     meeting.extracted_json = extracted
+    add_activity(db, meeting_id=meeting.id, upn=upn, action="meeting.speakers_edited")
     await db.commit()
     return {"ok": True, "speaker_mappings": mappings}
 
@@ -863,6 +874,7 @@ async def request_edit_access(meeting_id: str, db: AsyncSession = Depends(get_db
     participant.edit_requested_at = datetime.now(timezone.utc)
     participant.edit_decided_at = None
     participant.edit_decided_by = None
+    add_activity(db, meeting_id=meeting.id, upn=upn, action="access.edit_requested", target_upn=upn)
     await db.commit()
     return {"ok": True, "status": "pending"}
 
@@ -900,6 +912,7 @@ async def decide_edit_access(meeting_id: str, requester_upn: str, body: EditAcce
         participant.edit_access_status = "denied"
     participant.edit_decided_at = datetime.now(timezone.utc)
     participant.edit_decided_by = upn
+    add_activity(db, meeting_id=meeting.id, upn=upn, action="access.approved" if body.approved else "access.denied", target_upn=requester_upn)
     await db.commit()
     return {
         "ok": True,
@@ -1038,6 +1051,7 @@ async def send_copy_to_self(meeting_id: str, body: SendMeetingCopyIn,
     if not sender:
         raise HTTPException(409, "No sender is configured for this meeting")
 
+    copy_id = uuid4()
     delivery_enabled = settings.emails_enabled and not is_local_test_meeting(meeting)
     audit = MeetingEmailAudit(
         meeting_id=meeting.id,
@@ -1047,6 +1061,7 @@ async def send_copy_to_self(meeting_id: str, body: SendMeetingCopyIn,
         status="sending" if delivery_enabled else "disabled",
     )
     db.add(audit)
+    add_activity(db, meeting_id=meeting.id, upn=upn, action="email.copy_requested", outcome="requested", correlation_id=copy_id)
     await db.commit()
     if not delivery_enabled:
         return {"ok": True, "sent": False}
@@ -1056,12 +1071,15 @@ async def send_copy_to_self(meeting_id: str, body: SendMeetingCopyIn,
         await graph.send_mail(sender, [upn], subject, email_body)
     except Exception as exc:
         audit.status = "failed"
-        audit.error = str(exc)[:1000]
+        outcome, category = submission_failure(exc)
+        audit.error = category
+        add_activity(db, meeting_id=meeting.id, upn=upn, action="email.copy_result", outcome=outcome, error_category=category, correlation_id=copy_id)
         await db.commit()
         raise HTTPException(502, "Personal copy delivery failed") from exc
 
     audit.status = "sent"
     audit.error = None
+    add_activity(db, meeting_id=meeting.id, upn=upn, action="email.copy_result", correlation_id=copy_id)
     await db.commit()
     return {"ok": True, "sent": True}
 
@@ -1093,6 +1111,7 @@ async def share_meeting(meeting_id: str, body: ShareMeetingIn,
         is_organizer=False,
         access_type="shared",
     ))
+    add_activity(db, meeting_id=m.id, upn=upn, action="access.shared", target_upn=body.recipient_upn)
     await db.commit()
     return {"ok": True, "message": f"Shared with {body.recipient_upn}"}
 
@@ -1151,5 +1170,6 @@ async def request_historical_access(meeting_id: str, body: MeetingAccessRequestI
     participant.edit_decided_by = None
     if not already:
         db.add(participant)
+    add_activity(db, meeting_id=m.id, upn=upn, action="access.requested", target_upn=upn)
     await db.commit()
     return {"ok": True, "status": "pending", "access_type": body.access_type}

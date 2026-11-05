@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Calendar, Users, ChevronRight, Upload, Mic, Video, Share2, Power } from "lucide-react";
 import StateBadge from "@/components/state-badge";
-import LocalDateTime, { useUserTimeZone } from "@/components/local-date-time";
+import MeetingCardDate from "@/components/meeting-card-date";
+import { useUserTimeZone } from "@/components/local-date-time";
 import { formatEventTime, parseInstant } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
 import RecentMeetings from "@/components/recent-meetings";
@@ -708,7 +709,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
                         </Link>
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px] whitespace-nowrap">
-                        {<LocalDateTime value={m.recorded_at ?? m.extracted_json?.meeting_time} />}
+                        {<MeetingCardDate meeting={m} />}
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px]">
                         {formatUpn(m.organizer_upn) || "—"}
@@ -826,7 +827,7 @@ function MeetingCard({ meeting: m }: { meeting: MeetingOut }) {
         <div className="flex flex-col gap-1.5 mb-3">
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             <span className="flex items-center gap-1 text-[#6b7280] text-[12.5px]">
-              <Calendar size={12} className="shrink-0" /> {<LocalDateTime value={m.recorded_at ?? m.extracted_json?.meeting_time} />}
+              <Calendar size={12} className="shrink-0" /> {<MeetingCardDate meeting={m} />}
             </span>
             <span className="flex items-center gap-1 text-[#6b7280] text-[12.5px]">
               <Users size={12} className="shrink-0" /> {m.calendar_participants.length} participants

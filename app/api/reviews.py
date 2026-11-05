@@ -1,3 +1,4 @@
+from app.services.meeting_dates import card_date
 from datetime import datetime, timezone
 from typing import Annotated
 import asyncio
@@ -234,6 +235,7 @@ def _to_out(m: Meeting, upn: str | None = None, *, is_admin: bool = False) -> Me
         if m.state in {ProcessingState.failed, ProcessingState.cancelled} else None,
         calendar_participants=_calendar_participants(m),
         recorded_at=m.recorded_at,
+        card_date=card_date(m.recorded_at, m.extracted_json),
         email_recipients=sorted(known_recipients),
         approved_recipients=m.approved_recipients or [],
         is_organizer=is_organizer,
@@ -289,6 +291,7 @@ def _to_list_out(m: Meeting, upn: str) -> MeetingOut:
     return MeetingOut(
         id=str(m.id),
         recorded_at=m.recorded_at,
+        card_date=card_date(m.recorded_at, m.extracted_json),
         title=m.title,
         state=m.state,
         summary=None,
@@ -324,6 +327,7 @@ def _to_historical_out(m: Meeting, upn: str | None = None) -> MeetingOut:
     return MeetingOut(
         id=str(m.id),
         recorded_at=m.recorded_at,
+        card_date=card_date(m.recorded_at, m.extracted_json),
         title=m.title,
         state=m.state,
         summary=None,
@@ -506,13 +510,15 @@ async def search_meetings(
         func.lower(MeetingDecision.content).contains(keyword, autoescape=True),
     ).exists()
     query = select(
-        Meeting.id, Meeting.title, Meeting.recorded_at,
+        Meeting.id, Meeting.title, Meeting.recorded_at, Meeting.extracted_json,
+        select(ProcessedItem.identity_json).where(ProcessedItem.drive_item_id == Meeting.drive_item_id).limit(1).scalar_subquery().label("card_identity"),
         summary_match.label("matched_summary"), action_match.label("matched_action_items"),
         decision_match.label("matched_decisions"),
     ).where(access, or_(summary_match, action_match, decision_match)).order_by(
         Meeting.recorded_at.desc().nullslast(), Meeting.id,
     ).limit(50)
-    return (await db.execute(query)).mappings().all()
+    rows = (await db.execute(query)).mappings().all()
+    return [dict((k, v) for k, v in row.items() if k not in {"extracted_json", "card_identity"}) | {"card_date": card_date(row["recorded_at"], row["extracted_json"], row["card_identity"])} for row in rows]
 
 
 async def _with_recording_display(db, rows, outputs):
@@ -529,8 +535,10 @@ async def _with_recording_display(db, rows, outputs):
         if ledger is None:
             continue
         identity = ledger.identity_json or {}
+        from ..schemas import MeetingCardDate
+        output.card_date = MeetingCardDate(**card_date(m.recorded_at, m.extracted_json, identity))
         # List queries deliberately defer the potentially large extraction.
-        if "extracted_json" in vars(m):
+        if output.extracted_json is not None:
             # Identity is keyed by the exact drive item, never title or time. A
             # linked event cannot authenticate people copied from a different event.
             saved = m.extracted_json or {}
@@ -579,6 +587,7 @@ async def all_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(cu
                 Meeting.organizer_upn,
                 Meeting.title,
                 Meeting.recorded_at,
+                Meeting.extracted_json,
                 Meeting.state,
                 Meeting.attendees_raw,
                 Meeting.error,
@@ -657,6 +666,7 @@ async def historical_meetings(db: AsyncSession = Depends(get_db), upn: str = Dep
         .options(load_only(
             Meeting.id,
             Meeting.recorded_at,
+            Meeting.extracted_json,
             Meeting.title,
             Meeting.state,
             Meeting.organizer_upn,

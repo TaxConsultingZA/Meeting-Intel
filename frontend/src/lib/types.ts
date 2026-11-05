@@ -34,6 +34,7 @@ export type Confidence = "high" | "medium" | "low";
 
 /** Minimal metadata for saved-content search; no transcript or content snippets. */
 export interface MeetingSearchResult {
+  card_date?: MeetingOut["card_date"];
   id: string;
   title: string | null;
   recorded_at: string | null;
@@ -116,6 +117,7 @@ export interface ProcessingFailure {
 }
 
 export interface MeetingOut {
+  card_date?: { date_source?: "meeting" | "recording" | "unavailable"; raw_time?: string | Record<string, unknown> | null; event_id?: string | null; value: string | null; source: "meeting" | "recording" | "unavailable"; reason: string | null } | null;
   id: string;
   recorded_at?: string | null;
   title: string | null;

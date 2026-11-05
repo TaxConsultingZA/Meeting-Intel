@@ -7,6 +7,7 @@ from .models import Confidence, ProcessingState
 
 
 class MeetingSearchOut(BaseModel):
+    card_date: "MeetingCardDate | None" = None
     id: UUID
     title: str | None
     recorded_at: datetime | None
@@ -240,7 +241,17 @@ class ProcessingFailureOut(BaseModel):
                       "configuration", "invalid_output", "unknown", "cancelled"]
 
 
+class MeetingCardDate(BaseModel):
+    date_source: Literal["meeting", "recording", "unavailable"]
+    raw_time: str | dict | None = None
+    event_id: str | None = None
+    value: datetime | None = None
+    source: Literal["meeting", "recording", "unavailable"]
+    reason: str | None = None
+
+
 class MeetingOut(BaseModel):
+    card_date: MeetingCardDate | None = None
     """Full meeting representation returned by GET /reviews and GET /reviews/{id}."""
     id: str
     recorded_at: datetime | None = None

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import LoadingSpinner from "@/components/loading-spinner";
-import LocalDateTime from "@/components/local-date-time";
+import MeetingCardDate from "@/components/meeting-card-date";
 import { searchSavedMeetings } from "@/lib/api";
 import type { MeetingSearchResult } from "@/lib/types";
 
@@ -52,7 +52,7 @@ export default function SearchClient({ accessToken }: { accessToken: string }) {
         <p role="status" className="mb-3 text-sm text-gray-600">{rows.length ? `Showing ${rows.length} matching meetings for “${submitted}” (maximum 50).` : "No matching saved meetings."}</p>
         <ul className="space-y-3">{rows.map(row => <li key={row.id} className="rounded-lg border p-4">
           <Link href={`/meetings/${encodeURIComponent(row.id)}`} className="font-semibold text-[#003366] underline">{row.title?.trim() || "Untitled meeting"}</Link>
-          <p className="mt-1 text-sm text-gray-600">{row.recorded_at ? <LocalDateTime value={row.recorded_at} /> : "Meeting time unavailable"}</p>
+          <p className="mt-1 text-sm text-gray-600"><MeetingCardDate meeting={row} /></p>
           <p className="mt-1 text-sm">Matched: {row.matched_summary && row.matched_action_items ? "summary and action items" : row.matched_summary ? "summary" : "action items"}</p>
         </li>)}</ul>
       </>}

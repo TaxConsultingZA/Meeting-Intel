@@ -17,14 +17,14 @@ from app.models import (
     Meeting,
     MeetingDecision,
     MeetingParticipant,
-    ProcessingState,
+    ProcessingState, ProcessedItem,
 )
 
 
 @pytest.fixture
 def search_api():
     engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    for table in [Meeting.__table__, MeetingParticipant.__table__, ActionItem.__table__, MeetingDecision.__table__]:
+    for table in [Meeting.__table__, MeetingParticipant.__table__, ActionItem.__table__, MeetingDecision.__table__, ProcessedItem.__table__]:
         table.create(engine)
     session = Session(engine)
 
@@ -63,7 +63,7 @@ def test_summary_action_case_and_time_order(search_api):
     assert [r["id"] for r in rows] == [str(second.id), str(first.id)]
     assert rows[0]["matched_action_items"] is True
     assert rows[1]["matched_summary"] is True
-    assert set(rows[0]) == {"id", "title", "recorded_at", "matched_summary", "matched_action_items", "matched_decisions"}
+    assert set(rows[0]) == {"id", "title", "recorded_at", "matched_summary", "matched_action_items", "matched_decisions", "card_date"}
 
 
 def test_permissions_isolation_and_revocation(search_api):

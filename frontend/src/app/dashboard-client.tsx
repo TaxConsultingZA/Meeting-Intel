@@ -1,6 +1,4 @@
 "use client";
-import { meetingDisplayTitle, meetingIdentityNotice } from "@/lib/recording-identity";
-import { meetingDisplayTime } from "@/lib/time";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -9,10 +7,10 @@ import StateBadge from "@/components/state-badge";
 import LocalDateTime, { useUserTimeZone } from "@/components/local-date-time";
 import { formatEventTime, parseInstant } from "@/lib/time";
 import ImportModal from "@/components/import-modal";
-import MeetingRecordingUpdate from "@/components/meeting-recording-update";
 import RecentMeetings from "@/components/recent-meetings";
-import { JobControls, recordingStatusMessage, recordingJobTitle } from "@/components/recording-jobs";
-import { getAvailableRecordings, decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecordingJobs, getSyncStatus, getUpcomingMeetings, requestHistoricalAccess, requestMeetingEditAccess, shareMeeting, unsubscribeCurrentUser } from "@/lib/api";
+import { JobControls, recordingStatusMessage } from "@/components/recording-jobs";
+import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecordingJobs, getSyncStatus, getUpcomingMeetings, requestHistoricalAccess, requestMeetingEditAccess, shareMeeting, syncCalendarsNow, unsubscribeCurrentUser, getCalendarSyncRun, waitForCalendarSync, CalendarSyncUnconfirmedError } from "@/lib/api";
+import type { CalendarSyncResult } from "@/lib/api";
 import type { AvailableRecording, MeetingOut, ProcessingState, CalendarEvent, SyncState, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
 
 /** Convert a UPN like "jane.doe@taxconsulting.co.za" to a display name "Jane Doe". */
@@ -22,6 +20,11 @@ function formatUpn(upn: string | null | undefined): string {
 }
 
 const PIPELINE_STATES: ProcessingState[] = ["queued", "downloading", "transcribing", "extracting"];
+
+function calendarSyncMessage(result: CalendarSyncResult) {
+  if (result.status === "success") return "Calendar sync succeeded.";
+  return `Calendar sync ${result.status === "partial" ? "partially completed" : "failed"}. Some calendars could not be read. Check existing Microsoft access and subscription status, then use Sync calendar now to try again.`;
+}
 
 interface Props {
   meetings: MeetingOut[];
@@ -59,7 +62,7 @@ function conciseMicrosoftError(error: string): string {
   return error.length > 180 ? `${error.slice(0, 177)}...` : error;
 }
 
-export default function DashboardClient({ meetings: initialMeetings, recordingJobs: initialRecordingJobs = [], upcoming: initialUpcoming, historical: initialHistorical, upn, accessToken, isSubscribed, syncStates: initialSyncStates, loadErrors: initialLoadErrors, deferInitialLoad = false }: Props) {
+export default function DashboardClient({ meetings: initialMeetings, recordingJobs: initialRecordingJobs = [], upcoming: initialUpcoming, historical: initialHistorical, upn, accessToken, isSubscribed, isAdmin = false, syncStates: initialSyncStates, loadErrors: initialLoadErrors, deferInitialLoad = false }: Props) {
   const router = useRouter();
   const [meetings, setMeetings] = useState(initialMeetings);
   const [recordingJobs, setRecordingJobs] = useState(initialRecordingJobs);
@@ -93,8 +96,74 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
   const [shareModal, setShareModal] = useState<{ meetingId: string; title: string } | null>(null);
   const [unsubscribing, setUnsubscribing] = useState(false);
   const pollingInFlight = useRef(false);
+  const calendarSyncInFlight = useRef(false);
   const calendarDisplayVersion = useRef(0);
+  const [calendarSyncing, setCalendarSyncing] = useState(false);
+  const [calendarSyncBlocked, setCalendarSyncBlocked] = useState(isAdmin && isSubscribed);
+  const [calendarStatusVersion, setCalendarStatusVersion] = useState(0);
+  const calendarObserver = useRef<AbortController | null>(null);
+  const [calendarSyncFeedback, setCalendarSyncFeedback] = useState<{ message: string; failed: boolean } | null>(null);
   const [calendarRefreshKey, setCalendarRefreshKey] = useState(0);
+
+  useEffect(() => {
+    if (!calendarSyncFeedback || calendarSyncFeedback.failed) return;
+    const timer = setTimeout(() => setCalendarSyncFeedback(null), 60_000);
+    return () => clearTimeout(timer);
+  }, [calendarSyncFeedback]);
+
+  useEffect(() => {
+    if (!isAdmin || !isSubscribed) return;
+    const observer = new AbortController();
+    calendarObserver.current = observer;
+    void (async () => {
+      try {
+        const run = await getCalendarSyncRun(accessToken, undefined, observer.signal);
+        if (observer.signal.aborted) return;
+        if (!run) { setCalendarSyncBlocked(false); return; }
+        const wasPending = run.status === "queued" || run.status === "running";
+        calendarSyncInFlight.current = true;
+        setCalendarSyncing(run.status === "queued" || run.status === "running");
+        const result = await waitForCalendarSync(accessToken, run, observer.signal);
+        if (observer.signal.aborted) return;
+        setCalendarSyncBlocked(!run.retry_allowed && run.status === "unknown");
+        // Completed history is not evidence that a new sync just succeeded.
+        if (wasPending || result.status !== "success") {
+          setCalendarSyncFeedback({ failed: result.status !== "success", message: calendarSyncMessage(result) });
+        }
+        // A terminal history entry predates this mount's initial reads. Only a
+        // run observed in flight needs a second refresh when it completes.
+        if (!wasPending) return;
+        ++calendarDisplayVersion.current;
+        setCalendarRefreshKey((version) => version + 1);
+        setLoading((current) => ({ ...current, calendar: true, sync: true }));
+        void getUpcomingMeetings(accessToken).then((events) => {
+          if (!observer.signal.aborted) { setUpcoming(events); setCalendarLoadErrors([]); }
+        }).catch(() => {
+          if (!observer.signal.aborted) setCalendarLoadErrors(["Calendar display could not be refreshed. Reload to try again."]);
+        }).finally(() => {
+          if (!observer.signal.aborted) setLoading((current) => ({ ...current, calendar: false }));
+        });
+        void getSyncStatus(accessToken).then((states) => {
+          if (!observer.signal.aborted) { setSyncStates(states); setSyncLoadErrors([]); }
+        }).catch(() => {
+          if (!observer.signal.aborted) setSyncLoadErrors(["Sync status could not be refreshed. Reload to try again."]);
+        }).finally(() => {
+          if (!observer.signal.aborted) setLoading((current) => ({ ...current, sync: false }));
+        });
+      } catch (error) {
+        if (!observer.signal.aborted) setCalendarSyncFeedback({ failed: true,
+          message: error instanceof CalendarSyncUnconfirmedError ? error.message
+            : "Calendar sync outcome is unconfirmed; some changes may already be saved. Check sync status without starting another sync.",
+        });
+      } finally {
+        if (!observer.signal.aborted) {
+          calendarSyncInFlight.current = false;
+          setCalendarSyncing(false);
+        }
+      }
+    })();
+    return () => { observer.abort(); calendarObserver.current?.abort(); calendarSyncInFlight.current = false; };
+  }, [accessToken, isAdmin, isSubscribed, calendarStatusVersion]);
   const hasActiveProcessing = recordingJobs.some((job) =>
     job.status === "pending" || job.status === "processing" || job.processing_status === "cancel_requested"
   ) || meetings.some((meeting) => PIPELINE_STATES.includes(meeting.state));
@@ -139,12 +208,11 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
     setRefreshingProcessing(true);
     try {
       const results = await Promise.allSettled([
-        getRecordingJobs(accessToken).then((jobs)=>{setRecordingJobs(jobs);return jobs;}),
+        getRecordingJobs(accessToken).then(setRecordingJobs),
         getAllMeetings(accessToken).then(setMeetings),
       ]);
       if (results.some((result) => result.status === "rejected")) throw new Error("Refresh incomplete");
       setPollingError("");
-      return results[0].status==="fulfilled" ? results[0].value : undefined;
     } catch (error) {
       setPollingError("Live updates are temporarily unavailable. Your last loaded meeting and recording information is still shown.");
       throw error;
@@ -217,6 +285,57 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       setErrors([`${labels[source]}: ${detail}`]);
     } finally {
       setLoading((current) => ({ ...current, [source]: false }));
+    }
+  }
+
+  async function handleCalendarSync() {
+    if (!isAdmin || !isSubscribed || calendarSyncBlocked || calendarSyncInFlight.current) return;
+    calendarSyncInFlight.current = true;
+    setCalendarSyncing(true);
+    setCalendarSyncFeedback(null);
+    const observer = new AbortController();
+    calendarObserver.current = observer;
+    try {
+      const result = await syncCalendarsNow(accessToken, observer.signal);
+      if (observer.signal.aborted) return;
+      setCalendarSyncFeedback({
+        failed: result.status !== "success",
+        message: calendarSyncMessage(result),
+      });
+      // Refresh each display independently; a slow read does not repeat the sync.
+      const version = ++calendarDisplayVersion.current;
+      setCalendarRefreshKey((current) => current + 1);
+      setLoading((current) => ({ ...current, calendar: true, sync: true }));
+      void getUpcomingMeetings(accessToken).then((events) => {
+        if (version !== calendarDisplayVersion.current) return;
+        setUpcoming(events);
+        setCalendarLoadErrors([]);
+      }).catch(() => {
+        if (version === calendarDisplayVersion.current) setCalendarLoadErrors(["Calendar sync finished, but the calendar display could not be refreshed. Use Refresh or reload the page."]);
+      }).finally(() => {
+        if (version === calendarDisplayVersion.current) setLoading((current) => ({ ...current, calendar: false }));
+      });
+      void getSyncStatus(accessToken).then((states) => {
+        if (version !== calendarDisplayVersion.current) return;
+        setSyncStates(states);
+        setSyncLoadErrors([]);
+      }).catch(() => {
+        if (version === calendarDisplayVersion.current) setSyncLoadErrors(["Sync status could not be refreshed. Reload the page to check the latest result."]);
+      }).finally(() => {
+        if (version === calendarDisplayVersion.current) setLoading((current) => ({ ...current, sync: false }));
+      });
+    } catch (error) {
+      if (observer.signal.aborted) return;
+      setCalendarSyncBlocked(true);
+      setCalendarSyncFeedback({ failed: true,
+        message: error instanceof CalendarSyncUnconfirmedError ? error.message
+          : "Calendar sync could not be confirmed. Check sync status and existing Microsoft access; some changes may already be saved. Do not submit again until the outcome is known.",
+      });
+    } finally {
+      if (!observer.signal.aborted) {
+        calendarSyncInFlight.current = false;
+        setCalendarSyncing(false);
+      }
     }
   }
 
@@ -356,19 +475,14 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           </p>
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-2 [&>button]:shrink-0 [&>button]:whitespace-nowrap lg:justify-end">
-          {isSubscribed && <MeetingRecordingUpdate token={accessToken} onUpdated={async () => {
-            ++calendarDisplayVersion.current;
-            setCalendarRefreshKey(value=>value+1);
-            setAvailableRecordings(null);
-            const outcomes=await Promise.allSettled([getUpcomingMeetings(accessToken),getSyncStatus(accessToken),refreshProcessing(),getAvailableRecordings(accessToken)]);
-            if(outcomes[0].status==="fulfilled")setUpcoming(outcomes[0].value);
-            if(outcomes[1].status==="fulfilled")setSyncStates(outcomes[1].value);
-            if(outcomes[3].status==="fulfilled" && outcomes[2].status==="fulfilled" && outcomes[2].value) {
-              const jobs=outcomes[2].value;
-              setAvailableRecordings(outcomes[3].value.map(rec=>({...rec,job:jobs.find(job=>job.drive_item_id===rec.drive_item_id)})));
-            }
-            if(outcomes.some(result=>result.status==="rejected"))throw new Error("Refresh incomplete");
-          }} />}
+          {isAdmin && isSubscribed && (
+            <button type="button" onClick={() => void handleCalendarSync()} disabled={calendarSyncing || calendarSyncBlocked}
+              title="Sync calendars for active Microsoft-linked subscribers; does not process recordings"
+              className="inline-flex items-center gap-2 rounded-md border border-[#003366] bg-white px-3 py-2 text-[13px] font-semibold text-[#003366] disabled:opacity-50">
+              {calendarSyncing && <span aria-hidden="true" className="h-3.5 w-3.5 rounded-full border-2 border-current border-r-transparent motion-safe:animate-spin" />}
+              {calendarSyncing ? "Syncing calendars…" : "Sync calendar now"}
+            </button>
+          )}
           {isSubscribed && (
             <button
               type="button"
@@ -391,6 +505,17 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
           </button>
         </div>
       </div>
+
+      {calendarSyncFeedback && <p role={calendarSyncFeedback.failed ? "alert" : "status"}
+        className={calendarSyncFeedback.failed
+          ? "mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+          : "mb-4 text-sm text-[#003366]"}>
+        {calendarSyncFeedback.message}
+      </p>}
+      {calendarSyncBlocked && !calendarSyncing && isAdmin && isSubscribed && (
+        <button type="button" className="mb-4 rounded-md border px-3 py-2 text-sm"
+          onClick={() => { setCalendarSyncBlocked(true); setCalendarStatusVersion((version) => version + 1); }}>Check sync status</button>
+      )}
 
       {showImport && <ImportModal
         upn={accessToken}
@@ -579,12 +704,11 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
                     <tr key={m.id} className={`${i % 2 === 1 ? "bg-[#f8fafc]" : ""} hover:bg-blue-50/30 transition-colors`}>
                       <td className="px-4 py-2.5 border border-[#dde1e8] font-medium">
                         <Link href={`/meetings/${m.id}`} className="hover:text-[#003366] hover:underline">
-                          {meetingDisplayTitle(m)}
+                          {m.title ?? "Untitled Meeting"}
                         </Link>
-                        {meetingIdentityNotice(m) && <span className="block text-xs text-amber-800">{meetingIdentityNotice(m)}</span>}
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px] whitespace-nowrap">
-                        {<LocalDateTime value={meetingDisplayTime(m)} />}
+                        {<LocalDateTime value={m.recorded_at ?? m.extracted_json?.meeting_time} />}
                       </td>
                       <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12.5px]">
                         {formatUpn(m.organizer_upn) || "—"}
@@ -606,7 +730,7 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
                           {m.organizer_upn?.toLowerCase() === upn.toLowerCase() && (
                             <button
                               type="button"
-                              onClick={() => setShareModal({ meetingId: m.id, title: meetingDisplayTitle(m) })}
+                              onClick={() => setShareModal({ meetingId: m.id, title: m.title ?? "Untitled Meeting" })}
                               className="inline-flex items-center gap-1 text-[11.5px] text-[#003366] hover:text-[#C9A52C] transition-colors"
                               title="Share transcript"
                             >
@@ -674,7 +798,7 @@ function RecordingJobCard({ job, token, onChanged }: { job: RecordingJobOut; tok
   return (
     <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
       <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-4 py-3.5">
-        <p className="text-white text-[13.5px] font-semibold leading-snug line-clamp-2">{recordingJobTitle(job)}</p>
+        <p className="text-white text-[13.5px] font-semibold leading-snug line-clamp-2">{job.title ?? "Recording queued for import"}</p>
       </div>
       <div className="px-4 py-3.5">
         <StateBadge state={job.processing_status} />
@@ -695,15 +819,14 @@ function MeetingCard({ meeting: m }: { meeting: MeetingOut }) {
     <Link href={`/meetings/${m.id}`} className="group block bg-white rounded-lg border border-[#dde1e8] shadow-sm hover:border-[#003366] hover:shadow-md transition-all overflow-hidden">
       <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-4 py-3.5">
         <p className="text-white text-[13.5px] font-semibold leading-snug line-clamp-2">
-          {meetingDisplayTitle(m)}
+          {m.title ?? "Untitled Meeting"}
         </p>
       </div>
       <div className="px-4 py-3.5">
-        {meetingIdentityNotice(m) && <p className="mb-2 text-xs text-amber-800">{meetingIdentityNotice(m)}</p>}
         <div className="flex flex-col gap-1.5 mb-3">
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             <span className="flex items-center gap-1 text-[#6b7280] text-[12.5px]">
-              <Calendar size={12} className="shrink-0" /> {<LocalDateTime value={meetingDisplayTime(m)} />}
+              <Calendar size={12} className="shrink-0" /> {<LocalDateTime value={m.recorded_at ?? m.extracted_json?.meeting_time} />}
             </span>
             <span className="flex items-center gap-1 text-[#6b7280] text-[12.5px]">
               <Users size={12} className="shrink-0" /> {m.calendar_participants.length} participants
@@ -745,7 +868,7 @@ function CalendarCard({ event: ev, inProgress }: { event: CalendarEvent; inProgr
         <div className="flex flex-col gap-1.5 mb-3">
           <span className="flex items-center gap-1.5 text-[#6b7280] text-[12.5px]">
             <Calendar size={12} className="shrink-0" />
-            {dateLabel} · {timeRange}{timeRange !== "—" ? " SAST" : ""}
+            {dateLabel} · {timeRange}
             {duration && <span className="text-[#9ca3af] ml-1">({duration})</span>}
           </span>
           <span className="flex items-center gap-1.5 text-[#6b7280] text-[12.5px]">

@@ -1,6 +1,4 @@
 "use client";
-import { meetingDisplayTitle, meetingIdentityNotice } from "@/lib/recording-identity";
-import { meetingDisplayTime } from "@/lib/time";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -17,8 +15,6 @@ import RecordingJobs, { processingFailureMessage, processingFailureTitle } from 
 import LocalDateTime from "@/components/local-date-time";
 import PipelineView from "./pipeline-view";
 import ActionItemReview from "./action-item-review";
-import MeetingDecisions from "./meeting-decisions";
-import MeetingInsights from "./meeting-insights";
 import {
   ApiError,
   getMeeting,
@@ -110,8 +106,6 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const [editingActionItems, setEditingActionItems] = useState<Record<string, boolean>>({});
   const [speakerMappings, setSpeakerMappings] = useState<Record<string, string | null>>(initial.speaker_mappings ?? {});
   const [savingSpeakerMappings, setSavingSpeakerMappings] = useState(false);
-  const speakerSaveInFlight = useRef(false);
-  const [speakerSaveFeedback, setSpeakerSaveFeedback] = useState<string | null>(null);
   const [savingAccess, setSavingAccess] = useState(false);
   const [sendingSelfCopy, setSendingSelfCopy] = useState(false);
   const [pollingError, setPollingError] = useState<string | null>(null);
@@ -123,7 +117,6 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const pollingInFlight = useRef(false);
   const meetingRefreshVersion = useRef(0);
 
-  const [showAllAttendees, setShowAllAttendees] = useState(false);
   const data = meeting.extracted_json ?? {};
   const isTranscriptOnly = data.extraction_mode === "transcript_only";
   const isReviewable = meeting.state === "awaiting_review";
@@ -149,12 +142,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const speakerMappingsChanged = speakerLabels.some(
     (label) => mappingForLabel(speakerMappings, label) !== mappingForLabel(meeting.speaker_mappings, label),
   );
-  const [decisionsPending, setDecisionsPending] = useState(false);
-  const handleDecisionsPending = useCallback((pending: boolean) => {
-    setDecisionsPending(pending);
-    if (pending) setEmailPreview(null);
-  }, []);
-  const reviewChangesPending = decisionsPending || editingTranscript || savingTranscript || speakerMappingsChanged ||
+  const reviewChangesPending = editingTranscript || savingTranscript || speakerMappingsChanged ||
     savingSpeakerMappings || Object.values(editingActionItems).some(Boolean);
   const reviewControlsBusy = approving || previewingEmail;
   const handleActionEditingChange = useCallback((id: string, editing: boolean) => {
@@ -333,27 +321,19 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   }
 
   async function handleSaveSpeakerMappings() {
-    if (speakerSaveInFlight.current || !speakerMappingsChanged || reviewControlsBusy) return;
-    speakerSaveInFlight.current = true;
-    setSpeakerSaveFeedback(null);
+    if (savingSpeakerMappings || !speakerMappingsChanged || reviewControlsBusy) return;
     setSavingSpeakerMappings(true);
     try {
       await saveSpeakerMappings(meeting.id, speakerMappings, accessToken);
       setMeeting((current) => ({ ...current, speaker_mappings: speakerMappings }));
-      setSpeakerSaveFeedback("Speaker names saved.");
       setEmailPreview(null);
       toast.success("Speaker names saved.");
     } catch (e) {
       toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      speakerSaveInFlight.current = false;
       setSavingSpeakerMappings(false);
     }
   }
-
-  const decisionsPanel = <MeetingDecisions
-    meetingId={meeting.id} meetingTitle={meetingDisplayTitle(meeting)} token={accessToken} canEdit={canEdit}
-    disabled={reviewControlsBusy} onPendingChange={handleDecisionsPending} onSaved={() => setEmailPreview(null)} />;
 
   return (
     <main className="max-w-6xl mx-auto px-6 py-7">
@@ -402,29 +382,17 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
         <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
           <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-4 py-4">
             <h2 className="text-white text-[14px] font-semibold leading-snug">
-              {meetingDisplayTitle(meeting)}
+              {meeting.title ?? "Untitled Meeting"}
             </h2>
           </div>
           <div className="px-4 py-4 flex flex-col gap-3">
-            {meeting.recording_display?.filename && <div><span className="text-xs text-gray-500">Recording file</span><p className="text-sm break-all">{meeting.recording_display.filename}</p></div>}
-            {(meetingIdentityNotice(meeting) || meeting.recording_display?.identity_reason) && <p className="text-xs text-amber-800">{meetingIdentityNotice(meeting) || meeting.recording_display?.identity_reason}</p>}
-            <div><span className="text-xs text-gray-500">Date</span><p className="text-sm"><LocalDateTime value={meetingDisplayTime(meeting)} /></p></div>
+            <div><span className="text-xs text-gray-500">Date</span><p className="text-sm"><LocalDateTime value={meeting.recorded_at ?? data.meeting_time} /></p></div>
             <MetaRow label="Platform"   value={data.platform ?? "Microsoft Teams"} />
             <MetaRow label="Organiser"  value={meeting.organizer_upn ?? "—"} />
-            <div className="min-w-0">
-              <span className="text-xs text-gray-500">Attendees</span>
-              <ul aria-label="Attendees" className="max-h-42 overflow-y-auto text-sm leading-6">
-                {meeting.calendar_participants.slice(0, showAllAttendees ? undefined : 7).map((participant) => (
-                  <li key={participant.email} title={participant.name} className="truncate">{participant.name}</li>
-                ))}
-              </ul>
-              {meeting.calendar_participants.length === 0 && <p className="text-sm">Attendees not verified</p>}
-              {meeting.calendar_participants.length > 7 && <button type="button"
-                aria-expanded={showAllAttendees} onClick={() => setShowAllAttendees(value => !value)}
-                className="mt-1 text-xs font-semibold text-[#003366]">
-                {showAllAttendees ? "Show less" : `Show all (${meeting.calendar_participants.length})`}
-              </button>}
-            </div>
+            <MetaRow
+              label="Attendees"
+              value={meeting.calendar_participants.map((participant) => participant.name).join(", ") || "—"}
+            />
             {(data.apologies?.length ?? 0) > 0 && (
               <MetaRow label="Apologies" value={data.apologies!.join(", ")} />
             )}
@@ -509,8 +477,6 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
 
         {/* Main content */}
         <div className="min-w-0 flex flex-col gap-4">
-          <MeetingInsights key={`${meeting.id}:${accessToken}`} meetingId={meeting.id} token={accessToken} canEdit={Boolean(meeting.can_edit)} />
-          {decisionsPanel}
           {isProcessing ? (
             <PipelineView state={meeting.state} job={recordingJob} />
           ) : meeting.state === "cancelled" ? (
@@ -535,7 +501,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           {isTranscriptOnly && (
             <div className="rounded-lg border border-blue-200 bg-blue-50 px-5 py-4 text-[13.5px] leading-6 text-blue-900">
               <strong>Transcript ready.</strong> Structured AI summaries and action-item
-              extraction were not run for this meeting. Review the transcript and any manual notes before approval. Preview Email shows the current notes, without the full transcript. Approval does not create an AI summary.
+              extraction are currently disabled while the company selects an AI provider.
             </div>
           )}
           <Section title="Meeting Summary">
@@ -632,13 +598,11 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           )}
 
           {speakerLabels.length > 0 && (
-            <Section title="Speaker Names" hint={isApproved ? "Read-only · editing is locked after approval" : canEdit ? (meeting.speaker_candidates.length ? "Match each detected voice to a verified attendee" : "Attendees not verified; detected speaker labels are preserved") : "Speaker names can be changed by approved editors"}>
+            <Section title="Speaker Names" hint={isApproved ? "Read-only · editing is locked after approval" : canEdit ? "Match each detected voice to an Outlook attendee" : "Speaker names can be changed by approved editors"}>
               <div className="space-y-3.5">
-                <p className="text-[13px] leading-6 text-[#4b5563]">Unknown / Guest means the voice has not been identified. It does not describe the transcript language. Only assign a name when you can verify who spoke.</p>
-                {meeting.speaker_candidates.length === 0 && <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-[13px] leading-6 text-amber-900">No verified attendee names are available for this recording. Keep the detected labels until the meeting attendee association is verified; being the organiser does not identify a voice.</p>}
                 {speakerLabels.map((label) => (
-                  <div key={label} className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-[#edf0f4] bg-[#fafbfc] px-3 py-2">
-                    <span className="max-w-40 truncate text-[13px] font-semibold text-[#003366]" title={label}>{label}</span>
+                  <div key={label} className="grid items-center gap-2.5 rounded-md border border-[#edf0f4] bg-[#fafbfc] px-3 py-2.5 xl:grid-cols-[minmax(120px,180px)_120px_minmax(0,1fr)]">
+                    <span className="truncate text-[13px] font-semibold text-[#003366]" title={label}>{label}</span>
                     <div className="flex min-h-9 items-center">
                       {canApprove && (meeting.speaker_sample_labels ?? []).includes(label) && (
                       <SpeakerSampleButton
@@ -652,8 +616,8 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                       aria-label={`Name for ${label}`}
                       disabled={!canEdit || savingSpeakerMappings || reviewControlsBusy}
                       value={mappingForLabel(speakerMappings, label) ?? ""}
-                      onChange={(event) => { setSpeakerSaveFeedback(null); setEmailPreview(null); setSpeakerMappings((current) => ({ ...current, [label]: event.target.value || null })); }}
-                      className="h-9 min-w-0 max-w-full flex-[1_1_180px] rounded-md border border-[#cfd6df] bg-white px-3 text-sm text-[#1a1a2e] disabled:bg-[#f3f4f6] disabled:text-[#6b7280]"
+                      onChange={(event) => { setEmailPreview(null); setSpeakerMappings((current) => ({ ...current, [label]: event.target.value || null })); }}
+                      className="h-9 min-w-0 rounded-md border border-[#cfd6df] bg-white px-3 text-sm text-[#1a1a2e] disabled:bg-[#f3f4f6] disabled:text-[#6b7280]"
                     >
                       <option value="">Unknown / Guest</option>
                       {meeting.speaker_candidates.map((candidate) => {
@@ -667,7 +631,6 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                     </select>
                   </div>
                 ))}
-                <p role="status" aria-live="polite" className="text-xs text-[#374151]">{savingSpeakerMappings ? "Saving speaker names…" : speakerSaveFeedback ?? (speakerMappingsChanged ? "Unsaved speaker names. Save to apply your selection." : "Detected voice labels are preserved until a name is confirmed.")}</p>
                 {canEdit && <div className="flex justify-end pt-0.5">
                   <button
                     type="button"
@@ -684,21 +647,19 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           )}
 
           {meeting.transcript && (
-            <Section title="Transcript" hint="Original-language transcript · speaker identity may be unconfirmed">
+            <Section title="Transcript">
               {editingTranscript ? (
                 <div className="space-y-2">
-                  <textarea aria-label="Meeting transcript" disabled={savingTranscript || reviewControlsBusy} value={transcriptDraft} onChange={(event) => setTranscriptDraft(event.target.value)} className="min-h-80 w-full min-w-0 rounded-md border border-[#dde1e8] p-4 text-sm leading-7 [overflow-wrap:anywhere]" />
+                  <textarea aria-label="Meeting transcript" disabled={savingTranscript || reviewControlsBusy} value={transcriptDraft} onChange={(event) => setTranscriptDraft(event.target.value)} className="min-h-80 w-full rounded-md border border-[#dde1e8] p-4 text-[13px] leading-6" />
                   <div className="flex gap-2">
                     <button disabled={savingTranscript || reviewControlsBusy} onClick={handleSaveTranscript} className="rounded-md bg-[#003366] px-4 py-2 text-sm font-semibold text-white">{savingTranscript ? "Saving transcript…" : "Save transcript"}</button>
                     <button disabled={savingTranscript || reviewControlsBusy} onClick={() => { setTranscriptDraft(meeting.transcript ?? ""); setEditingTranscript(false); }} className="rounded-md border px-4 py-2 text-sm">Cancel</button>
                   </div>
                 </div>
               ) : (
-                <div className="relative min-w-0 max-h-[32rem] overflow-y-auto rounded-md border border-[#dde1e8] bg-[#fafbfc] p-4 sm:p-5">
+                <div className="relative max-h-96 overflow-y-auto rounded-md border border-[#dde1e8] bg-[#fafbfc] p-4">
                   {canEdit && <button disabled={reviewControlsBusy} onClick={() => { setEmailPreview(null); setEditingTranscript(true); }} className="absolute right-3 top-3 rounded border bg-white px-2 py-1 text-xs font-semibold text-[#003366]">Edit</button>}
-                  <div className="space-y-4 pt-9 text-sm leading-7 text-[#374151] [overflow-wrap:anywhere]">
-                    {meeting.transcript.split(/\n+/).map((paragraph, index) => <p key={index} className="whitespace-pre-wrap">{paragraph}</p>)}
-                  </div>
+                  <pre className="whitespace-pre-wrap pr-12 font-sans text-[13px] leading-6 text-[#374151]">{meeting.transcript}</pre>
                 </div>
               )}
             </Section>
@@ -727,9 +688,8 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           <DialogHeader>
             <DialogTitle>Approve Meeting Notes</DialogTitle>
           </DialogHeader>
-          {isTranscriptOnly && <p className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm leading-6 text-blue-900">This meeting contains a transcript and any manually entered notes. No AI summary or action items were generated. Approval locks the current notes; it does not generate missing content.</p>}
           <p className="text-[13.5px] text-[#1a1a2e] leading-6">
-            Confirm you have reviewed <strong>{meetingDisplayTitle(meeting)}</strong>, then choose
+            Confirm you have reviewed <strong>{meeting.title ?? "Untitled meeting"}</strong>, then choose
             exactly who should receive the approved notes.
           </p>
           <div className="border border-[#dde1e8] rounded-md max-h-56 overflow-y-auto">
@@ -818,24 +778,19 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           </DialogHeader>
           <div className="rounded-md border border-[#dde1e8] bg-[#fafbfc] px-4 py-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-[#6b7280]">Meeting</p>
-            <p className="mt-1 text-sm font-medium text-[#1a1a2e]">{meetingDisplayTitle(meeting)}</p>
+            <p className="mt-1 text-sm font-medium text-[#1a1a2e]">{meeting.title ?? "Untitled meeting"}</p>
             <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-[#6b7280]">Recipients ({emailPreview?.recipients.length ?? 0})</p>
             {emailPreview?.recipients.length ? <ul className="mt-1 max-h-28 overflow-y-auto space-y-1 text-sm text-[#374151]">{emailPreview.recipients.map(email => <li key={email} className="break-all">{email}</li>)}</ul> : <p className="mt-1 text-sm text-[#6b7280]">No recipients selected. Approval will not send email.</p>}
             <span className="mt-3 block text-xs font-semibold uppercase tracking-wide text-[#6b7280]">Subject</span>
             <p className="mt-1 text-sm font-medium text-[#1a1a2e]">{emailPreview?.subject}</p>
           </div>
           {emailPreview && (
-            <div className="min-w-0">
-            <p className="mb-2 text-xs leading-5 text-[#6b7280] sm:hidden">The email uses a wide layout. Swipe horizontally below to read the full preview.</p>
-            <div role="region" aria-label="Email content preview" tabIndex={0} className="max-w-full overflow-x-auto rounded-md border border-[#dde1e8]">
             <iframe
               title="Meeting notes email preview"
               srcDoc={emailPreview.html}
               sandbox=""
-              className="h-[45vh] min-h-48 w-full min-w-[680px] bg-white"
+              className="h-[45vh] min-h-48 w-full rounded-md border border-[#dde1e8] bg-white"
             />
-            </div>
-            </div>
           )}
           <DialogFooter>
             <button
@@ -931,10 +886,10 @@ function Section({
 }) {
   return (
     <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
-      <div className="flex flex-wrap items-start gap-2.5 px-5 py-3.5 border-b border-[#dde1e8] bg-[#fafbfc]">
+      <div className="flex items-center gap-2.5 px-5 py-3.5 border-b border-[#dde1e8] bg-[#fafbfc]">
         <span className="w-1 h-5 bg-[#C9A52C] rounded-sm shrink-0" />
         <h3 className="text-[13.5px] font-bold text-[#003366]">{title}</h3>
-        {hint && <span className="w-full text-[11.5px] leading-5 text-[#6b7280] sm:ml-auto sm:w-auto sm:max-w-[65%] sm:text-right">{hint}</span>}
+        {hint && <span className="ml-auto text-[11.5px] text-[#6b7280]">{hint}</span>}
       </div>
       <div className="p-5">{children}</div>
     </div>

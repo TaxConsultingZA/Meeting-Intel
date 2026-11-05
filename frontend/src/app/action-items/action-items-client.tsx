@@ -6,12 +6,9 @@ import { ApiError, getApprovedActionItems } from "@/lib/api";
 import type { ActionItemFilters, ApprovedActionItemsPage } from "@/lib/types";
 import TaskCompletionControl from "@/components/task-completion";
 import LoadingSpinner from "@/components/loading-spinner";
-import { MeetingPageHeading, ResultsLoading } from "@/components/meeting-page-feedback";
-import { useMeetingPageDraft } from "@/lib/use-meeting-page-draft";
 import { getActionItemReminders } from "@/lib/action-item-reminders";
 
 const initial: ActionItemFilters = { view: "all", meeting: "", owner: "", deadline: "", offset: 0 };
-const initialDraft = { meeting: "", owner: "", deadline: "" };
 const controlBase = "rounded-md border px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-[#003366]";
 const control = `${controlBase} border-gray-300 bg-white`;
 function confidenceLabel(value: string | null | undefined) {
@@ -23,29 +20,14 @@ function confidenceLabel(value: string | null | undefined) {
   }
 }
 
-export default function ActionItemsClient({ accessToken, userKey }: { accessToken: string; userKey?: string }) {
+export default function ActionItemsClient({ accessToken }: { accessToken: string }) {
   const [filters, setFilters] = useState(initial);
-  const [draft, setDraft] = useMeetingPageDraft("action-items", userKey, initialDraft);
-  const [storedResult, setResult] = useState<ApprovedActionItemsPage | null>(null);
-  const [loadedToken, setLoadedToken] = useState<string | null>(null);
-  // Never render the previous identity's rows while a new token is loading.
-  const result = loadedToken === accessToken ? storedResult : null;
+  const [draft, setDraft] = useState({ meeting: "", owner: "", deadline: "" });
+  const [result, setResult] = useState<ApprovedActionItemsPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
   const [displayedOffset, setDisplayedOffset] = useState(0);
-  const [remindersEnabled, setRemindersEnabled] = useState(true);
-  const [dismissed, setDismissed] = useState<string[]>([]);
-  const [now, setNow] = useState(() => new Date());
-
-  useEffect(() => {
-    // Refresh authorization as well as the local calendar day. Hidden tabs
-    // revalidate on focus; no reminder is delivered outside this page.
-    const revalidate = () => { setNow(new Date()); setLoading(true); setRefresh(value => value + 1); };
-    const timer = window.setInterval(revalidate, 60_000);
-    window.addEventListener("focus", revalidate);
-    return () => { window.clearInterval(timer); window.removeEventListener("focus", revalidate); };
-  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -55,7 +37,7 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
       setError("");
       try {
         const page = await getApprovedActionItems(accessToken, filters, controller.signal);
-        if (active) { setResult(page); setLoadedToken(accessToken); setDisplayedOffset(filters.offset); }
+        if (active) { setResult(page); setDisplayedOffset(filters.offset); }
       } catch (failure) {
         if (active) {
           if (failure instanceof ApiError && [401, 403].includes(failure.status)) setResult(null);
@@ -72,33 +54,23 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
   function change(next: ActionItemFilters) { setLoading(true); setFilters(next); }
 
   const hasAppliedFilters = [filters.meeting, filters.owner, filters.deadline].some(value => value.trim());
-  // Dismissal lasts for this page session, calendar day and deadline. Reopening
-  // keeps today's dismissal; a new deadline or day makes the task eligible again.
-  const reminderKey = (item: { id: string; deadline_iso: string | null }) =>
-    JSON.stringify([result?.viewer_upn, item.id, item.deadline_iso, now.toDateString()]);
-  const reminders = result && remindersEnabled && !loading && !error
-    ? getActionItemReminders(result.items.filter(item => !dismissed.includes(reminderKey(item))), result.viewer_upn, now)
-    : { overdue: [], dueSoon: [] };
+  const reminders = result && !loading && !error ? getActionItemReminders(result.items, result.viewer_upn) : { overdue: [], dueSoon: [] };
   const emptyTitle = filters.offset > 0
     ? "No actions on this page"
     : hasAppliedFilters
     ? "No matching action items"
-    : "No confirmed action items yet";
+    : "No approved action items yet";
   const emptyDescription = filters.offset > 0
     ? "This page has no results. Return to the first page to reload this view."
     : hasAppliedFilters
-    ? "No confirmed action items from meetings you can access match your applied filters. Try changing or clearing the filters above."
-    : "There are no confirmed action items from meetings you can access yet. Human-confirmed actions can appear while meeting notes are still awaiting review.";
+    ? "No approved action items from meetings you can access match your applied filters. Try changing or clearing the filters above."
+    : "There are no approved action items from meetings you can access yet. Action items appear here after meeting notes containing extracted action items are approved.";
 
   return <main className="mx-auto min-w-0 max-w-7xl px-4 py-8 sm:px-6">
     <div className="flex flex-wrap items-start justify-between gap-4">
-      <MeetingPageHeading page="actions" />
+      <div><h1 className="text-2xl font-bold text-[#003366]">Action Items</h1>
+        <p className="mt-2 max-w-2xl text-sm text-gray-600">Approved action items from meetings you can access. Task completion is separate from meeting-note approval. Approved wording remains locked.</p></div>
       <button className={control} disabled={loading} onClick={() => { setLoading(true); setRefresh(value => value + 1); }}>Refresh</button>
-    </div>
-    <div className="mt-4 text-sm text-gray-700">
-      <label><input type="checkbox" checked={remindersEnabled} onChange={event => setRemindersEnabled(event.target.checked)} /> Show my due reminders in this page session</label>
-      <p>Current page and filters only. Dates use your device time zone. No email is sent.</p>
-      {dismissed.length > 0 && <button className={control} onClick={() => setDismissed([])}>Restore dismissed reminders</button>}
     </div>
     <form aria-label="Filter action items" className="mt-5 grid gap-3 rounded-lg border bg-gray-50 p-4 sm:grid-cols-3" onSubmit={event => { event.preventDefault(); change({ ...filters, ...draft, offset: 0 }); }}>
       {([ ["meeting", "Meeting", "Search meeting title"], ["owner", "Owner", "Search owner name or email"], ["deadline", "Due date", "Date or original wording"] ] as const).map(([key, label, placeholder]) =>
@@ -109,14 +81,11 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
       <div className="flex flex-wrap gap-2 sm:col-span-3"><button type="submit" className={`${control} font-semibold text-[#003366]`}>Apply filters</button>
         <button type="button" className={control} onClick={() => { setDraft({ meeting: "", owner: "", deadline: "" }); change({ ...initial }); }}>Clear filters</button></div>
     </form>
-    <section className="mt-6 min-h-64" aria-label="Approved action items" aria-busy={loading}>
-      {loading && (result ? <div className="flex items-center text-sm text-[#003366]"><LoadingSpinner label="Action items loading" />Updating action items…</div> : <ResultsLoading page="actions" />)}
+    <section className="mt-6" aria-label="Approved action items" aria-busy={loading}>
+      {loading && <LoadingSpinner label="Action items loading" />}
       {result && loading && <p className="sr-only">Showing previous results while the requested view loads.</p>}
-      {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800"><p>{error}</p>
-        <button className={`${control} mt-3`} disabled={loading} onClick={() => { setLoading(true); setRefresh(value => value + 1); }}>Try again</button>
-        {result && <p className="mt-2 text-sm">Showing previous results. Refresh to check the latest view.</p>}
-      </div>}
-      {result && !loading && !error && !result.items.length && <div className="rounded-lg border bg-white px-6 py-10 text-center">
+      {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">{error}</div>}
+      {result && !result.items.length && <div className="rounded-lg border bg-white px-6 py-10 text-center">
         <div role="status">
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto mb-4 h-10 w-10 text-[#003366]">
             <rect x="5" y="4" width="14" height="17" rx="2" />
@@ -131,7 +100,6 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
       </div>}
       {result && result.items.length > 0 && <>
         {(reminders.overdue.length > 0 || reminders.dueSoon.length > 0) && <aside aria-label="Personal action item due reminders" className="mb-4 grid min-w-0 grid-cols-1 gap-3 break-words sm:grid-cols-2">
-          <button className={control} onClick={() => setDismissed(current => [...new Set([...current, ...reminders.overdue.map(reminderKey), ...reminders.dueSoon.map(reminderKey)])])}>Dismiss these reminders for today</button>
           {reminders.overdue.length > 0 && <section role="status" className="rounded-lg border border-red-300 bg-red-50 p-4 text-red-900">
             <h2 className="font-semibold">Overdue ({reminders.overdue.length})</h2>
             <ul className="mt-2 list-inside list-disc text-sm">{reminders.overdue.map(item => <li key={item.id}>{item.task} — due {item.deadline_iso}</li>)}</ul>
@@ -146,7 +114,7 @@ export default function ActionItemsClient({ accessToken, userKey }: { accessToke
           <caption className="sr-only">Approved action items and source evidence</caption>
           <thead className="bg-[#003366] text-white"><tr>{["Task", "Meeting", "Owner", "Due date", "Confidence", "Source evidence", "Task status"].map(label => <th scope="col" key={label} className="px-4 py-3">{label}</th>)}</tr></thead>
           <tbody>{result.items.map(item => <tr key={item.id} className="border-t even:bg-gray-50">
-            <td className="max-w-sm whitespace-pre-wrap break-words px-4 py-4 align-top font-medium">{item.task}<p className="mt-2 text-xs font-normal text-gray-600">Action: {item.confirmation_source === "insight_review" ? "human confirmed" : "confirmed in notes"}</p>{item.meeting_notes_approved === false && <p className="text-xs font-normal text-gray-600">Meeting notes: not approved</p>}</td>
+            <td className="max-w-sm whitespace-pre-wrap break-words px-4 py-4 align-top font-medium">{item.task}</td>
             <td className="px-4 py-4 align-top"><Link className="text-[#003366] underline" href={`/meetings/${encodeURIComponent(item.meeting_id)}`}>{item.meeting_title?.trim() || "Untitled meeting"}</Link></td>
             <td className="px-4 py-4 align-top">{item.owner?.trim() || "Unspecified"}</td>
             <td className="px-4 py-4 align-top">

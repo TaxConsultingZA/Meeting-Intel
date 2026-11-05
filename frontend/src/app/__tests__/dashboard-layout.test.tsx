@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import DashboardClient from "../dashboard-client";
 import type { CalendarEvent, MeetingOut, RecordingJobOut, RecordingProcessingRequest } from "@/lib/types";
-import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecentMeetings, getRecordingJobs, getSyncStatus, getUpcomingMeetings, runRecordingUpdateStage, getAvailableRecordings } from "@/lib/api";
+import { decideRecordingProcessing, getAllMeetings, getHistoricalMeetings, getProcessingRequests, getRecentMeetings, getRecordingJobs, getSyncStatus, getUpcomingMeetings, syncCalendarsNow, getCalendarSyncRun, waitForCalendarSync } from "@/lib/api";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("@/lib/api", async (importOriginal) => ({
@@ -14,19 +14,16 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   cancelRecordingJob: vi.fn(), retryRecordingJob: vi.fn(),
   shareMeeting: vi.fn(), unsubscribeCurrentUser: vi.fn(),
   syncCalendarsNow: vi.fn(),
-  getRecordingUpdateStatus: vi.fn().mockResolvedValue([]),
-  runRecordingUpdateStage: vi.fn(), getAvailableRecordings: vi.fn().mockResolvedValue([]),
   getCalendarSyncRun: vi.fn().mockResolvedValue(null), waitForCalendarSync: vi.fn(),
 }));
 // A mounted panel must be detectable even when the real component has no jobs.
-vi.mock("@/components/recording-jobs", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/components/recording-jobs")>(),
+vi.mock("@/components/recording-jobs", () => ({
   default: () => <section aria-label="Recording processing">Recording processing</section>,
   JobControls: () => null,
   recordingStatusMessage: () => "Recording processing status",
 }));
 vi.mock("@/components/import-modal", () => ({
-  default: ({initialRecordings}:{initialRecordings?:import("@/lib/types").AvailableRecording[]|null}) => <div role="dialog" aria-label="Process Past Recording">Recording import{initialRecordings?.map(r=><p key={r.drive_item_id}>{r.name} {r.job?.status}</p>)}</div>,
+  default: () => <div role="dialog" aria-label="Process Past Recording">Recording import</div>,
 }));
 
 afterEach(() => {
@@ -36,37 +33,144 @@ afterEach(() => {
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
 
-it("offers one current-user update action and removes the calendar-only button", () => {
-  vi.mocked(getProcessingRequests).mockResolvedValue([]);
-  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} upn="owner@example.test"
-    accessToken="offline" isSubscribed syncStates={[]} loadErrors={[]} />);
-  expect(screen.getByRole("button",{name:"Update meetings and recordings"})).toBeEnabled();
-  expect(screen.queryByRole("button",{name:"Sync calendar now"})).not.toBeInTheDocument();
-});
+const syncCounts = { status: "success" as const, succeeded: 3, failed: 0, skipped: 0, created: 2, updated: 4 };
 
-it("merges cancelled task status into the list prefetched by the unified update",async()=>{
+it("recovers an existing run on mount through reads without another submission", async () => {
+  const run = { ...syncCounts, id: "existing-run", status: "running" as const,
+    error_category: null, retry_allowed: false };
+  vi.mocked(getCalendarSyncRun).mockResolvedValueOnce(run);
+  let complete!: (value: typeof syncCounts) => void;
+  vi.mocked(waitForCalendarSync).mockReturnValueOnce(new Promise((resolve) => { complete = resolve; }));
   vi.mocked(getProcessingRequests).mockResolvedValue([]);
   vi.mocked(getUpcomingMeetings).mockResolvedValue([]);
   vi.mocked(getSyncStatus).mockResolvedValue([]);
-  vi.mocked(getAllMeetings).mockResolvedValue([]);
-  vi.mocked(runRecordingUpdateStage).mockImplementation(async(token,stage)=>({
-    stage,status:"success",counts:{},error:null,last_attempted_at:null,last_succeeded_at:null
-  }));
-  vi.mocked(getRecordingJobs).mockResolvedValue([recordingJob({
-    drive_item_id:"specific-item",status:"cancelled",processing_status:"cancelled"
-  })]);
-  vi.mocked(getAvailableRecordings).mockResolvedValue([{
-    drive_item_id:"specific-item",drive_id:"owned",name:"Test.mp4",created_at:null,size:544023,
-    already_imported:true,meeting_id:"old-review",meeting_state:"awaiting_review",meeting_error:null
-  }]);
-  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} upn="owner@example.test"
-    accessToken="offline" isSubscribed syncStates={[]} loadErrors={[]}/>);
-  fireEvent.click(screen.getByRole("button",{name:"Update meetings and recordings"}));
-  await waitFor(()=>expect(getAvailableRecordings).toHaveBeenCalledOnce());
-  await waitFor(()=>expect(screen.getByRole("button",{name:"Update meetings and recordings"})).toBeEnabled());
-  fireEvent.click(screen.getByRole("button",{name:"Process Past Recording"}));
-  expect(screen.getByText("Test.mp4 cancelled")).toBeInTheDocument();
+  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} isAdmin
+    upn="admin@example.test" accessToken="offline-test-token" isSubscribed syncStates={[]} loadErrors={[]} />);
+  await act(async () => {});
+  expect(screen.getByRole("button", { name: "Syncing calendars…" })).toBeDisabled();
+  expect(syncCalendarsNow).not.toHaveBeenCalled();
+  await act(async () => { complete(syncCounts); });
+  expect(screen.getByRole("status")).toHaveTextContent("Calendar sync succeeded.");
+  expect(screen.getByRole("button", { name: "Sync calendar now" })).toBeEnabled();
+  expect(syncCalendarsNow).not.toHaveBeenCalled();
 });
+
+it("keeps unknown history blocked and offers only a status read", async () => {
+  vi.mocked(getCalendarSyncRun).mockRejectedValueOnce(new Error("SECRET response body"));
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} isAdmin
+    upn="admin@example.test" accessToken="offline-test-token" isSubscribed syncStates={[]} loadErrors={[]} />);
+  await act(async () => {});
+  expect(screen.getByRole("button", { name: "Sync calendar now" })).toBeDisabled();
+  expect(screen.getByRole("alert")).not.toHaveTextContent("SECRET");
+  fireEvent.click(screen.getByRole("button", { name: "Check sync status" }));
+  await act(async () => {});
+  expect(getCalendarSyncRun).toHaveBeenCalledTimes(2);
+  expect(syncCalendarsNow).not.toHaveBeenCalled();
+});
+
+it("does not repeat a completed calendar sync on a timer", async () => {
+  vi.useFakeTimers();
+  vi.mocked(syncCalendarsNow).mockResolvedValue(syncCounts);
+  vi.mocked(getUpcomingMeetings).mockResolvedValue([]);
+  vi.mocked(getSyncStatus).mockResolvedValue([]);
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} isAdmin
+    upn="admin@example.test" accessToken="offline-test-token" isSubscribed syncStates={[]} loadErrors={[]} />);
+  await act(async () => {});
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" })); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(600_000); });
+  expect(syncCalendarsNow).toHaveBeenCalledOnce();
+  expect(getUpcomingMeetings).toHaveBeenCalledOnce();
+});
+
+it("does not replace post-sync calendar results with a slow initial response", async () => {
+  let finishInitial!: (events: CalendarEvent[]) => void;
+  vi.mocked(getUpcomingMeetings)
+    .mockReturnValueOnce(new Promise((resolve) => { finishInitial = resolve; }))
+    .mockResolvedValueOnce([calendarEvent({ subject: "After sync" })]);
+  vi.mocked(getAllMeetings).mockResolvedValue([]);
+  vi.mocked(getRecordingJobs).mockResolvedValue([]);
+  vi.mocked(getSyncStatus).mockResolvedValue([]);
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  vi.mocked(syncCalendarsNow).mockResolvedValue(syncCounts);
+  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} isAdmin deferInitialLoad
+    upn="admin@example.test" accessToken="offline-test-token" isSubscribed syncStates={[]} loadErrors={[]} />);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" }));
+  expect(await screen.findByText("After sync")).toBeVisible();
+  await act(async () => { finishInitial([calendarEvent({ subject: "Before sync" })]); });
+  expect(screen.queryByText("Before sync")).not.toBeInTheDocument();
+  expect(screen.getByText("After sync")).toBeVisible();
+});
+
+it("syncs once per click, blocks duplicate clicks and shows concise success", async () => {
+  let finish!: (result: typeof syncCounts) => void;
+  vi.mocked(syncCalendarsNow).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  vi.mocked(getUpcomingMeetings).mockResolvedValue([]);
+  vi.mocked(getSyncStatus).mockResolvedValue([]);
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} isAdmin
+    upn="admin@example.test" accessToken="offline-test-token" isSubscribed syncStates={[]} loadErrors={[]} />);
+
+  expect(syncCalendarsNow).not.toHaveBeenCalled();
+  const button = screen.getByRole("button", { name: "Sync calendar now" });
+  await act(async () => {});
+  fireEvent.click(button);
+  fireEvent.click(button);
+  expect(syncCalendarsNow).toHaveBeenCalledExactlyOnceWith("offline-test-token", expect.any(AbortSignal));
+  expect(screen.getByRole("button", { name: "Syncing calendars…" })).toBeDisabled();
+  await act(async () => { finish(syncCounts); });
+  expect(screen.getByRole("status")).toHaveTextContent("Calendar sync succeeded.");
+  expect(screen.getByRole("button", { name: "Sync calendar now" })).toBeEnabled();
+  expect(getUpcomingMeetings).toHaveBeenCalledOnce();
+  expect(getSyncStatus).toHaveBeenCalledOnce();
+  expect(syncCalendarsNow).toHaveBeenCalledOnce();
+});
+
+it("shows a recoverable sync error without retrying or leaking provider details", async () => {
+  vi.mocked(syncCalendarsNow).mockRejectedValueOnce(new Error("SECRET provider response"));
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} isAdmin
+    upn="admin@example.test" accessToken="offline-test-token" isSubscribed syncStates={[]} loadErrors={[]} />);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Check sync status and existing Microsoft access");
+  expect(screen.getByRole("alert")).not.toHaveTextContent("SECRET");
+  expect(syncCalendarsNow).toHaveBeenCalledOnce();
+  expect(screen.getByRole("button", { name: "Sync calendar now" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Check sync status" }));
+  await act(async () => {});
+  vi.mocked(syncCalendarsNow).mockResolvedValueOnce(syncCounts);
+  vi.mocked(getUpcomingMeetings).mockResolvedValue([]);
+  vi.mocked(getSyncStatus).mockResolvedValue([]);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" }));
+  expect(await screen.findByText("Calendar sync succeeded.")).toBeVisible();
+  expect(syncCalendarsNow).toHaveBeenCalledTimes(2);
+});
+
+it("reports partial sync failures clearly", async () => {
+  vi.mocked(syncCalendarsNow).mockResolvedValue({ ...syncCounts, status: "partial", succeeded: 1, failed: 1, skipped: 1 });
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  vi.mocked(getUpcomingMeetings).mockResolvedValue([]);
+  vi.mocked(getSyncStatus).mockResolvedValue([]);
+  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} isAdmin
+    upn="admin@example.test" accessToken="offline-test-token" isSubscribed syncStates={[]} loadErrors={[]} />);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Calendar sync partially completed.");
+  expect(syncCalendarsNow).toHaveBeenCalledOnce();
+});
+
+it.each([{ isAdmin: false, isSubscribed: true }, { isAdmin: true, isSubscribed: false }])(
+  "hides the sync action without the required caller authorization: %j", (authorization) => {
+    render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} {...authorization}
+      upn="reviewer@example.test" accessToken="offline-test-token" syncStates={[]} loadErrors={[]} />);
+    expect(screen.queryByRole("button", { name: "Sync calendar now" })).not.toBeInTheDocument();
+    expect(syncCalendarsNow).not.toHaveBeenCalled();
+  },
+);
 
 function processingRequest(overrides: Partial<RecordingProcessingRequest> = {}): RecordingProcessingRequest {
   return {
@@ -129,7 +233,7 @@ function recordingJob(overrides: Partial<RecordingJobOut> = {}): RecordingJobOut
     job_id: "job-1",
     drive_item_id: "item-1",
     meeting_id: null,
-    title: "Old Trust title", recording_filename: "Queued recording", recording_identity_verified: true,
+    title: "Queued recording",
     status: "pending",
     processing_status: "queued",
     review_status: null,
@@ -560,6 +664,23 @@ it("shows Share for an organizer when UPN casing differs", () => {
   expect(screen.getByRole("button", { name: /Share/ })).toBeInTheDocument();
 });
 
+it("does not announce completed sync history as a new success or refresh it twice", async () => {
+  vi.useFakeTimers();
+  vi.mocked(getCalendarSyncRun).mockResolvedValueOnce({ ...syncCounts, id: "done", status: "success", error_category: null, retry_allowed: true });
+  vi.mocked(waitForCalendarSync).mockResolvedValueOnce(syncCounts);
+  vi.mocked(getAllMeetings).mockResolvedValue([]);
+  vi.mocked(getRecordingJobs).mockResolvedValue([]);
+  vi.mocked(getUpcomingMeetings).mockResolvedValue([]);
+  vi.mocked(getSyncStatus).mockResolvedValue([]);
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} syncStates={[]} loadErrors={[]}
+    accessToken="offline" upn="admin@example.test" isSubscribed isAdmin deferInitialLoad />);
+  await act(async () => {});
+  expect(getUpcomingMeetings).toHaveBeenCalledOnce();
+  expect(getSyncStatus).toHaveBeenCalledOnce();
+  expect(screen.queryByText("Calendar sync succeeded.")).not.toBeInTheDocument();
+  expect(syncCalendarsNow).not.toHaveBeenCalled();
+});
 
 it("publishes a polled meeting before the recording request settles", async () => {
   vi.useFakeTimers();
@@ -576,21 +697,62 @@ it("publishes a polled meeting before the recording request settles", async () =
   expect(getRecordingJobs).toHaveBeenCalledOnce();
 });
 
-
-it("shows two queued file identities and never falls back to old Trust history", async () => {
+it("shows only the sync button spinner while sync and ordinary reads are pending", async () => {
+  vi.mocked(getCalendarSyncRun).mockResolvedValueOnce(null);
+  vi.mocked(syncCalendarsNow).mockReturnValueOnce(new Promise(() => {}));
+  vi.mocked(getAllMeetings).mockReturnValueOnce(new Promise(() => {}));
+  vi.mocked(getRecordingJobs).mockReturnValueOnce(new Promise(() => {}));
+  vi.mocked(getUpcomingMeetings).mockReturnValueOnce(new Promise(() => {}));
+  vi.mocked(getSyncStatus).mockReturnValueOnce(new Promise(() => {}));
   vi.mocked(getProcessingRequests).mockResolvedValue([]);
-  vi.mocked(getRecordingJobs).mockResolvedValue([
-    { ...recordingJob(), job_id: "new-job", drive_item_id: "file-oct22", meeting_id: null,
-      recording_filename: "October22.mp4", recording_identity_verified: true },
-    { ...recordingJob(), job_id: "old-job", drive_item_id: "file-sept1", meeting_id: "trust-meeting",
-      title: "Trust IT3(t)", recording_filename: "September1.mp4", recording_identity_verified: true },
-    { ...recordingJob(), job_id: "unknown-job", drive_item_id: "unknown-file", meeting_id: null,
-      title: "Trust IT3(t)", recording_filename: null, recording_identity_verified: false },
-  ]);
-  render(<DashboardClient deferInitialLoad meetings={[]} upcoming={[]} historical={[]} syncStates={[]} loadErrors={[]} isSubscribed={true} upn="owner@example.com" accessToken="token" />);
-  fireEvent.click(screen.getAllByRole("button", {name: /^In Progress/})[0]);
-  expect(await screen.findByText("October22.mp4")).toBeVisible();
-  expect(screen.getByText("September1.mp4")).toBeVisible();
-  expect(screen.getByText("Recording identity unverified")).toBeVisible();
-  expect(screen.queryByText("Trust IT3(t)")).not.toBeInTheDocument();
+  const { container } = render(<DashboardClient meetings={[]} upcoming={[calendarEvent({ subject: "Previously loaded calendar" })]}
+    historical={[]} syncStates={[]} loadErrors={[]} accessToken="offline" upn="admin@example.test" isSubscribed isAdmin deferInitialLoad />);
+  await act(async () => {});
+  expect(screen.getByRole("status", { name: "Upcoming count loading" })).toBeInTheDocument();
+  expect(container.querySelectorAll(".border-r-transparent")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" }));
+  const button = screen.getByRole("button", { name: "Syncing calendars…" });
+  expect(button).toBeDisabled();
+  expect(button.querySelectorAll(".border-r-transparent")).toHaveLength(1);
+  expect(container.querySelectorAll(".border-r-transparent")).toHaveLength(1);
+  expect(screen.queryByRole("status", { name: "Upcoming meetings loading" })).not.toBeInTheDocument();
+  expect(screen.getByText("Previously loaded calendar")).toBeVisible();
+  expect(syncCalendarsNow).toHaveBeenCalledOnce();
+});
+
+it("expires only a newly confirmed sync success after one minute", async () => {
+  vi.useFakeTimers();
+  vi.mocked(getCalendarSyncRun).mockResolvedValueOnce(null);
+  vi.mocked(syncCalendarsNow).mockResolvedValueOnce(syncCounts);
+  vi.mocked(getUpcomingMeetings).mockResolvedValue([]);
+  vi.mocked(getSyncStatus).mockResolvedValue([]);
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  render(<DashboardClient meetings={[]} upcoming={[]} historical={[]} syncStates={[]} loadErrors={[]}
+    accessToken="offline" upn="admin@example.test" isSubscribed isAdmin />);
+  await act(async () => {});
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Sync calendar now" })); });
+  expect(screen.getByText("Calendar sync succeeded.")).toBeVisible();
+  expect(screen.queryByText(/events added|succeeded,/)).not.toBeInTheDocument();
+  await act(async () => { await vi.advanceTimersByTimeAsync(59_999); });
+  expect(screen.getByText("Calendar sync succeeded.")).toBeVisible();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(screen.queryByText("Calendar sync succeeded.")).not.toBeInTheDocument();
+});
+
+it("keeps an unknown sync warning despite available meetings and does not expire it as success", async () => {
+  vi.useFakeTimers();
+  vi.mocked(getCalendarSyncRun).mockResolvedValueOnce({ ...syncCounts, id: "uncertain", status: "unknown", error_category: "interrupted", retry_allowed: false });
+  vi.mocked(waitForCalendarSync).mockRejectedValueOnce(new Error("Unknown result"));
+  vi.mocked(getProcessingRequests).mockResolvedValue([]);
+  render(<DashboardClient meetings={[]} upcoming={[calendarEvent({ subject: "Available old calendar" })]}
+    historical={[]} syncStates={[]} loadErrors={[]} accessToken="offline" upn="admin@example.test" isSubscribed isAdmin />);
+  await act(async () => {});
+  expect(screen.getByText("Available old calendar")).toBeVisible();
+  expect(screen.getByRole("alert")).toHaveTextContent("Calendar sync outcome is unconfirmed");
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(screen.getByRole("alert")).toHaveTextContent("unconfirmed");
+  expect(screen.queryByText("Calendar sync succeeded.")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Check sync status" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Sync calendar now" })).toBeDisabled();
+  expect(syncCalendarsNow).not.toHaveBeenCalled();
 });

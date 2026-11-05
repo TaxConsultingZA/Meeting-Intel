@@ -38,16 +38,3 @@ it("ignores invalid or implicit dates, completed tasks and nonmatching owners", 
   ], "alice@example.test", new Date(2026, 9, 20, 12));
   expect(result).toEqual({ overdue: [], dueSoon: [] });
 });
-
-it("deduplicates repeated tasks without suppressing distinct tasks", () => {
-  const task = { ...base, deadline_iso: "2026-10-20" };
-  expect(getActionItemReminders([task, task, { ...task, id: "b" }], base.owner!, new Date(2026, 9, 20)).dueSoon.map(item => item.id)).toEqual(["a", "b"]);
-});
-
-it("changes buckets at local midnight and rejects timestamps and absent identity", () => {
-  const task = { ...base, deadline_iso: "2026-10-20" };
-  expect(getActionItemReminders([task], base.owner!, new Date(2026, 9, 20, 23, 59)).dueSoon).toHaveLength(1);
-  expect(getActionItemReminders([task], base.owner!, new Date(2026, 9, 21)).overdue).toHaveLength(1);
-  expect(getActionItemReminders([{ ...task, deadline_iso: "2026-10-20T00:00:00Z" }], base.owner!)).toEqual({ overdue: [], dueSoon: [] });
-  expect(getActionItemReminders([task], "")).toEqual({ overdue: [], dueSoon: [] });
-});

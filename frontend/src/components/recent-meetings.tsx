@@ -1,6 +1,4 @@
 "use client";
-import { meetingDisplayTitle, meetingIdentityNotice } from "@/lib/recording-identity";
-import { meetingDisplayTime, parseInstant, compareRecordingTimes } from "@/lib/time";
 
 import Link from "next/link";
 import LoadingSpinner from "./loading-spinner";
@@ -58,7 +56,7 @@ function normalized(value: string | null | undefined) {
 }
 
 function historicalDate(meeting: MeetingOut) {
-  return meetingDisplayTime(meeting);
+  return meeting.recorded_at ?? meeting.extracted_json?.meeting_time ?? null;
 }
 
 export default function RecentMeetings({ token, cacheIdentity = "current-user", isSubscribed, accessibleMeetings = [], historical = [], processingRequests, onRefreshProcessingRequests, onRequestHistoricalAccess, onRequestMeetingEditAccess, refreshKey = 0 }: {
@@ -171,7 +169,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     ...recentOnly.map((event) => ({ kind: "recent" as const, id: event.event_id, date: event.start, organizer: event.organizer_email, hasRecording: event.action !== "no_recording", event })),
     ...historicalOnly.map((meeting) => ({ kind: "historical" as const, id: meeting.id, date: historicalDate(meeting), organizer: meeting.organizer_upn, hasRecording: true, meeting })),
   ].filter((row) => {
-    const timestamp = parseInstant(row.date)?.getTime() ?? NaN;
+    const timestamp = row.date ? Date.parse(row.date) : NaN;
     const cutoffDays = timeFilter === "7" ? 7 : timeFilter === "30" ? 30 : null;
     // Preserve the existing wall-clock cutoff whenever the list renders.
     // eslint-disable-next-line react-hooks/purity
@@ -184,9 +182,9 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     if (!query) return true;
     const searchable = row.kind === "recent"
       ? [row.event.subject, ...row.event.attendees]
-      : [meetingDisplayTitle(row.meeting), row.meeting.summary, ...row.meeting.calendar_participants.map((participant) => participant.name)];
+      : [row.meeting.title, row.meeting.summary, ...row.meeting.calendar_participants.map((participant) => participant.name)];
     return searchable.some((value) => normalized(value).includes(query));
-  }).sort((a, b) => compareRecordingTimes(a.date, b.date));
+  }).sort((a, b) => (b.date ? Date.parse(b.date) : 0) - (a.date ? Date.parse(a.date) : 0));
 
   const buttonClass = "rounded-md bg-[#003366] px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50";
   return (
@@ -252,9 +250,8 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
           </article>
         ); })() : (() => { const meeting = row.meeting; return (
           <article key={`historical:${meeting.id}`} className="rounded-lg border border-[#dde1e8] bg-white p-4">
-            <h3 className="font-semibold text-[#003366]">{meetingDisplayTitle(meeting)}</h3>
+            <h3 className="font-semibold text-[#003366]">{meeting.title ?? "Untitled Meeting"}</h3>
             <p className="my-2 text-sm text-[#6b7280]"><LocalDateTime value={historicalDate(meeting)} /></p>
-            {meetingIdentityNotice(meeting) && <p className="my-2 text-xs text-amber-800">{meetingIdentityNotice(meeting)}</p>}
             <p className="mb-3 text-xs text-[#6b7280]">Organised by {meeting.organizer_upn || "Unknown"}</p>
             <p className="mb-3 text-xs font-semibold text-[#6b7280]">Recording Available</p>
             {row.kind === "accessible" ? (

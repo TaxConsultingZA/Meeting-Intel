@@ -39,17 +39,7 @@ export interface MeetingSearchResult {
   recorded_at: string | null;
   matched_summary: boolean;
   matched_action_items: boolean;
-  matched_decisions?: boolean;
 }
-
-export interface MeetingDecision {
-  id: string;
-  meeting_id: string;
-  content: string;
-  decision_date: string;
-}
-
-export type MeetingDecisionInput = Pick<MeetingDecision, "content" | "decision_date"> & { id?: string };
 
 /** Independent task execution status. */
 export interface TaskCompletion {
@@ -71,8 +61,6 @@ export interface ActionItemOut extends TaskCompletion {
 
 /** Approved source actions for the read-only cross-meeting page. */
 export interface ApprovedActionItem extends TaskCompletion {
-  confirmation_source?: "insight_review" | "meeting_notes";
-  meeting_notes_approved?: boolean;
   id: string;
   meeting_id: string;
   meeting_title: string | null;
@@ -128,15 +116,6 @@ export interface ProcessingFailure {
 }
 
 export interface MeetingOut {
-  recording_display?: {
-    filename?: string | null;
-    recorded_at?: string | null;
-    association_status?: string;
-    calendar_matched?: boolean;
-    teams_meeting_verified?: boolean;
-    teams_meeting_title?: string | null;
-    identity_reason?: string | null;
-  } | null;
   id: string;
   recorded_at?: string | null;
   title: string | null;
@@ -315,11 +294,6 @@ export interface SyncState {
 
 /** A recording file visible in the user's OneDrive, with its current processing state if imported. */
 export interface AvailableRecording {
-  identity_reason?: string | null;
-  teams_meeting_verified?: boolean;
-  teams_meeting_title?: string | null;
-  calendar_title?: string | null;
-  association_status?: "unmatched" | "linked" | "independent" | "needs_review";
   original_filename?: string | null;
   calendar_matched?: boolean;
   job?: RecordingJobOut;
@@ -335,14 +309,6 @@ export interface AvailableRecording {
 }
 
 export interface RecordingJobOut {
-  auto_processing_admitted?: boolean;
-  submission_count?: number;
-  provider_status?: string | null;
-  audio_duration_seconds?: number | null;
-  detected_language?: string | null;
-  actual_cost?: number | null;
-  recording_filename?: string | null;
-  recording_identity_verified?: boolean;
   failure?: ProcessingFailure | null;
   job_id: string;
   drive_item_id: string;
@@ -424,39 +390,10 @@ export interface AuditEventsPage {
 }
 
 export interface AuditFilters {
-  job_id?: string;
-  recording_id?: string;
-  status?: string;
   from?: string;
   to?: string;
   event_type?: string;
   outcome?: AuditOutcome;
   actor_upn?: string;
   actor_id?: string;
-}
-
-
-export interface ProcessingMonitorJob {
-  job_id: string;
-  status: string;
-  attempts: number;
-  created_at: string;
-  confirmed_submissions: number | null;
-  submission_evidence: string;
-  submission_uncertain: boolean;
-  provider_status: string | null;
-  audio_duration_seconds: number | null;
-  ai_submissions_with_reported_usage?: number | null;
-  token_usage: { event_id: string; occurred_at: string; prompt_tokens?: number; completion_tokens?: number; total_tokens: number }[];
-  processing_duration_seconds: number | null;
-  failure: { stage: string; category: string } | null;
-  actual_cost: null;
-  estimated_cost: null;
-  cost_status: "unknown";
-}
-export interface ProcessingMonitorPage {
-  items: ProcessingMonitorJob[];
-  has_more: boolean;
-  window_start: string;
-  window_end: string;
 }

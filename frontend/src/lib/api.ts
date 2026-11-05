@@ -21,15 +21,6 @@ export function searchSavedMeetings(token: string, keyword: string, signal?: Abo
   return apiFetch(`/reviews/search?${params}`, token, { signal, cache: "no-store" });
 }
 
-export function getMeetingDecisions(meetingId: string, token: string, signal?: AbortSignal): Promise<import("./types").MeetingDecision[]> {
-  return apiFetch(`/reviews/${encodeURIComponent(meetingId)}/decisions`, token, { signal, cache: "no-store" });
-}
-
-export function saveMeetingDecisions(meetingId: string, decisions: import("./types").MeetingDecisionInput[], token: string): Promise<import("./types").MeetingDecision[]> {
-  return apiFetch(`/reviews/${encodeURIComponent(meetingId)}/decisions`, token,
-    { method: "PUT", body: JSON.stringify({ decisions }), cache: "no-store" });
-}
-
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -302,47 +293,7 @@ export function processRecentMeeting(eventId: string, token: string): Promise<{ 
 
 /** List MP4 files in the user's OneDrive Recordings folder with their current import status. */
 export async function getAvailableRecordings(upn: string): Promise<AvailableRecording[]> {
-  return apiFetch<AvailableRecording[]>("/recordings/available", upn, {cache:"no-store"});
-}
-
-export interface RecordingCalendarChoice {
-  id: string;
-  iCalUId: string | null;
-  subject: string | null;
-  start: { dateTime: string; timeZone: string };
-  end: { dateTime: string; timeZone: string };
-  isCancelled: boolean;
-}
-
-export type RecordingUpdateStage = "calendar" | "discovery" | "matching";
-export interface RecordingUpdateResult {
-  stage: RecordingUpdateStage;
-  status: "never" | "success" | "partial" | "failed";
-  counts: Record<string, number>;
-  error: string | null;
-  last_attempted_at: string | null;
-  last_succeeded_at: string | null;
-}
-export function getRecordingUpdateStatus(token: string) {
-  return apiFetch<RecordingUpdateResult[]>("/recordings/update",token,{cache:"no-store"});
-}
-export function runRecordingUpdateStage(token: string, stage: RecordingUpdateStage) {
-  return apiFetch<RecordingUpdateResult>(`/recordings/update/${stage}`,token,{method:"POST"},100000);
-}
-
-export function discoverOwnRecordings(token: string) {
-  return apiFetch<{discovered:number;failed:number;status:string}>("/recordings/discover", token, {method:"POST"}, 120000);
-}
-
-export function getRecordingCalendarChoices(token: string, driveId: string, itemId: string) {
-  const params = new URLSearchParams({ drive_id: driveId, drive_item_id: itemId });
-  return apiFetch<RecordingCalendarChoice[]>(`/recordings/calendar-choices?${params}`, token, { cache: "no-store" });
-}
-
-export function setRecordingAssociation(token: string, driveId: string, itemId: string, eventId: string | null) {
-  return apiFetch<{ ok: boolean }>("/recordings/association", token, {
-    method: "PUT", body: JSON.stringify({ drive_id: driveId, drive_item_id: itemId, event_id: eventId }),
-  });
+  return apiFetch<AvailableRecording[]>("/recordings/available?resolve_filenames=true", upn);
 }
 
 /** Trigger the full pipeline for a new recording. Returns 409 if already imported. */
@@ -611,19 +562,4 @@ export async function revokeAdminMeetingAccess(
   await apiFetch(`/admin/meetings/${encodeURIComponent(meetingId)}/access/${encodeURIComponent(userUpn)}/revoke`, token, {
     method: "POST", body: JSON.stringify({ access_type: accessType }),
   });
-}
-
-
-export function getProcessingMonitor(token: string, filters: import("./types").AuditFilters = {}, signal?: AbortSignal): Promise<import("./types").ProcessingMonitorPage> {
-  const params = new URLSearchParams();
-  for (const key of ["from", "to", "job_id", "recording_id", "status"] as const) {
-    if (filters[key]) params.set(key, filters[key]);
-  }
-  return apiFetch(`/admin/processing-monitor?${params}`, token, { signal, cache: "no-store" });
-}
-
-export type InsightCandidate = { text: string; source_quote: string; owner: string | null; deadline: string | null; status: "pending_confirmation" | "confirmed" | "rejected" };
-export type InsightDraft = { version: number; status: string; provider: string; summary: string; actions: InsightCandidate[]; decisions: InsightCandidate[] };
-export function meetingInsights(id: string, token: string, method = "GET", draft?: InsightDraft): Promise<InsightDraft | null> {
-  return apiFetch(`/reviews/${encodeURIComponent(id)}/insights`, token, { method, cache: "no-store", ...(draft ? { body: JSON.stringify(draft) } : {}) });
 }

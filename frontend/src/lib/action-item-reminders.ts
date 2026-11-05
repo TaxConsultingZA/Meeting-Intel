@@ -29,14 +29,11 @@ export function getActionItemReminders(
 
   const overdue: ApprovedActionItem[] = [];
   const dueSoon: ApprovedActionItem[] = [];
-  const seen = new Set<string>();
   for (const item of items) {
     if (item.completed_at || !item.owner?.trim() || item.owner.trim().toLowerCase() !== viewerUpn.trim().toLowerCase()) continue;
     if (!item.deadline_iso) continue;
     const due = calendarDay(item.deadline_iso);
     if (due === null) continue;
-    if (seen.has(item.id)) continue;
-    seen.add(item.id);
     if (due < today) overdue.push(item);
     else if (due <= today + 7) dueSoon.push(item);
   }

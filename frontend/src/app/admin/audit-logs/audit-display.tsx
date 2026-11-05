@@ -14,27 +14,6 @@ export function OutcomeBadge({ outcome }: { outcome: AuditOutcome }) {
 }
 
 export const actionLabels: Record<string, string> = {
-  "meeting.viewed": "Meeting viewed",
-  "meeting.decisions_saved": "Manual decisions saved",
-  "meeting.action_item_edited": "Action item edited",
-  "meeting.transcript_edited": "Transcript edited",
-  "meeting.speakers_edited": "Speaker mappings edited",
-  "email.copy_requested": "Personal email copy requested (not confirmed)",
-  "email.copy_result": "Personal email copy submission result",
-  "email.previewed": "Email preview viewed (not sent)",
-  "access.edit_requested": "Edit access requested",
-  "access.requested": "Meeting access requested",
-  "access.approved": "Meeting access approved",
-  "access.denied": "Meeting access denied",
-  "access.shared": "Meeting access shared",
-  "access.revoked": "Meeting access revoked",
-  "provider.reserved": "Provider submission reserved (not confirmed)",
-  "provider.submitted": "Provider submission accepted",
-  "provider.submission_unknown": "Provider submission uncertain",
-  "provider.completed": "Provider result received",
-  "provider.failed": "Provider processing failed",
-  "provider.poll_unknown": "Provider polling uncertain",
-  "recording.created": "Recording job created",
   "recording.import": "Recording import",
   "recording.retry": "Recording retry",
   "recording.cancel": "Recording cancellation",
@@ -59,9 +38,6 @@ export function resourceLabel(event: AuditEvent) {
 }
 
 export function outcomeDescription(event: AuditEvent) {
-  if (event.event_type === "provider.reserved") return "Reservation saved before the request. Sending and acceptance are not confirmed.";
-  if (event.event_type === "provider.submitted") return "The transcription provider accepted the request. Processing and billing are not confirmed.";
-  if (event.event_type === "provider.completed") return "The provider returned a transcription result. Saving meeting results is recorded separately.";
   if (event.event_type === "email.send") {
     if (event.outcome === "succeeded") return "Microsoft Graph accepted the email request. Delivery is not confirmed.";
     if (event.outcome === "unknown") return "Email submission could not be confirmed. Check delivery before resending.";
@@ -83,7 +59,6 @@ const failureLabels: Record<string, string> = {
   timeout: "The processing service timed out.",
   rate_limited: "The service temporarily limited requests.",
   unavailable: "The processing service was unavailable.",
-  access_unavailable: "Access to the processing service was unavailable.",
   configuration: "Service configuration is incomplete.",
   invalid_output: "The processing output could not be used.",
   connection_unavailable: "A connection to the email service could not be established.",
@@ -124,9 +99,9 @@ export function recoveryDescription(event: AuditEvent) {
 }
 
 export function metadataLabel(key: string) {
-  return ({ prompt_tokens: "Reported input tokens", completion_tokens: "Reported output tokens", total_tokens: "Reported total tokens", source: "Source", previous_state: "Previous status", new_state: "New status",
+  return ({ source: "Source", previous_state: "Previous status", new_state: "New status",
     error_category: "Failure category", reason: "Explanation", retry_scheduled: "Retry scheduled",
-    attempt: "Processing attempt", recipient_count: "Recipient count", subject_actor_id: "Affected user reference", parent_job_id: "Previous job ID" }[key] ?? "Additional detail");
+    attempt: "Processing attempt", recipient_count: "Recipient count", parent_job_id: "Previous job ID" }[key] ?? "Additional detail");
 }
 
 export function metadataValue(key: string, value: string | number | boolean | null) {
@@ -143,22 +118,22 @@ export function metadataValue(key: string, value: string | number | boolean | nu
 }
 
 export function actorLabel(event: AuditEvent) {
-  return event.actor_type === "system" ? ({ recording_queue: "Recording queue", recording_worker: "Recording worker", email_sender: "Email sender" }[event.actor_id] ?? event.actor_id) : event.actor_upn ?? event.actor_id;
+  return event.actor_type === "system" ? ({ recording_worker: "Recording worker", email_sender: "Email sender" }[event.actor_id] ?? event.actor_id) : event.actor_upn ?? event.actor_id;
 }
 
 const tokens: Record<string, readonly string[]> = {
   source: ["manual", "manual_retry", "manual_reprocess", "webhook", "calendar_processing", "reconcile"],
   previous_state: ["pending", "processing", "failed", "cancelled", "completed"],
   new_state: ["pending", "processing", "failed", "cancelled", "completed"],
-  error_category: ["processing_error", "interrupted", "attempts_exhausted", "reprocess_conflict", "timeout", "rate_limited", "unavailable", "access_unavailable", "configuration", "invalid_output", "unknown", "connection_unavailable", "provider_rejected", "submission_uncertain"],
+  error_category: ["processing_error", "interrupted", "attempts_exhausted", "reprocess_conflict", "timeout", "rate_limited", "unavailable", "configuration", "invalid_output", "unknown", "connection_unavailable", "provider_rejected", "submission_uncertain"],
   reason: ["lease_expired", "existing_result_preserved"],
 };
 
 export function safeMetadata(metadata: AuditEvent["metadata"]) {
   return Object.entries(metadata ?? {}).filter(([key, value]) => {
     if (key === "retry_scheduled") return typeof value === "boolean";
-    if (["attempt", "recipient_count", "prompt_tokens", "completion_tokens", "total_tokens"].includes(key)) return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 2147483647;
-    if (key === "parent_job_id" || key === "subject_actor_id") return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+    if (key === "attempt" || key === "recipient_count") return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 2147483647;
+    if (key === "parent_job_id") return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
     return typeof value === "string" && Array.isArray(tokens[key]) && tokens[key].includes(value);
   });
 }

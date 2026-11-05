@@ -7,7 +7,6 @@ import { cancelRecordingJob, getRecordingJobs, reprocessRecordingJob, retryRecor
 import type { ProcessingFailure, RecordingJobOut, RecordingProcessingStatus } from "@/lib/types";
 import StateBadge from "./state-badge";
 import LoadingSpinner from "./loading-spinner";
-import { cn } from "@/lib/utils";
 
 function lifecycleStatus(status: RecordingProcessingStatus): RecordingProcessingStatus {
   return status === "downloading" || status === "extracting" || status === "cancel_requested"
@@ -36,21 +35,7 @@ export function processingFailureMessage(failure?: ProcessingFailure | null): st
   return `${processingFailureTitle(failure)}. Category: ${category}.`;
 }
 
-export function recordingJobTitle(job: RecordingJobOut): string {
-  if (job.processing_status === "queued") {
-    return job.recording_identity_verified && job.recording_filename?.trim()
-      ? job.recording_filename.trim() : "Recording identity unverified";
-  }
-  return job.title?.trim() || "Recording identity unverified";
-}
-
 export function recordingStatusMessage(job: RecordingJobOut): string {
-  if (["submitting", "submission_unknown", "poll_unknown", "submitted", "queued", "processing", "completed"].includes(job.provider_status ?? "") && job.status === "failed") {
-    return "Provider submission needs manual verification. Automatic resubmission is blocked; contact an administrator.";
-  }
-  if (job.processing_status === "queued" && job.auto_processing_admitted === false) {
-    return "This existing task is not authorized for automatic processing. It will remain queued for manual review.";
-  }
   switch (job.processing_status) {
     case "completed":
       if (job.review_status === "sent") return "Processing is complete. Meeting notes have been approved. Email submission accepted. Delivery confirmation is not available.";
@@ -71,7 +56,7 @@ export function recordingStatusMessage(job: RecordingJobOut): string {
   }
 }
 
-export function JobControls({ job, token, onChanged, showReprocess = false, buttonClassName }: { job: RecordingJobOut; token: string; onChanged: () => void | Promise<void>; showReprocess?: boolean; buttonClassName?: string }) {
+export function JobControls({ job, token, onChanged, showReprocess = false }: { job: RecordingJobOut; token: string; onChanged: () => void | Promise<void>; showReprocess?: boolean }) {
   const [activeAction, setActiveAction] = useState<"retry" | "cancel" | "reprocess" | null>(null);
   const busy = activeAction !== null;
   const busyRef = useRef(false);
@@ -96,9 +81,9 @@ export function JobControls({ job, token, onChanged, showReprocess = false, butt
     finally { busyRef.current = false; setActiveAction(null); }
   }
   return <div className="flex flex-wrap items-center gap-2 text-xs font-semibold" aria-busy={busy} aria-live="polite">
-    {job.can_retry && <button type="button" disabled={busy} onClick={() => act("retry")} className={cn("inline-flex min-h-8 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-blue-800 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50", buttonClassName)}>{activeAction === "retry" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />} {activeAction === "retry" ? "Queuing retry…" : "Retry"}</button>}
-    {job.can_cancel && <button type="button" disabled={busy} onClick={() => act("cancel")} className={cn("inline-flex min-h-8 items-center gap-1 rounded-md border border-red-200 px-2.5 py-1.5 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50", buttonClassName)}>{activeAction === "cancel" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />} {activeAction === "cancel" ? "Requesting cancellation…" : "Cancel"}</button>}
-    {showReprocess && job.can_reprocess && <button type="button" disabled={busy} onClick={() => act("reprocess")} className={cn("inline-flex min-h-8 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-blue-800 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50", buttonClassName)}>{activeAction === "reprocess" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />} {activeAction === "reprocess" ? "Queuing reprocess…" : "Reprocess"}</button>}
+    {job.can_retry && <button type="button" disabled={busy} onClick={() => act("retry")} className="inline-flex min-h-8 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-blue-800 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50">{activeAction === "retry" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />} {activeAction === "retry" ? "Queuing retry…" : "Retry"}</button>}
+    {job.can_cancel && <button type="button" disabled={busy} onClick={() => act("cancel")} className="inline-flex min-h-8 items-center gap-1 rounded-md border border-red-200 px-2.5 py-1.5 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">{activeAction === "cancel" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />} {activeAction === "cancel" ? "Requesting cancellation…" : "Cancel"}</button>}
+    {showReprocess && job.can_reprocess && <button type="button" disabled={busy} onClick={() => act("reprocess")} className="inline-flex min-h-8 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-blue-800 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50">{activeAction === "reprocess" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />} {activeAction === "reprocess" ? "Queuing reprocess…" : "Reprocess"}</button>}
   </div>;
 }
 
@@ -185,7 +170,7 @@ export default function RecordingJobs({ token, meetingId, refreshKey, onChanged,
       <p className="mt-1 text-xs">{meetingId ? "Check meeting details for saved results." : "Recordings appear here once they are queued for processing."}</p>
     </div>}
     {jobs.map(job => <div key={job.job_id} className={`min-w-0 rounded-md border p-2.5 text-sm ${job.status === "failed" ? "border-red-200 bg-red-50/30" : job.status === "completed" ? "border-green-200 bg-green-50/30" : "border-[#dde1e8]"}`}>
-      {!meetingId && (job.meeting_id ? <Link className="mb-3 block font-semibold text-[#003366] underline" href={`/meetings/${job.meeting_id}`}>{recordingJobTitle(job)}</Link> : <p className="mb-3 font-semibold text-[#003366]">{recordingJobTitle(job)}</p>)}
+      {!meetingId && (job.meeting_id ? <Link className="mb-3 block font-semibold text-[#003366] underline" href={`/meetings/${job.meeting_id}`}>{job.title}</Link> : <p className="mb-3 font-semibold text-[#003366]">{job.title}</p>)}
       <div className="grid gap-2">
         <div>
           <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[#6b7280]">Current recording status</p>

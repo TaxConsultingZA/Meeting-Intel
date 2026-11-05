@@ -1,11 +1,18 @@
 "use client";
-import { formatDateTime, parseInstant } from "@/lib/time";
+import { useSyncExternalStore } from "react";
+import { formatDateTime, resolveTimeZone } from "@/lib/time";
+
+const subscribe = () => () => {};
+const snapshot = () => resolveTimeZone(null, Intl.DateTimeFormat().resolvedOptions().timeZone);
+const serverSnapshot = () => null;
 
 export function useUserTimeZone() {
-  return "Africa/Johannesburg";
+  // No reliable mailbox/profile zone is currently persisted. Browser IANA zone
+  // is the user's local zone; don't use the Vercel server's zone during SSR.
+  return useSyncExternalStore(subscribe, snapshot, serverSnapshot);
 }
 
-export default function LocalDateTime({ value, unavailable = "—" }: { value?: string | null; unavailable?: string }) {
+export default function LocalDateTime({ value }: { value?: string | null }) {
   const zone = useUserTimeZone();
-  return <span>{parseInstant(value) ? `${formatDateTime(value, zone)} SAST` : unavailable}</span>;
+  return <span>{zone ? formatDateTime(value, zone) : "—"}</span>;
 }

@@ -665,6 +665,7 @@ async def historical_meetings(db: AsyncSession = Depends(get_db), upn: str = Dep
         )
         .options(load_only(
             Meeting.id,
+            Meeting.drive_item_id,
             Meeting.recorded_at,
             Meeting.extracted_json,
             Meeting.title,
@@ -672,7 +673,15 @@ async def historical_meetings(db: AsyncSession = Depends(get_db), upn: str = Dep
             Meeting.organizer_upn,
         ), selectinload(Meeting.participants))
     )).unique().all()
-    return [_to_historical_out(m, upn) for m in rows]
+    outputs = [_to_historical_out(m, upn) for m in rows]
+    ledgers = {item.drive_item_id: item for item in await db.scalars(
+        select(ProcessedItem).where(ProcessedItem.drive_item_id.in_([m.drive_item_id for m in rows])))} if rows else {}
+    from ..schemas import MeetingCardDate
+    for meeting, output in zip(rows, outputs):
+        ledger = ledgers.get(meeting.drive_item_id)
+        if ledger is not None:
+            output.card_date = MeetingCardDate(**card_date(meeting.recorded_at, meeting.extracted_json, ledger.identity_json))
+    return outputs
 
 
 @router.get("/reviews/{meeting_id}", response_model=MeetingOut)

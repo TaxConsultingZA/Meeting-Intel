@@ -5,6 +5,7 @@ import LoadingSpinner from "./loading-spinner";
 import { useCallback, useEffect, useRef, useState } from "react";
 import LocalDateTime from "./local-date-time";
 import { getRecentMeetings, getProcessingRequests, requestRecordingProcessing, decideRecordingProcessing, processRecentMeeting } from "@/lib/api";
+import { parseInstant } from "@/lib/time";
 import type { MeetingOut, RecentMeeting, RecordingProcessingRequest } from "@/lib/types";
 
 const RECENT_MEETINGS_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -50,6 +51,26 @@ function writeCache(identity: string, events: RecentMeeting[]) {
 type TimeFilter = "7" | "30" | "all";
 type RecordingFilter = "with" | "without" | "all";
 type OrganizerFilter = "all" | "me" | "others";
+type MonthChoice = { month: string; year: string };
+const johannesburg = "Africa/Johannesburg";
+const monthNames = Array.from({ length: 12 }, (_, month) =>
+  new Intl.DateTimeFormat("en-ZA", { month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(2024, month, 1))));
+const monthDayLabel = new Intl.DateTimeFormat("en-ZA", { dateStyle: "long", timeZone: johannesburg });
+
+function currentMonth(): MonthChoice {
+  const parts = new Intl.DateTimeFormat("en", { month: "numeric", year: "numeric", timeZone: johannesburg }).formatToParts();
+  return { month: parts.find(part => part.type === "month")!.value, year: parts.find(part => part.type === "year")!.value };
+}
+
+function monthRange({ year, month }: MonthChoice) {
+  // Johannesburg has used UTC+02:00 year-round since 1944.
+  if (!/^\d{4}$/.test(year) || Number(year) < 1945 || Number(year) > 9998) return null;
+  const midnight = (monthIndex: number) => new Date(Date.UTC(Number(year), monthIndex, 1, -2));
+  return {
+    start_from: midnight(Number(month) - 1).toISOString(),
+    start_before: midnight(Number(month)).toISOString(),
+  };
+}
 
 function normalized(value: string | null | undefined) {
   return (value ?? "").trim().toLowerCase();
@@ -78,6 +99,14 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [timeFilter, setTimeFilter] = useState<TimeFilter>("7");
+  const [monthOpen, setMonthOpen] = useState(false);
+  const [monthChoice, setMonthChoice] = useState(currentMonth);
+  const [appliedMonth, setAppliedMonth] = useState<{
+    choice: MonthChoice;
+    range: NonNullable<ReturnType<typeof monthRange>>;
+    events: RecentMeeting[];
+  } | null>(null);
+  const [monthError, setMonthError] = useState("");
   const [recordingFilter, setRecordingFilter] = useState<RecordingFilter>("with");
   const [organizerFilter, setOrganizerFilter] = useState<OrganizerFilter>("all");
   const [search, setSearch] = useState("");
@@ -129,13 +158,25 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
 
   const displayedRequests = processingRequests ?? requests;
 
-  async function refresh() {
+  async function refresh(month = appliedMonth?.choice) {
+    const range = month && monthRange(month);
+    if (month && !range) {
+      setMonthError("Enter a four-digit year from 1945 to 9998.");
+      return;
+    }
     setRefreshing(true);
     setError("");
+    setMonthError("");
     try {
-      await load();
-      await onRefreshProcessingRequests?.();
+      if (month && range) {
+        const rows = isSubscribed ? await getRecentMeetings(token, true, range) : [];
+        setAppliedMonth({ choice: month, range, events: rows });
+      } else {
+        await load();
+        await onRefreshProcessingRequests?.();
+      }
     }
+    catch { setError("Meetings could not be refreshed. Please try again."); }
     finally { setRefreshing(false); }
   }
 
@@ -149,28 +190,37 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
 
   // These records already passed /reviews/all access checks. Calendar cache is
   // only a discovery source and must not determine their visibility.
-  const accessible = [...new Map(accessibleMeetings.map((meeting) => [meeting.id, meeting])).values()];
+  const savedDate = (meeting: MeetingOut) =>
+    appliedMonth && meeting.card_date ? meeting.card_date.value : historicalDate(meeting);
+  const monthStart = appliedMonth ? new Date(appliedMonth.range.start_from) : null;
+  const monthEnd = appliedMonth ? new Date(appliedMonth.range.start_before) : null;
+  const inMonth = (value: string | null) => {
+    if (!monthStart || !monthEnd) return true;
+    const instant = parseInstant(value);
+    return instant !== null && instant >= monthStart && instant < monthEnd;
+  };
+  const accessible = [...new Map(accessibleMeetings.filter(meeting => inMonth(savedDate(meeting))).map((meeting) => [meeting.id, meeting])).values()];
   const accessibleIds = new Set(accessible.map((meeting) => meeting.id));
   const meetingIds = new Set(accessibleIds);
   const eventIds = new Set<string>();
-  const recentOnly = events.filter((event) => {
-    if (eventIds.has(event.event_id) || (event.meeting_id && meetingIds.has(event.meeting_id))) return false;
+  const recentOnly = (appliedMonth?.events ?? events).filter((event) => {
+    if (!inMonth(event.start) || eventIds.has(event.event_id) || (event.meeting_id && meetingIds.has(event.meeting_id))) return false;
     eventIds.add(event.event_id);
     if (event.meeting_id) meetingIds.add(event.meeting_id);
     return true;
   });
   const historicalOnly = historical.filter((meeting) => {
-    if (meetingIds.has(meeting.id)) return false;
+    if (!inMonth(savedDate(meeting)) || meetingIds.has(meeting.id)) return false;
     meetingIds.add(meeting.id);
     return true;
   });
   const rows = [
-    ...accessible.map((meeting) => ({ kind: "accessible" as const, id: meeting.id, date: historicalDate(meeting), organizer: meeting.organizer_upn, hasRecording: true, meeting })),
+    ...accessible.map((meeting) => ({ kind: "accessible" as const, id: meeting.id, date: savedDate(meeting), organizer: meeting.organizer_upn, hasRecording: true, meeting })),
     ...recentOnly.map((event) => ({ kind: "recent" as const, id: event.event_id, date: event.start, organizer: event.organizer_email, hasRecording: event.action !== "no_recording", event })),
-    ...historicalOnly.map((meeting) => ({ kind: "historical" as const, id: meeting.id, date: historicalDate(meeting), organizer: meeting.organizer_upn, hasRecording: true, meeting })),
+    ...historicalOnly.map((meeting) => ({ kind: "historical" as const, id: meeting.id, date: savedDate(meeting), organizer: meeting.organizer_upn, hasRecording: true, meeting })),
   ].filter((row) => {
-    const timestamp = row.date ? Date.parse(row.date) : NaN;
-    const cutoffDays = timeFilter === "7" ? 7 : timeFilter === "30" ? 30 : null;
+    const timestamp = parseInstant(row.date)?.getTime() ?? NaN;
+    const cutoffDays = appliedMonth ? null : timeFilter === "7" ? 7 : timeFilter === "30" ? 30 : null;
     // Preserve the existing wall-clock cutoff whenever the list renders.
     // eslint-disable-next-line react-hooks/purity
     if (cutoffDays !== null && (Number.isNaN(timestamp) || timestamp < Date.now() - cutoffDays * 24 * 60 * 60 * 1000)) return false;
@@ -211,8 +261,19 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
           </div>
         </div>
         <label className="flex min-w-0 flex-col gap-1 text-sm font-medium text-[#374151]">Time
-          <select aria-label="Time" className="w-full rounded-md border border-[#dde1e8] bg-white px-2 py-2" value={timeFilter} onChange={(e) => setTimeFilter(e.target.value as TimeFilter)}>
+          <select aria-label="Time" className="w-full rounded-md border border-[#dde1e8] bg-white px-2 py-2" value={monthOpen ? "month" : timeFilter} disabled={refreshing} onChange={(e) => {
+            setMonthError("");
+            if (e.target.value === "month") {
+              setMonthOpen(true);
+            } else {
+              setMonthOpen(false);
+              setMonthChoice(currentMonth());
+              setAppliedMonth(null);
+              setTimeFilter(e.target.value as TimeFilter);
+            }
+          }}>
             <option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="all">All available history</option>
+            <option value="month">Choose month</option>
           </select>
         </label>
         <label className="flex min-w-0 flex-col gap-1 text-sm font-medium text-[#374151]">Recording
@@ -225,11 +286,34 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
             <option value="all">All</option><option value="me">Organized by me</option><option value="others">Organized by others</option>
           </select>
         </label>
-        <button type="button" className={`${buttonClass} min-h-10`} disabled={busy || loading || refreshing} onClick={() => void refresh()}>
+        {!monthOpen && <button type="button" className={`${buttonClass} min-h-10`} disabled={busy || loading || refreshing} onClick={() => void refresh()}>
           {refreshing ? "Refreshing…" : "Refresh"}
-        </button>
+        </button>}
+        {monthOpen && <fieldset disabled={refreshing} className="col-span-full flex flex-wrap items-end gap-3 text-sm">
+          <label className="flex flex-col gap-1">Month
+            <select className="rounded-md border border-[#dde1e8] bg-white px-2 py-2" value={monthChoice.month}
+              onChange={e => setMonthChoice({ ...monthChoice, month: e.target.value })}>
+              {monthNames.map((name, index) => <option key={name} value={index + 1}>{name}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">Year
+            <input className="w-28 rounded-md border border-[#dde1e8] bg-white px-2 py-2" inputMode="numeric" maxLength={4}
+              value={monthChoice.year} aria-invalid={Boolean(monthError)} onChange={e => {
+                setMonthError("");
+                setMonthChoice({ ...monthChoice, year: e.target.value });
+              }} />
+          </label>
+          <button type="button" className={`${buttonClass} min-h-10`} disabled={busy || loading} onClick={() => void refresh(monthChoice)}>
+            {refreshing ? "Refreshing…" : "Apply month"}
+          </button>
+          {monthError && <p role="alert">{monthError}</p>}
+        </fieldset>}
       </div>
-      {!loading && !error && isSubscribed && rows.length === 0 && <p>{search.trim() ? "No meetings match this search and the selected filters." : "No meetings match these filters."}</p>}
+      {monthOpen && <p role="status" className="mb-4 text-sm">
+        {appliedMonth ? `Applied dates: ${monthDayLabel.format(new Date(appliedMonth.range.start_from))} – ${monthDayLabel.format(new Date(Date.parse(appliedMonth.range.start_before) - 1))} · Johannesburg time` :
+          `Applied time: ${timeFilter === "7" ? "Last 7 days" : timeFilter === "30" ? "Last 30 days" : "All available history"}`}
+      </p>}
+      {!loading && !error && (isSubscribed || appliedMonth) && rows.length === 0 && <p>{search.trim() ? "No meetings match this search and the selected filters." : "No meetings match these filters."}</p>}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {rows.map((row) => row.kind === "recent" ? (() => { const event = row.event; return (
           <article key={`recent:${event.event_id}`} className="rounded-lg border border-[#dde1e8] bg-white p-4">
@@ -251,7 +335,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
         ); })() : (() => { const meeting = row.meeting; return (
           <article key={`historical:${meeting.id}`} className="rounded-lg border border-[#dde1e8] bg-white p-4">
             <h3 className="font-semibold text-[#003366]">{meeting.title ?? "Untitled Meeting"}</h3>
-            <p className="my-2 text-sm text-[#6b7280]"><LocalDateTime value={historicalDate(meeting)} /></p>
+            <p className="my-2 text-sm text-[#6b7280]"><LocalDateTime value={row.date} /></p>
             <p className="mb-3 text-xs text-[#6b7280]">Organised by {meeting.organizer_upn || "Unknown"}</p>
             <p className="mb-3 text-xs font-semibold text-[#6b7280]">Recording Available</p>
             {row.kind === "accessible" ? (

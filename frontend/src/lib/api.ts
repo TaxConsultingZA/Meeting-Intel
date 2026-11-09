@@ -63,8 +63,9 @@ function safeErrorMessage(status: number, body: string): string {
   return "The request could not be completed. Please try again.";
 }
 
-export function getRecordingJobs(token: string, meetingId?: string, limit?: number): Promise<RecordingJobOut[]> {
+export function getRecordingJobs(token: string, meetingId?: string, limit?: number, offset?: number): Promise<RecordingJobOut[]> {
   const params = new URLSearchParams();
+  if (offset !== undefined) params.set("offset", String(offset));
   if (meetingId) params.set("meeting_id", meetingId);
   if (limit !== undefined) params.set("limit", String(limit));
   const query = params.toString();
@@ -265,8 +266,13 @@ export async function getUpcomingMeetings(upn: string): Promise<CalendarEvent[]>
   return apiFetch<CalendarEvent[]>("/calendar/upcoming", upn);
 }
 
-export function getRecentMeetings(token: string, allAvailable = false): Promise<RecentMeeting[]> {
-  return apiFetch(`/calendar/recent${allAvailable ? "?all_available=true" : ""}`, token);
+export function getRecentMeetings(token: string, allAvailable = false, range?: { start_from: string; start_before: string }): Promise<RecentMeeting[]> {
+  const params = new URLSearchParams(allAvailable ? { all_available: "true" } : {});
+  if (range) {
+    params.set("start_from", range.start_from);
+    params.set("start_before", range.start_before);
+  }
+  return apiFetch(`/calendar/recent${params.size ? `?${params}` : ""}`, token);
 }
 
 export function getProcessingRequests(token: string, status: "pending" | "approved" | "denied" | null = "pending"): Promise<RecordingProcessingRequest[]> {
@@ -548,8 +554,8 @@ export async function requestHistoricalAccess(
   });
 }
 
-export async function getAdminMeetings(token: string): Promise<AdminMeetingOut[]> {
-  return apiFetch<AdminMeetingOut[]>("/admin/meetings", token);
+export async function getAdminMeetings(token: string, offset?: number): Promise<AdminMeetingOut[]> {
+  return apiFetch<AdminMeetingOut[]>(offset === undefined ? "/admin/meetings" : `/admin/meetings?offset=${offset}&limit=200`, token);
 }
 
 export async function getAdminAccessRequests(token: string): Promise<AdminAccessRequest[]> {

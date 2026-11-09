@@ -104,7 +104,7 @@ async def test_admin_reprocesses_for_owner_through_existing_safe_workflow(monkey
 
 async def test_admin_meeting_inventory_contains_only_operational_metadata():
     meeting = SimpleNamespace(id=uuid4(), drive_item_id="item", title="Private meeting",
-                              recorded_at=None, organizer_upn="owner@example.test",
+                              recorded_at=None, extracted_json=None, organizer_upn="owner@example.test",
                               state=ProcessingState.awaiting_review, created_at=datetime.now(timezone.utc),
                               transcript="must not leak", summary="must not leak", participants=[
                                   SimpleNamespace(user_upn="owner@example.test", is_organizer=True,

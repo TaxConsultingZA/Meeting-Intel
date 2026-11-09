@@ -52,6 +52,50 @@ it("defaults to the last 7 days with recordings", () => {
   expect(screen.getByRole("combobox", { name: "Recording" })).toHaveValue("with");
 });
 
+it("applies only submitted Johannesburg months and restores the seven-day catalog", async () => {
+  const lastWeek = { ...event("view"), subject: "Default week" };
+  const february = { ...event("view"), subject: "February calendar", start: "2024-02-29T21:59:59Z" };
+  const laterPage = historicalMeeting("saved-205", "February saved record", "2024-01-31T22:00:00");
+  const undated = { ...historicalMeeting("undated", "Undated record"), recorded_at: null, created_at: february.start };
+  vi.mocked(api.getRecentMeetings).mockResolvedValueOnce([lastWeek]).mockResolvedValueOnce([february]).mockResolvedValueOnce([]);
+  render(<RecentMeetings token="token" isSubscribed accessibleMeetings={[
+    ...Array.from({ length: 205 }, (_, i) => historicalMeeting(`december-${i}`, `December ${i}`, "2024-12-31T21:59:59Z")),
+    laterPage, undated,
+    historicalMeeting("march", "March boundary", "2024-02-29T22:00:00Z"),
+  ]} />);
+  await screen.findByText("Default week");
+  expect(api.getRecentMeetings).toHaveBeenCalledWith("token", true);
+  const time = screen.getByRole("combobox", { name: "Time" });
+  fireEvent.change(time, { target: { value: "month" } });
+  fireEvent.change(screen.getByLabelText("Year"), { target: { value: "2024" } });
+  fireEvent.change(screen.getByLabelText("Month"), { target: { value: "2" } });
+  expect(screen.getByText("Default week")).toBeVisible();
+  expect(api.getRecentMeetings).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "Apply month" }));
+  await screen.findByText("February calendar");
+  expect(api.getRecentMeetings).toHaveBeenLastCalledWith("token", true, {
+    start_from: "2024-01-31T22:00:00.000Z", start_before: "2024-02-29T22:00:00.000Z",
+  });
+  expect(screen.getByText(/1 February 2024 – 29 February 2024/)).toBeVisible();
+  expect(screen.getByText("February saved record")).toBeVisible();
+  expect(screen.queryByText("Undated record")).toBeNull();
+  expect(screen.queryByText("March boundary")).toBeNull();
+
+  fireEvent.change(screen.getByLabelText("Month"), { target: { value: "12" } });
+  expect(screen.getByText("February calendar")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Apply month" }));
+  await screen.findByText("December 204");
+  expect(api.getRecentMeetings).toHaveBeenLastCalledWith("token", true, {
+    start_from: "2024-11-30T22:00:00.000Z", start_before: "2024-12-31T22:00:00.000Z",
+  });
+  fireEvent.change(time, { target: { value: "7" } });
+  expect(screen.getByText("Default week")).toBeVisible();
+  expect(screen.queryByText("December 204")).toBeNull();
+  expect(screen.queryByText(/Applied dates/)).toBeNull();
+  fireEvent.change(time, { target: { value: "all" } });
+  expect(screen.getByText("Undated record")).toBeVisible();
+});
+
 it("searches loaded meeting titles, summaries, and participant names case-insensitively", async () => {
   vi.mocked(api.getRecentMeetings).mockResolvedValue([
     { ...event("view"), event_id: "recent-title", subject: "Quarterly Budget" },

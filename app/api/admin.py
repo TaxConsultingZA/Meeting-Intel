@@ -5,7 +5,7 @@ The first admin is bootstrapped via the ``ADMIN_UPNS`` env var at application st
 """
 from datetime import datetime, timezone
 from uuid import UUID
-from typing import Literal
+from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import AwareDatetime
 from sqlalchemy import func, or_, select, update
@@ -18,6 +18,7 @@ from ..email_templates import build_welcome_email
 from ..graph import client as graph
 from ..models import BusinessUnit, Meeting, MeetingParticipant, ProcessedItem, ProcessingState, RecordingJob, RecordingProcessingRequest, RegisteredUser
 from ..schemas import AdminRevokeAccessIn, BusinessUnitOut, RegisteredUserOut, RegisterUserIn, SyncStateOut, UpdateUserIn
+from ..services.meeting_dates import card_date
 from ..services.sync_state import list_sync_status
 from ..services.job_control import RETRYABLE_JOB_STATES
 from ..services.access import NO_VIEW_ACCESS_TYPES
@@ -175,11 +176,12 @@ async def cleanup_job(
 @router.get("/meetings")
 async def list_operational_meetings(
     db: AsyncSession = Depends(get_db), _upn: str = Depends(_require_admin),
+    offset: Annotated[int, Query(ge=0)] = 0, limit: Annotated[int, Query(ge=1, le=200)] = 200,
 ):
     """Return cross-user operational metadata without transcript or note content."""
     meetings = (await db.scalars(
         select(Meeting).options(selectinload(Meeting.participants))
-        .order_by(Meeting.created_at.desc()).limit(200)
+        .order_by(Meeting.created_at.desc(), Meeting.id.desc()).offset(offset).limit(limit)
     )).all()
     if not meetings:
         return []
@@ -210,6 +212,7 @@ async def list_operational_meetings(
         "id": str(meeting.id),
         "title": meeting.title,
         "recorded_at": meeting.recorded_at,
+        "card_date": card_date(meeting.recorded_at, meeting.extracted_json),
         "organizer_upn": meeting.organizer_upn,
         "owner_upn": latest_job[meeting.drive_item_id].owner_upn if meeting.drive_item_id in latest_job else meeting.organizer_upn,
         "meeting_status": meeting.state.value,

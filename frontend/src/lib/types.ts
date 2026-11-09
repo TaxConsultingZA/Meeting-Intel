@@ -333,6 +333,7 @@ export interface RecordingJobOut {
 }
 
 export interface AdminMeetingOut {
+  card_date?: { value: string | null; source: "meeting" | "recording" | "unavailable"; reason: string | null; event_id?: string | null };
   id: string;
   title: string | null;
   recorded_at: string | null;

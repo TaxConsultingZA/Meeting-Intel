@@ -1,6 +1,7 @@
 """Read/control the existing recording queue. No cross-user processing grants."""
 from datetime import datetime, timezone, timedelta
 from uuid import UUID, uuid4
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, or_, exists, func
@@ -91,6 +92,7 @@ async def list_jobs(
     limit: int = Query(default=50, ge=1, le=200),
     db=Depends(get_db),
     user: RegisteredUser = Depends(registered_user),
+    offset: Annotated[int, Query(ge=0)] = 0,
 ):
     upn = user.upn
     participant = exists(select(MeetingParticipant.id).where(
@@ -121,7 +123,7 @@ async def list_jobs(
         ))
     if meeting_id:
         query = query.where(Meeting.id == meeting_id)
-    rows = (await db.execute(query.order_by(RecordingJob.created_at.desc()).limit(limit))).all()
+    rows = (await db.execute(query.order_by(RecordingJob.created_at.desc(), RecordingJob.id.desc()).offset(offset).limit(limit))).all()
     # Load large review fields once per meeting, only for controls which need
     # the existing clean-draft check. Ordinary status rows never fetch them.
     organizer_ids = {

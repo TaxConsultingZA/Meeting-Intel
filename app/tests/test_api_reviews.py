@@ -93,7 +93,7 @@ class TestAllMeetingsEndpoint:
         assert "lower(meeting_participants.user_upn)" in sql
         assert "meetings.transcript" not in sql
         assert "meetings.summary" not in sql
-        assert "meetings.extracted_json" not in sql
+        assert "meetings.extracted_json" in sql  # Saved date provenance is needed for the card.
         assert "meetings.drive_item_id" in sql  # Needed for the batched recording display lookup.
         assert "meetings.email_delivery_error" not in sql
         assert "meeting_participants.access_type" in sql
@@ -144,6 +144,7 @@ class TestAllMeetingsEndpoint:
         meeting = SimpleNamespace(
             id="11111111-1111-4111-8111-111111111111", recorded_at=None, title="Review", error=None,
             state=ProcessingState.awaiting_review,
+            extracted_json=None,
             organizer_upn="owner@taxconsulting.co.za",
             attendees_raw=["alice@taxconsulting.co.za"],
             participants=[caller],
@@ -154,6 +155,7 @@ class TestAllMeetingsEndpoint:
         assert out.can_edit is True
         assert out.transcript is None
         assert out.extracted_json is None
+        assert out.card_date.source == "unavailable"
         assert out.action_items == []
         assert set(out.model_dump()) == set(type(out).model_fields)
 
@@ -185,7 +187,7 @@ class TestHistoricalMeetingsEndpoint:
         assert "NOT (EXISTS" in sql
         assert "meetings.transcript" not in sql
         assert "meetings.summary" not in sql
-        assert "meetings.extracted_json" not in sql
+        assert "meetings.extracted_json" in sql  # Saved date provenance is needed for the card.
         assert "meetings.attendees_raw" not in sql.split("FROM meetings", 1)[0]
         assert len(statement._with_options) == 2
 
@@ -197,6 +199,7 @@ class TestHistoricalMeetingsEndpoint:
             id="11111111-1111-4111-8111-111111111111",
             recorded_at=None,
             title="Historical review",
+            extracted_json=None,
             state=ProcessingState.sent,
             organizer_upn="owner@taxconsulting.co.za",
         )
@@ -207,6 +210,7 @@ class TestHistoricalMeetingsEndpoint:
         assert out.title == "Historical review"
         assert out.transcript is None
         assert out.extracted_json is None
+        assert out.card_date.source == "unavailable"
         assert out.calendar_participants == []
         assert out.action_items == []
         assert set(out.model_dump()) == set(type(out).model_fields)

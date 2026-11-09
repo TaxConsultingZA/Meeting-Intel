@@ -1,5 +1,6 @@
 "use client";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import "./admin-workspace.css";
+import { type ReactNode, Fragment, useCallback, useEffect, useRef, useState } from "react";
 import LoadingSpinner from "@/components/loading-spinner";
 import Link from "next/link";
 import { UserPlus, Trash2, Shield, Pencil, ChevronDown, Loader2, History, ArrowRight } from "lucide-react";
@@ -11,13 +12,14 @@ import { recordingStatusMessage } from "@/components/recording-jobs";
 import StateBadge from "@/components/state-badge";
 
 interface Props {
+  recordSearch?: ReactNode;
   initialRequests: AdminAccessRequest[];
   callerUpn: string;
   accessToken: string;
   deferInitialRequests?: boolean;
 }
 
-export default function AdminClient({ initialRequests, callerUpn, accessToken, deferInitialRequests = false }: Props) {
+export default function AdminClient({ initialRequests, callerUpn, accessToken, deferInitialRequests = false, recordSearch }: Props) {
   const [users, setUsers] = useState<RegisteredUser[]>([]);
   const [businessUnits, setBusinessUnits] = useState<BusinessUnit[]>([]);
   const [showAdd, setShowAdd] = useState(false);
@@ -264,6 +266,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
         </div>
       </div>
 
+      {recordSearch}
       <details onToggle={(event) => event.currentTarget.open && void loadSection("meetings")} className="group mb-3 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
         <SectionHeader id="admin-meetings" label="Meetings" count={loaded.meetings ? meetings.length : undefined} />
         <div className="px-4 pb-3"><p className="text-xs text-[#6b7280]">Operational metadata and Admin meeting-content access across users.</p></div>

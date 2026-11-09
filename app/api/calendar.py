@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -113,9 +113,14 @@ async def calendar_sync_status(request: Request,
 
 @router.get("/calendar/recent")
 async def recent_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends(require_subscribed),
-                          all_available: bool = False):
+                          all_available: bool = False, start_from: AwareDatetime | None = None,
+                          start_before: AwareDatetime | None = None):
     """Read cached events only; the catalog opts out of the recent-time window."""
     from ..services import cross_user_recordings as service
+    if (start_from is None) != (start_before is None) or (
+        start_from is not None and start_before is not None and start_from >= start_before
+    ):
+        raise HTTPException(422, "Provide both meeting start bounds in ascending order.")
     now = datetime.now(timezone.utc)
     query = select(SyncedCalendarEvent.raw).where(SyncedCalendarEvent.user_upn == upn)
     if not all_available:
@@ -127,6 +132,10 @@ async def recent_meetings(db: AsyncSession = Depends(get_db), upn: str = Depends
     user = await service.user_by_upn(db, upn)
     recent = [e for e in events if upn.lower() in service.people(e)
               and (all_available or service.recent_event(e, now))]
+    if start_from is not None and start_before is not None:
+        recent = [event for event in recent if
+                  (start := parse_graph_datetime(event.get("start"))) is not None
+                  and start_from <= start < start_before]
     result = []
     states = (await service.recent_states(db, user, recent, all_available=True) if all_available
               else await service.recent_states(db, user, recent))

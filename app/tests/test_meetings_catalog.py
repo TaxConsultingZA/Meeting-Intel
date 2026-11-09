@@ -89,6 +89,25 @@ async def test_all_cache_dates_kinds_and_no_recording_without_discovery(catalog,
     assert not ctx.session.dirty and not ctx.session.new and not ctx.session.deleted
 
 
+async def test_catalog_start_bounds_include_the_full_leap_month(catalog):
+    ctx = catalog
+    start = datetime(2024, 1, 31, 22, tzinfo=UTC)
+    end = datetime(2024, 2, 29, 22, tzinfo=UTC)
+    for label, instant in (("too-early", start - timedelta(microseconds=1)),
+                           ("inclusive-start", start), ("exclusive-end", end), ("missing-start", None)):
+        event(ctx, label, -50, start={"dateTime": instant.isoformat()} if instant else None)
+    expected = {"inclusive-start"}
+    for index in range(205):
+        label = f"leap-month-{index}"
+        expected.add(label)
+        event(ctx, label, -50, start={"dateTime": (end - timedelta(seconds=index + 1)).isoformat()})
+    ctx.session.commit()
+
+    rows = await calendar.recent_meetings(db=ctx.db, upn=ctx.user.upn, all_available=True,
+                                          start_from=start, start_before=end)
+    assert {row["event_id"] for row in rows} == expected
+
+
 @pytest.mark.parametrize("state", list(ProcessingState))
 async def test_all_meeting_states_bind_by_identity_and_keep_access_rules(catalog, state):
     ctx = catalog

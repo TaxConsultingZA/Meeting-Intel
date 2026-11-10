@@ -15,6 +15,7 @@ import RecordingJobs, { processingFailureMessage, processingFailureTitle } from 
 import LocalDateTime from "@/components/local-date-time";
 import PipelineView from "./pipeline-view";
 import ActionItemReview from "./action-item-review";
+import MeetingDecisions from "./meeting-decisions";
 import {
   ApiError,
   getMeeting,
@@ -80,9 +81,11 @@ interface Props {
   meeting: MeetingOut;
   upn: string;
   accessToken: string;
+  adminView?: boolean;
+  onReviewChanged?: (latest?: MeetingOut) => void;
 }
 
-export default function MeetingDetailClient({ meeting: initial, upn, accessToken }: Props) {
+export default function MeetingDetailClient({ meeting: initial, upn, accessToken, adminView = false, onReviewChanged }: Props) {
   const [meeting, setMeeting] = useState(initial);
   const [recordingStatus, setRecordingStatus] = useState<{ meetingId: string; token: string; job: RecordingJobOut | null } | null>(null);
   const handleLatestJob = useCallback((job: RecordingJobOut | null) => {
@@ -100,10 +103,15 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
     JSON.stringify([...new Set(recipients.map((value) => value.trim().toLowerCase()))].sort()) ===
     JSON.stringify(emailPreview.recipients);
   const [transcriptDraft, setTranscriptDraft] = useState(initial.transcript ?? "");
+  const transcriptRevision = useRef<string | null>(initial.extracted_json?.review_content_revision ?? null);
+  const speakerRevision = useRef<string | null>(initial.extracted_json?.review_content_revision ?? null);
+  const [revisionConflict, setRevisionConflict] = useState(false);
   const [editingTranscript, setEditingTranscript] = useState(false);
   const [savingTranscript, setSavingTranscript] = useState(false);
   const transcriptSaveInFlight = useRef(false);
   const [editingActionItems, setEditingActionItems] = useState<Record<string, boolean>>({});
+  const [decisionsPending, setDecisionsPending] = useState(false);
+  const handleDecisionsPending = useCallback((pending: boolean) => setDecisionsPending(pending), []);
   const [speakerMappings, setSpeakerMappings] = useState<Record<string, string | null>>(initial.speaker_mappings ?? {});
   const [savingSpeakerMappings, setSavingSpeakerMappings] = useState(false);
   const [savingAccess, setSavingAccess] = useState(false);
@@ -123,10 +131,10 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const isApproved = meeting.state === "approved" || meeting.state === "sent";
   const isOrganizer = meeting.is_organizer ?? meeting.organizer_upn?.toLowerCase() === upn.toLowerCase();
   const canApprove = meeting.can_approve ?? isOrganizer;
-  const canEdit = isReviewable && (meeting.can_edit || isOrganizer);
+  const canEdit = (isReviewable && (meeting.can_edit || isOrganizer)) || Boolean(adminView && meeting.can_revise_approval);
   const editAccessStatus = meeting.edit_access_status as string;
   const accessStatusMessage = isApproved
-    ? "Meeting notes are approved. Editing is locked after approval."
+    ? (canEdit ? "An administrator can revise these approved notes. Saving reopens them for approval." : "Meeting notes are approved. Editing is locked after approval.")
     : isOrganizer || editAccessStatus === "organizer"
     ? "You are the meeting organiser and have full edit access."
     : editAccessStatus === "pending"
@@ -142,7 +150,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
   const speakerMappingsChanged = speakerLabels.some(
     (label) => mappingForLabel(speakerMappings, label) !== mappingForLabel(meeting.speaker_mappings, label),
   );
-  const reviewChangesPending = editingTranscript || savingTranscript || speakerMappingsChanged ||
+  const reviewChangesPending = decisionsPending || editingTranscript || savingTranscript || speakerMappingsChanged ||
     savingSpeakerMappings || Object.values(editingActionItems).some(Boolean);
   const reviewControlsBusy = approving || previewingEmail;
   const handleActionEditingChange = useCallback((id: string, editing: boolean) => {
@@ -307,13 +315,15 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
     setSavingTranscript(true);
     const savedTranscript = transcriptDraft;
     try {
-      await editMeetingTranscript(meeting.id, savedTranscript, accessToken);
-      setMeeting((current) => ({ ...current, transcript: savedTranscript }));
+      await editMeetingTranscript(meeting.id, savedTranscript, accessToken, transcriptRevision.current);
+      const latest = await getMeeting(meeting.id, accessToken);
+      setMeeting(latest); onReviewChanged?.(latest);
       setEmailPreview(null);
       setEditingTranscript(false);
       toast.success("Transcript saved.");
     } catch (e) {
-      toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+      if (e instanceof ApiError && e.status === 409) setRevisionConflict(true);
+      toast.error(e instanceof ApiError && e.status === 409 ? "Meeting notes were updated by another user or their state changed. Your draft is kept; refresh and review it before saving again." : `Save failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       transcriptSaveInFlight.current = false;
       setSavingTranscript(false);
@@ -324,12 +334,14 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
     if (savingSpeakerMappings || !speakerMappingsChanged || reviewControlsBusy) return;
     setSavingSpeakerMappings(true);
     try {
-      await saveSpeakerMappings(meeting.id, speakerMappings, accessToken);
-      setMeeting((current) => ({ ...current, speaker_mappings: speakerMappings }));
+      await saveSpeakerMappings(meeting.id, speakerMappings, accessToken, speakerRevision.current);
+      const latest = await getMeeting(meeting.id, accessToken);
+      setMeeting(latest); onReviewChanged?.(latest);
       setEmailPreview(null);
       toast.success("Speaker names saved.");
     } catch (e) {
-      toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+      if (e instanceof ApiError && e.status === 409) setRevisionConflict(true);
+      toast.error(e instanceof ApiError && e.status === 409 ? "Meeting notes were updated by another user or their state changed. Your draft is kept; refresh and review it before saving again." : `Save failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSavingSpeakerMappings(false);
     }
@@ -337,6 +349,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
 
   return (
     <main className="max-w-6xl mx-auto px-6 py-7">
+      {revisionConflict && <div role="alert">Meeting notes were updated by another user or their state changed. Your draft is kept. <button type="button" onClick={async () => { const latest = await getMeeting(meeting.id, accessToken); setMeeting(latest); transcriptRevision.current = latest.extracted_json?.review_content_revision ?? null; speakerRevision.current = transcriptRevision.current; setRevisionConflict(false); }}>Refresh and review</button></div>}
       <Link href="/" className="inline-flex items-center gap-1.5 text-[#6b7280] text-[13px] hover:text-[#003366] mb-4 transition-colors">
         <ChevronLeft size={15} /> Back to Dashboard
       </Link>
@@ -376,17 +389,17 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-5 items-start">
+      <div className={adminView ? "space-y-4" : "grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-5 items-start"}>
         {/* Sidebar */}
         <aside aria-label="Meeting details and recording processing" className="min-w-0 space-y-4 lg:sticky lg:top-[76px]">
         <div className="bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
-          <div className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-4 py-4">
+          <div hidden={adminView} className="bg-[#003366] border-b-[3px] border-[#C9A52C] px-4 py-4">
             <h2 className="text-white text-[14px] font-semibold leading-snug">
               {meeting.title ?? "Untitled Meeting"}
             </h2>
           </div>
           <div className="px-4 py-4 flex flex-col gap-3">
-            <div><span className="text-xs text-gray-500">Date</span><p className="text-sm"><LocalDateTime value={meeting.recorded_at ?? data.meeting_time} /></p></div>
+            {!adminView && <><div><span className="text-xs text-gray-500">Date</span><p className="text-sm"><LocalDateTime value={meeting.recorded_at ?? data.meeting_time} /></p></div>
             <MetaRow label="Platform"   value={data.platform ?? "Microsoft Teams"} />
             <MetaRow label="Organiser"  value={meeting.organizer_upn ?? "—"} />
             <MetaRow
@@ -403,6 +416,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </div>
             <MetaRow label="Action Items" value={`${meeting.action_items.length} extracted`} />
             <div className="h-px bg-[#dde1e8]" />
+            </>}
             {accessStatusMessage && (
               <p className="rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-900" role="status">
                 {accessStatusMessage}
@@ -418,7 +432,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                 {meeting.edit_access_status === "pending" ? "Edit request pending" : "Request edit access"}
               </button>
             )}
-            {isOrganizer && meeting.edit_access_requests.length > 0 && (
+            {!adminView && isOrganizer && meeting.edit_access_requests.length > 0 && (
               <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
                 <p className="mb-2 text-xs font-bold text-[#003366]">Access requests</p>
                 {meeting.edit_access_requests.map((request) => (
@@ -465,14 +479,14 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </button>
           </div>
         </div>
-        <RecordingJobs
+        {!adminView && <RecordingJobs
           refreshKey={meeting.state}
           token={accessToken}
           meetingId={meeting.id}
           onChanged={refreshMeetingStatus}
           onTerminalTransition={refreshMeetingStatus}
           onLatestJob={handleLatestJob}
-        />
+        />}
         </aside>
 
         {/* Main content */}
@@ -538,12 +552,16 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
             </Section>
           )}
 
+          <MeetingDecisions meetingId={meeting.id} meetingTitle={meeting.title} token={accessToken} canEdit={canEdit} disabled={reviewControlsBusy} revision={meeting.extracted_json?.review_content_revision ?? null} onPendingChange={handleDecisionsPending} onSaved={async () => { const latest = await getMeeting(meeting.id, accessToken); setMeeting(latest); setEmailPreview(null); onReviewChanged?.(latest); }} onRefresh={async () => { const latest = await getMeeting(meeting.id, accessToken); setMeeting(latest); return latest.extracted_json?.review_content_revision ?? null; }} />
           {!isTranscriptOnly && (
             <Section
               title="Action Items"
-              hint={isApproved ? "Read-only · editing is locked after approval" : canEdit ? "Review evidence and edit action details" : "Read-only · edit access is required"}
+              hint={canEdit ? "Review evidence and edit action details" : "Read-only · edit access is required"}
             >
               <ActionItemReview
+                revision={meeting.extracted_json?.review_content_revision ?? null}
+                onRefresh={async () => { const latest = await getMeeting(meeting.id, accessToken); setMeeting(latest); return latest.extracted_json?.review_content_revision ?? null; }}
+                onSaved={async () => { const latest = await getMeeting(meeting.id, accessToken); setMeeting(latest); onReviewChanged?.(latest); setEmailPreview(null); }}
                 items={meeting.action_items}
                 accessToken={accessToken}
                 transcript={meeting.transcript}
@@ -598,7 +616,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
           )}
 
           {speakerLabels.length > 0 && (
-            <Section title="Speaker Names" hint={isApproved ? "Read-only · editing is locked after approval" : canEdit ? "Match each detected voice to an Outlook attendee" : "Speaker names can be changed by approved editors"}>
+            <Section title="Speaker Names" hint={canEdit ? "Match each detected voice to an Outlook attendee" : isApproved ? "Read-only · editing is locked after approval" : "Speaker names can be changed by approved editors"}>
               <div className="space-y-3.5">
                 {speakerLabels.map((label) => (
                   <div key={label} className="grid items-center gap-2.5 rounded-md border border-[#edf0f4] bg-[#fafbfc] px-3 py-2.5 xl:grid-cols-[minmax(120px,180px)_120px_minmax(0,1fr)]">
@@ -616,7 +634,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                       aria-label={`Name for ${label}`}
                       disabled={!canEdit || savingSpeakerMappings || reviewControlsBusy}
                       value={mappingForLabel(speakerMappings, label) ?? ""}
-                      onChange={(event) => { setEmailPreview(null); setSpeakerMappings((current) => ({ ...current, [label]: event.target.value || null })); }}
+                      onChange={(event) => { if (!speakerMappingsChanged) speakerRevision.current = meeting.extracted_json?.review_content_revision ?? null; setEmailPreview(null); setSpeakerMappings((current) => ({ ...current, [label]: event.target.value || null })); }}
                       className="h-9 min-w-0 rounded-md border border-[#cfd6df] bg-white px-3 text-sm text-[#1a1a2e] disabled:bg-[#f3f4f6] disabled:text-[#6b7280]"
                     >
                       <option value="">Unknown / Guest</option>
@@ -658,7 +676,7 @@ export default function MeetingDetailClient({ meeting: initial, upn, accessToken
                 </div>
               ) : (
                 <div className="relative max-h-96 overflow-y-auto rounded-md border border-[#dde1e8] bg-[#fafbfc] p-4">
-                  {canEdit && <button disabled={reviewControlsBusy} onClick={() => { setEmailPreview(null); setEditingTranscript(true); }} className="absolute right-3 top-3 rounded border bg-white px-2 py-1 text-xs font-semibold text-[#003366]">Edit</button>}
+                  {canEdit && <button disabled={reviewControlsBusy} onClick={() => { transcriptRevision.current = meeting.extracted_json?.review_content_revision ?? null; setEmailPreview(null); setEditingTranscript(true); }} className="absolute right-3 top-3 rounded border bg-white px-2 py-1 text-xs font-semibold text-[#003366]">Edit</button>}
                   <pre className="whitespace-pre-wrap pr-12 font-sans text-[13px] leading-6 text-[#374151]">{meeting.transcript}</pre>
                 </div>
               )}

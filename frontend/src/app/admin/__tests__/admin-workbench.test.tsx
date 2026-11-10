@@ -34,6 +34,18 @@ vi.mock("@/lib/api", () => ({
 vi.mock("../../meetings/[id]/meeting-detail-client", () => ({default: () => <p>Existing permission-aware meeting editor</p>}));
 vi.mock("../audit-logs/audit-event-dialog", () => ({default: () => <p>Read-only event details</p>}));
 afterEach(cleanup);
+it("keeps status options when no records match and resets the filter", async () => {
+ render(<AdminWorkbench accessToken="offline" callerUpn="admin@example.test" />);
+ await screen.findByText("Synthetic review 9");
+ const status = screen.getByLabelText("Status");
+ fireEvent.change(status, {target:{value:"failed"}});
+ expect(within(screen.getByLabelText("Meeting results")).queryByText("Synthetic review 9")).toBeNull();
+ expect(within(status).getByRole("option", {name:"Awaiting review"})).toBeInTheDocument();
+ fireEvent.click(screen.getByRole("button", {name:"Reset"}));
+ expect(status).toHaveValue("");
+ await screen.findByText("Synthetic review 9");
+ expect(screen.queryByText("Search all activity")).toBeNull();
+});
 it("searches beyond six rows, opens Details, and continues audit pages", async () => {
  render(<AdminWorkbench accessToken="offline" callerUpn="admin@example.test" />);
  await screen.findByText("Synthetic review 9");

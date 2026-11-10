@@ -14,6 +14,7 @@ _METADATA_KEYS = frozenset({
     "new_state", "email_category", "recipient_count", "fingerprint",
     "prompt_tokens", "completion_tokens", "total_tokens",
     "error_category", "drive_id", "drive_item_id", "reason",
+    "previous_revision", "content_revision", "prior_approved_by", "prior_approved_at", "prior_delivery_status",
 })
 
 

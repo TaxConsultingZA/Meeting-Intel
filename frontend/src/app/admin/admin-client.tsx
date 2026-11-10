@@ -1,10 +1,14 @@
 "use client";
 import "./admin-workspace.css";
-import { type ReactNode, Fragment, useCallback, useEffect, useRef, useState } from "react";
+import AccessRequestsPanel from "./access-requests-panel";
+import { parseInstant } from "@/lib/time";
+import AdminWorkbench from "./admin-workbench";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import LoadingSpinner from "@/components/loading-spinner";
 import Link from "next/link";
 import { UserPlus, Trash2, Shield, Pencil, ChevronDown, Loader2, History, ArrowRight } from "lucide-react";
-import { getAdminAccessRequests, cleanupAdminJob, decideMeetingEditAccess, decideRecordingProcessing, getAdminMeetings, getAdminUserSyncStatus, getBusinessUnits, getRecordingJobs, getRegisteredUsers, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
+import { createBusinessUnit, getAdminAccessRequests, cleanupAdminJob, decideMeetingEditAccess, decideRecordingProcessing, getAdminUserSyncStatus, getBusinessUnits, getRecordingJobs, getRegisteredUsers, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
+import type { UpdateUserPayload } from "@/lib/api";
 import type { RegisteredUser, BusinessUnit, RecordingJobOut, AdminAccessRequest, AdminMeetingOut, SyncState } from "@/lib/types";
 import { JobControls } from "@/components/recording-jobs";
 import { toast } from "sonner";
@@ -12,18 +16,33 @@ import { recordingStatusMessage } from "@/components/recording-jobs";
 import StateBadge from "@/components/state-badge";
 
 interface Props {
-  recordSearch?: ReactNode;
   initialRequests: AdminAccessRequest[];
   callerUpn: string;
   accessToken: string;
   deferInitialRequests?: boolean;
 }
 
-export default function AdminClient({ initialRequests, callerUpn, accessToken, deferInitialRequests = false, recordSearch }: Props) {
+export default function AdminClient({ initialRequests, callerUpn, accessToken, deferInitialRequests = false }: Props) {
+  const [buFilter, setBuFilter] = useState("");
+  const [groupUsers, setGroupUsers] = useState(false);
+  const [usersLoadAttempt, setUsersLoadAttempt] = useState(0);
+  useEffect(() => {
+    const refreshUsers = () => setUsersLoadAttempt(current => current + 1);
+    window.addEventListener("business-unit-updated", refreshUsers);
+    return () => window.removeEventListener("business-unit-updated", refreshUsers);
+  }, []);
+  const [usersError, setUsersError] = useState("");
   const [users, setUsers] = useState<RegisteredUser[]>([]);
-  const [businessUnits, setBusinessUnits] = useState<BusinessUnit[]>([]);
+  const visibleUsers = users.filter(u => !buFilter || (buFilter === "unassigned" ? u.business_unit_id == null : String(u.business_unit_id) === buFilter)).sort((a,b) => groupUsers ? (a.business_unit_name || "Unassigned").localeCompare(b.business_unit_name || "Unassigned") || a.upn.localeCompare(b.upn) : 0);
+  const [catalog, setCatalog] = useState<BusinessUnit[]>([]);
+  const businessUnits = catalog.filter(unit => unit.is_selectable);
+  const [unitName, setUnitName] = useState("");
+  const [unitError, setUnitError] = useState("");
+  const [unitSaved, setUnitSaved] = useState("");
+  const [unitSaving, setUnitSaving] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [editUser, setEditUser] = useState<RegisteredUser | null>(null);
+  const [savingUser, setSavingUser] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jobs, setJobs] = useState<RecordingJobOut[]>([]);
   const [meetings, setMeetings] = useState<AdminMeetingOut[]>([]);
@@ -32,6 +51,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
   const [loading, setLoading] = useState({ meetings: false, jobs: false, users: false });
   const sectionsInFlight = useRef(new Set<string>());
   const [requestsLoading, setRequestsLoading] = useState(deferInitialRequests);
+  const [requestActionError, setRequestActionError] = useState("");
   const [requestsError, setRequestsError] = useState("");
   const [syncOpen, setSyncOpen] = useState<string | null>(null);
   const [syncByUser, setSyncByUser] = useState<Record<string, SyncState[]>>({});
@@ -67,29 +87,26 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
     return () => { active = false; };
   }, [deferInitialRequests, refreshRequests]);
 
-  async function loadSection(section: "meetings" | "jobs" | "users") {
-    if (loaded[section] || sectionsInFlight.current.has(section)) return;
-    sectionsInFlight.current.add(section);
-    setLoading((current) => ({ ...current, [section]: true }));
-    setError(null);
-    try {
-      if (section === "meetings") setMeetings(await getAdminMeetings(accessToken));
-      if (section === "jobs") setJobs(await getRecordingJobs(accessToken, undefined, 200));
-      if (section === "users") {
-        const [nextUsers, nextUnits] = await Promise.all([
-          getRegisteredUsers(accessToken), getBusinessUnits(accessToken),
-        ]);
+  useEffect(() => {
+    let active = true;
+    setUsersError("");
+    setLoaded(current => ({ ...current, users: false }));
+    setLoading(current => ({ ...current, users: true }));
+    void Promise.all([getRegisteredUsers(accessToken), getBusinessUnits(accessToken, true)])
+      .then(([nextUsers, nextUnits]) => {
+        if (!active) return;
         setUsers(nextUsers);
-        setBusinessUnits(nextUnits);
-      }
-      setLoaded((current) => ({ ...current, [section]: true }));
-    } catch (e: unknown) {
-      setError(section === "jobs" ? "Recording jobs could not be loaded. Close and reopen Processing Jobs to try again." : e instanceof Error ? e.message : `Failed to load ${section}`);
-    } finally {
-      sectionsInFlight.current.delete(section);
-      setLoading((current) => ({ ...current, [section]: false }));
-    }
-  }
+        setCatalog(nextUnits);
+        setLoaded(current => ({ ...current, users: true }));
+      })
+      .catch(() => {
+        if (active) setUsersError("Users could not be loaded. Please retry.");
+      })
+      .finally(() => {
+        if (active) setLoading(current => ({ ...current, users: false }));
+      });
+    return () => { active = false; };
+  }, [accessToken, usersLoadAttempt]);
 
   async function toggleSyncDiagnostics(upn: string) {
     if (syncOpen === upn) {
@@ -113,29 +130,35 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
   }
 
   async function handleAccessDecision(request: AdminAccessRequest, approved: boolean) {
+    setRequestActionError("");
     if (!request.meeting_id || !request.requester_upn) return;
     if (!confirm(`${approved ? "Approve" : "Reject"} ${request.request_type} access for ${request.requester_upn}?`)) return;
     setError(null);
     try {
       await decideMeetingEditAccess(request.meeting_id, request.requester_upn, approved, accessToken);
+      void refreshRequests();
       setRequests((current) => current.map((entry) => entry.id === request.id
         ? { ...entry, status: approved ? "approved" : "denied" }
         : entry));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to decide access request");
+      setRequestActionError(e instanceof Error ? e.message : "Failed to decide access request");
     }
   }
 
   async function handleProcessingDecision(request: AdminAccessRequest, approved: boolean) {
+    setRequestActionError("");
     if (!confirm(`${approved ? "Approve" : "Reject"} processing request for ${request.meeting}?`)) return;
     setError(null);
     try {
       await decideRecordingProcessing(request.id, approved, accessToken);
+      void refreshRequests();
       setRequests((current) => current.map((entry) => entry.id === request.id
         ? { ...entry, status: approved ? "approved" : "denied", can_approve: false }
         : entry));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : `Failed to ${approved ? "approve" : "reject"} processing request`);
+      setRequestActionError(e instanceof Error ? e.message : "Processing request could not be decided");
     }
   }
 
@@ -191,7 +214,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
     }
   }
 
-  async function handleCleanup(job: RecordingJobOut) {
+  async function handleCleanup(job: RecordingJobOut, refresh: () => Promise<void>) {
     if (jobsInFlight.current.has(job.job_id)) return;
     if (!confirm(`Remove this ${job.status} operational job record? Saved meeting content will be kept.`)) return;
     jobsInFlight.current.add(job.job_id);
@@ -199,7 +222,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
     setError(null);
     try {
       await cleanupAdminJob(job.job_id, accessToken);
-      await refreshJobs();
+      await refresh();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to clean up job record");
     } finally {
@@ -228,14 +251,36 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
     }
   }
 
-  async function handleUpdate(targetUpn: string, payload: { display_name?: string; business_unit_id?: number; is_admin?: boolean }) {
+  async function handleCreateUnit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!unitName.trim() || unitSaving) return;
+    setUnitSaving(true);
+    setUnitError("");
+    setUnitSaved("");
+    try {
+      const unit = await createBusinessUnit(accessToken, unitName);
+      setCatalog(current => [...current, unit].sort((a, b) => a.name.localeCompare(b.name)));
+      setUnitName("");
+      setUnitSaved(`Added ${unit.name}.`);
+    } catch (failure) {
+      setUnitError(failure instanceof Error ? failure.message : "Could not add Business Unit.");
+    } finally {
+      setUnitSaving(false);
+    }
+  }
+
+  async function handleUpdate(targetUpn: string, payload: UpdateUserPayload) {
+    if (savingUser) return;
     setError(null);
+    setSavingUser(true);
     try {
       const updated = await updateUser(targetUpn, payload, accessToken);
       setUsers((prev) => prev.map((u) => (u.upn === targetUpn ? updated : u)));
       setEditUser(null);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to update user");
+    } finally {
+      setSavingUser(false);
     }
   }
 
@@ -251,130 +296,58 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
   }
 
   return (
-    <main className="max-w-5xl mx-auto px-6 py-7">
+    <main className="admin-workspace max-w-6xl mx-auto px-4 sm:px-6 py-5">
       <div className="mb-6">
         <div>
-          <h1 className="text-[22px] font-bold text-[#003366]">Administration</h1>
+          <h1 className="text-[22px] font-bold text-[#003366]">Admin workspace</h1>
           <p className="text-[#6b7280] text-[13.5px] mt-0.5">
             Manage meetings, processing, access, and registered users.
           </p>
-          <Link href="/admin/audit-logs" className="mt-4 flex items-center gap-3 rounded-lg border border-[#dde1e8] border-l-4 border-l-[#C9A52C] bg-white px-4 py-3 text-[#003366] shadow-sm hover:border-[#003366] hover:bg-[#f8fafc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#003366]">
-            <History size={20} aria-hidden="true" />
-            <span className="flex-1"><span className="block text-sm font-semibold">Audit Logs</span><span className="block mt-0.5 text-xs text-[#6b7280]">Review recording activity, email approvals, and sending outcomes.</span></span>
-            <ArrowRight size={18} aria-hidden="true" />
-          </Link>
+
         </div>
       </div>
 
-      {recordSearch}
-      <details onToggle={(event) => event.currentTarget.open && void loadSection("meetings")} className="group mb-3 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
-        <SectionHeader id="admin-meetings" label="Meetings" count={loaded.meetings ? meetings.length : undefined} />
-        <div className="px-4 pb-3"><p className="text-xs text-[#6b7280]">Operational metadata and Admin meeting-content access across users.</p></div>
-        {loading.meetings && <LoadingSpinner label="Meetings loading" />}
-        {loaded.meetings && <>
-        <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr>{["Meeting", "Organizer / owner", "Recording", "Meeting", "Job", "Request"].map((label) => <th key={label} className="bg-[#003366] text-white px-3 py-2 text-left">{label}</th>)}</tr></thead>
-          <tbody>{meetings.map((meeting) => <tr key={meeting.id} className="border-t align-top"><td className="px-3 py-2 font-medium"><Link href={`/meetings/${meeting.id}`} className="text-[#003366] underline-offset-2 hover:underline">{meeting.title ?? "Untitled meeting"}</Link></td><td className="px-3 py-2">{meeting.organizer_upn ?? "Unknown"}{meeting.owner_upn && meeting.owner_upn !== meeting.organizer_upn ? ` / ${meeting.owner_upn}` : ""}<AccessList meeting={meeting} onRevoke={handleRevoke} /></td><td className="px-3 py-2">{meeting.recording_status}</td><td className="px-3 py-2"><StatusText value={meeting.meeting_status} /></td><td className="px-3 py-2">{meeting.job_status ? <StatusText value={meeting.job_status} /> : "—"}</td><td className="px-3 py-2">{meeting.request_status ? <StatusText value={meeting.request_status} /> : "—"}</td></tr>)}</tbody>
-        </table></div>
-        {meetings.length === 0 && <p className="p-4 text-sm text-[#9ca3af]">No meetings.</p>}
-        </>}
-      </details>
+      <AdminWorkbench pendingRequests={!requestsLoading && !requestsError ? requests.filter(r => r.status === "pending").length : undefined} accessToken={accessToken} callerUpn={callerUpn} renderControls={(meeting, linkedJobs, refresh, area) => <div tabIndex={0} aria-label="Access and processing controls" className="space-y-3 max-h-[28rem] overflow-y-auto">
+        {area === "access" ? <><h3>Meeting access</h3><AccessList meeting={meeting} onRevoke={async (id, upn, type) => { await handleRevoke(id, upn, type); await refresh(); }} />
+        <h3>Access requests for this meeting</h3>
+        {requests.filter(r => r.meeting_id === meeting.id).map(r => <div key={r.id} className="border p-2"><p>{r.requester_name || r.requester_upn} · {r.request_type} · {r.status} · {formatSyncTime(r.requested_at)}</p><p>Decision by: {r.decided_by || "No reliable record"} · Decision time: {r.decided_at ? formatSyncTime(r.decided_at) : "No reliable record"}</p>{r.status === "pending" && <div className="flex gap-4">{(r.request_type !== "processing" || r.can_approve) && <button onClick={() => void (r.request_type === "processing" ? handleProcessingDecision(r, true) : handleAccessDecision(r, true))}>Approve</button>}<button onClick={() => void (r.request_type === "processing" ? handleProcessingDecision(r, false) : handleAccessDecision(r, false))}>Reject</button></div>}</div>)}
+        {!requests.some(r => r.meeting_id === meeting.id) && <p>{requestsLoading ? "Loading access requests…" : requestsError || "No linked requests in the returned records."}</p>}</> : <>
+        {linkedJobs.map(job => <div key={job.job_id}><fieldset><JobControls job={job} token={accessToken} onChanged={refresh} /></fieldset>
+          {job.can_reprocess && <button disabled={!!busyJob} onClick={async () => { await handleReprocess(job); await refresh(); }}>Reprocess</button>}
+          {(job.status === "failed" || job.status === "cancelled") && <button disabled={!!busyJob} onClick={() => void handleCleanup(job, refresh)}>Clean up</button>}
+        </div>)}</>}
+      </div>} />
+      <AccessRequestsPanel requests={requests} loading={requestsLoading} error={requestsError || requestActionError} retry={() => { setRequestActionError(""); void refreshRequests(); }} disabled={false} decide={(r,approved) => r.request_type === "processing" ? handleProcessingDecision(r,approved) : handleAccessDecision(r,approved)} />
 
-      <details onToggle={(event) => event.currentTarget.open && void loadSection("jobs")} className="group mb-3 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
-        <SectionHeader id="admin-jobs" label="Processing Jobs" count={loaded.jobs ? jobs.length : undefined} />
-        <div className="px-4 pb-4">
-        <p className="text-xs text-[#6b7280] mb-3">{loaded.jobs ? `Latest ${jobs.length} job records (up to 200)` : "Latest job records (up to 200)"}, across all users, visible to administrators. Counts describe this loaded list, not all system jobs. A job record may include automatic retries; counts are not execution-attempt totals.</p>
-        {loading.jobs && <LoadingSpinner label="Recording jobs loading" />}
-        {loaded.jobs && <>
-        <section aria-label="Processing job statistics" className="mb-4 rounded-md border border-[#dde1e8] bg-slate-50 p-3">
-          <h2 className="text-sm font-semibold text-[#003366]">Processing status counts</h2>
-          <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
-            {jobCounts.map(([label, count]) => <div key={label} className="rounded border border-[#dde1e8] bg-white p-3">
-              <dt className="text-xs text-[#6b7280]">{label}</dt>
-              <dd className="mt-1 text-xl font-semibold text-[#003366]">{count}</dd>
-            </div>)}
-          </dl>
-          <p className="mt-2 text-xs text-[#6b7280]">Processing / Transcribing includes downloading, transcription, extraction, and pending cancellation. Completed means processing finished; it does not confirm note approval or email delivery.</p>
-        </section>
-        <section aria-label="Failed recordings" className="mb-4 min-w-0 break-words rounded-md border border-red-200 bg-red-50/30 p-3">
-          <h2 className="text-sm font-semibold text-[#003366]">Failed recordings ({failedJobs.length})</h2>
-          <p className="mt-1 text-xs text-[#6b7280]">Failed attempts among the latest {jobs.length} jobs (up to 200), across all users. Earlier failures may be outside this list; a later attempt may have succeeded.</p>
-          {failedJobs.length === 0 && <p className="mt-2 text-sm">No failed recording attempts in these jobs.</p>}
-          {failedJobs.map((job) => <div key={job.job_id} className="mt-2 border-t border-red-100 pt-2 text-sm">
-            {job.meeting_id
-              ? <Link href={`/meetings/${job.meeting_id}`} className="font-medium text-[#003366] underline">{job.title || "Untitled meeting"}</Link>
-              : <p className="font-medium">{job.title || "Recording"} · Meeting not yet available</p>}
-            <p className="mt-1 text-xs">{recordingStatusMessage(job)}</p>
-          </div>)}
-        </section>
-        {jobs.length === 0 && <p className="text-sm text-[#9ca3af]">No recording jobs yet. Jobs appear here once recordings are queued for processing.</p>}
-        {jobs.map((job) => (
-          <div key={job.job_id} className="border-t py-3 text-sm space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="min-w-0 break-words font-medium">{job.title}</span>
-              <StateBadge state={job.processing_status} />
-            </div>
-            <p className="text-xs text-[#6b7280]">Owner: {job.owner_upn ?? "Unknown"}</p>
-            <p className="text-xs leading-5 text-[#6b7280]">{recordingStatusMessage(job)}</p>
-            {job.is_stuck && <p className="text-xs font-semibold text-amber-800">Processing is taking longer than expected. Check the recovery actions below.</p>}
-            {job.error && <p className="text-xs text-red-700">This attempt could not finish. Use a recovery action below, or check audit logs for details.</p>}
-            <div className="flex items-center gap-3">
-              <JobControls job={job} token={accessToken} onChanged={refreshJobs} />
-              {job.can_reprocess && <button type="button" disabled={busyJob?.id === job.job_id} onClick={() => handleReprocess(job)} className="inline-flex items-center gap-1 text-xs font-semibold text-blue-800 disabled:cursor-not-allowed disabled:opacity-50">{busyJob?.id === job.job_id && busyJob.action === "reprocess" && <Loader2 size={12} className="animate-spin" />}{busyJob?.id === job.job_id && busyJob.action === "reprocess" ? "Reprocessing…" : "Reprocess"}</button>}
-              {(job.status === "failed" || job.status === "cancelled") && (
-                <button type="button" disabled={busyJob?.id === job.job_id} onClick={() => void handleCleanup(job)} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 disabled:cursor-not-allowed disabled:opacity-50">{busyJob?.id === job.job_id && busyJob.action === "cleanup" && <Loader2 size={12} className="animate-spin" />}{busyJob?.id === job.job_id && busyJob.action === "cleanup" ? "Cleaning up…" : "Clean up"}</button>
-              )}
-            </div>
-          </div>
-        ))}
-        </>}
-        </div>
-      </details>
-
-      <details open className="group mb-3 bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
-        <SectionHeader id="admin-requests" label="Access Requests" count={requests.length} />
-        <div className="px-4 pb-4">
-        <p className="text-xs text-[#6b7280] mb-3">Processing, view, and edit requests across all users. Admins have full-control authority through the available approval workflows.</p>
-        {requestsLoading && <LoadingSpinner label="Access requests loading" />}
-        {requestsError && <div role="alert">{requestsError} <button type="button" disabled={requestsLoading} onClick={() => void refreshRequests()}>Retry access requests</button></div>}
-        {!requestsLoading && !requestsError && requests.length === 0 && <p className="text-sm text-[#9ca3af]">No access requests.</p>}
-        {requests.map((request) => (
-          <div key={request.id} className="border-t py-3 text-sm">
-            <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{request.meeting}</span><StatusText value={request.status} /></div>
-            <p className="text-xs text-[#6b7280]">{request.request_type.replace(/^./, (letter) => letter.toUpperCase())} · Requested by {request.requester_name ?? request.requester_upn ?? "Former user"} · Owner / organizer: {request.owner_upn ?? request.organizer_upn ?? "Unknown"}</p>
-            {request.request_type === "processing" && request.status === "pending" && (
-              <div className="mt-2 flex gap-3">
-                {request.can_approve && <button type="button" onClick={() => handleProcessingDecision(request, true)} className="text-xs font-semibold text-emerald-700">Approve</button>}
-                <button type="button" onClick={() => handleProcessingDecision(request, false)} className="text-xs font-semibold text-red-700">Reject</button>
-              </div>
-            )}
-            {request.status === "pending" && request.request_type !== "processing" && request.meeting_id && request.requester_upn && (
-              <div className="mt-2 flex gap-3">
-                <button type="button" onClick={() => handleAccessDecision(request, true)} className="text-xs font-semibold text-emerald-700">Approve</button>
-                <button type="button" onClick={() => handleAccessDecision(request, false)} className="text-xs font-semibold text-red-700">Reject</button>
-              </div>
-            )}
-          </div>
-        ))}
-        </div>
-      </details>
-
-      {error && (
+      {error && !editUser && (
         <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-[13px] px-4 py-3 rounded-lg">
           {error}
         </div>
       )}
 
-      <details onToggle={(event) => event.currentTarget.open && void loadSection("users")} className="group bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
-        <SectionHeader id="admin-users" label="Users" count={loaded.users ? users.length : undefined} />
-        <div className="px-4 pb-3 flex justify-end">
+      <section className="group bg-white rounded-lg border border-[#dde1e8] shadow-sm overflow-hidden">
+        <header className="flex flex-wrap items-center justify-between gap-3 bg-[#003366] p-4">
+          <h2 className="font-semibold text-white">Users {loaded.users ? `(${users.length})` : ""}</h2>
           <button type="button" onClick={() => setShowAdd(true)} disabled={!loaded.users}
-            className="inline-flex items-center gap-2 bg-[#003366] hover:bg-[#0a4a8c] disabled:opacity-50 text-white text-[13px] font-semibold px-4 py-2 rounded-md transition-colors">
+            className="inline-flex items-center gap-2 rounded-md border border-white bg-white px-4 py-2 text-[13px] font-semibold text-[#003366] hover:bg-slate-100 disabled:opacity-50">
             <UserPlus size={15} /> Register User
           </button>
-        </div>
+        </header>
+        <div id="admin-users-content">
+        {usersError && <div role="alert" className="px-4 pb-3">{usersError} <button disabled={loading.users} onClick={() => setUsersLoadAttempt(attempt => attempt + 1)}>Retry users</button></div>}
+        {loaded.users && <form className="grid items-end gap-3 px-4 pt-4 sm:max-w-xl sm:grid-cols-[minmax(0,1fr)_auto]" onSubmit={handleCreateUnit}>
+          <label className="grid min-w-0 gap-1.5 text-xs font-medium text-slate-700">
+            New Business Unit name
+            <input className="h-10 w-full min-w-0 rounded-md border border-[#dde1e8] px-3 text-sm disabled:bg-slate-100" required maxLength={100} value={unitName} disabled={unitSaving} onChange={event => setUnitName(event.target.value)} />
+          </label>
+          <button type="submit" className="admin-primary h-10 w-full sm:w-auto" disabled={unitSaving || !unitName.trim()}>{unitSaving ? "Adding..." : "Add Business Unit"}</button>
+          {unitError && <p className="break-words text-red-700 sm:col-span-2" role="alert">{unitError}</p>}
+          {unitSaved && <p className="break-words text-emerald-700 sm:col-span-2" role="status">{unitSaved}</p>}
+        </form>}
+        <div className="admin-filter-grid"><label>Business Unit<select aria-label="Filter users by Business Unit" value={buFilter} onChange={e=>setBuFilter(e.target.value)}><option value="">All business units</option>{catalog.map(unit => <option key={unit.id} value={unit.id}>{unit.name}{unit.is_selectable ? "" : " (historical)"}</option>)}<option value="unassigned">Unassigned</option></select></label><label>View<select aria-label="User display mode" value={groupUsers ? "grouped" : "list"} onChange={e=>setGroupUsers(e.target.value==="grouped")}><option value="list">User list</option><option value="grouped">Grouped by Business Unit</option></select></label></div><p className="admin-help">{visibleUsers.length} of {users.length} users · Historical Business Units are available for filtering. BU does not grant login or meeting access.</p>
         {loading.users && <LoadingSpinner label="Users loading" />}
-        {loaded.users && <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        {loaded.users && <div tabIndex={0} className="admin-users-scroll max-h-[28rem] overflow-y-auto overflow-x-hidden [&_table]:max-sm:block [&_thead]:max-sm:hidden [&_tbody]:max-sm:block [&_tr]:max-sm:block [&_td]:max-sm:block [&_td]:max-sm:whitespace-normal [&_td]:max-sm:break-words">
+        <table className="admin-users-table w-full text-sm">
           <thead>
             <tr>
               {["Name / Email", "Business Unit", "Role", "Subscribed", "Registered", "Actions"].map((h) => (
@@ -385,15 +358,16 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
             </tr>
           </thead>
           <tbody>
-            {users.length === 0 && (
+            {visibleUsers.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-[#9ca3af] text-[13px]">
-                  No users registered yet. Add one using the button above.
+                  No users match this Business Unit.
                 </td>
               </tr>
             )}
-            {users.map((u, i) => (
+            {visibleUsers.map((u, i) => (
               <Fragment key={u.upn}>
+              {groupUsers && (i === 0 || (visibleUsers[i-1].business_unit_name || "Unassigned") !== (u.business_unit_name || "Unassigned")) && <tr className="admin-bu-group"><td colSpan={6}>{u.business_unit_name || "Unassigned"}</td></tr>}
               <tr className={`${i % 2 === 1 ? "bg-[#f8fafc]" : ""} hover:bg-blue-50/30 transition-colors`}>
                 <td className="px-4 py-2.5 border border-[#dde1e8]">
                   <div className="font-medium text-[#1a1a2e] text-[13px]">
@@ -419,10 +393,10 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
                   </span>
                 </td>
                 <td className="px-4 py-2.5 border border-[#dde1e8] text-[#6b7280] text-[12px] whitespace-nowrap">
-                  {new Date(u.registered_at).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" })}
+                  {(parseInstant(u.registered_at) ?? new Date(NaN)).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric", timeZone: "Africa/Johannesburg" })}
                 </td>
                 <td className="px-4 py-2.5 border border-[#dde1e8]">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-3">
                     <button type="button" onClick={() => void toggleSyncDiagnostics(u.upn)}
                       aria-expanded={syncOpen === u.upn}
                       className="text-[11px] font-semibold text-[#003366] hover:underline">
@@ -430,7 +404,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
                     </button>
                     <button
                       type="button"
-                      onClick={() => setEditUser(u)}
+                      onClick={() => { setError(null); setEditUser(u); }}
                       className="text-[#6b7280] hover:text-[#003366] transition-colors"
                       title="Edit"
                     >
@@ -465,7 +439,8 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
           </tbody>
         </table>
         </div>}
-      </details>
+      </div>
+      </section>
 
       {/* Add User dialog */}
       {showAdd && (
@@ -481,6 +456,8 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
         <EditUserDialog
           user={editUser}
           businessUnits={businessUnits}
+          error={error}
+          saving={savingUser}
           onSave={(payload) => handleUpdate(editUser.upn, payload)}
           onClose={() => setEditUser(null)}
         />
@@ -524,7 +501,7 @@ function SyncDiagnostics({ states }: { states: SyncState[] }) {
 }
 
 function formatSyncTime(value: string | null | undefined) {
-  return value ? new Date(value).toLocaleString("en-ZA") : "Unavailable";
+  return value ? (parseInstant(value) ?? new Date(NaN)).toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg" }) : "Unavailable";
 }
 
 function StatusText({ value }: { value: string }) {
@@ -635,12 +612,16 @@ function AddUserDialog({
 function EditUserDialog({
   user,
   businessUnits,
+  error,
+  saving,
   onSave,
   onClose,
 }: {
   user: RegisteredUser;
   businessUnits: BusinessUnit[];
-  onSave: (payload: { display_name?: string; business_unit_id?: number; is_admin?: boolean }) => void;
+  error: string | null;
+  saving: boolean;
+  onSave: (payload: UpdateUserPayload) => void;
   onClose: () => void;
 }) {
   const [displayName, setDisplayName] = useState(user.display_name ?? "");
@@ -661,10 +642,14 @@ function EditUserDialog({
         <Field label="Business Unit">
           <select
             value={buId ?? ""}
+            aria-label="Correct Business Unit"
             onChange={(e) => setBuId(e.target.value ? Number(e.target.value) : null)}
             className="w-full border border-[#dde1e8] rounded-md px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#003366]"
           >
-            <option value="">Select business unit...</option>
+            <option value="">Unassigned</option>
+            {user.business_unit_id != null && !businessUnits.some(unit => unit.id === user.business_unit_id) && (
+              <option value={user.business_unit_id} disabled>{user.business_unit_name} (historical)</option>
+            )}
             {businessUnits.map((bu) => (
               <option key={bu.id} value={bu.id}>{bu.name}</option>
             ))}
@@ -679,14 +664,23 @@ function EditUserDialog({
           />
           Admin access
         </label>
+        {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
         <div className="flex justify-end gap-2 mt-2">
-          <button type="button" onClick={onClose} className="px-4 py-2 text-[13px] text-[#6b7280] hover:text-[#1a1a2e]">Cancel</button>
+          <button type="button" disabled={saving} onClick={onClose} className="px-4 py-2 text-[13px] text-[#6b7280] hover:text-[#1a1a2e]">Cancel</button>
           <button
             type="button"
-            onClick={() => onSave({ display_name: displayName || undefined, business_unit_id: buId ?? undefined, is_admin: isAdmin })}
+            disabled={saving}
+            onClick={() => onSave({
+              display_name: displayName || undefined,
+              is_admin: isAdmin,
+              ...(buId === user.business_unit_id ? {} : {
+                business_unit_id: buId,
+                business_unit_version: user.business_unit_version,
+              }),
+            })}
             className="px-4 py-2 text-[13px] font-semibold bg-[#003366] text-white rounded-md hover:bg-[#0a4a8c]"
           >
-            Save Changes
+            {saving ? "Saving..." : "Save Changes"}
           </button>
         </div>
       </div>

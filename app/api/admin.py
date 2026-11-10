@@ -8,7 +8,8 @@ from uuid import UUID
 from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import AwareDatetime
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, text, update
+from ..services.business_units import create_unit, record_assignment, require_assignment_version, require_selectable_unit, selectable_units
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,7 +18,7 @@ from ..db import get_db
 from ..email_templates import build_welcome_email
 from ..graph import client as graph
 from ..models import BusinessUnit, Meeting, MeetingParticipant, ProcessedItem, ProcessingState, RecordingJob, RecordingProcessingRequest, RegisteredUser
-from ..schemas import AdminRevokeAccessIn, BusinessUnitOut, RegisteredUserOut, RegisterUserIn, SyncStateOut, UpdateUserIn
+from ..schemas import AdminRevokeAccessIn, BusinessUnitOut, CreateBusinessUnitIn, RegisteredUserOut, RegisterUserIn, SyncStateOut, UpdateUserIn
 from ..services.meeting_dates import card_date
 from ..services.sync_state import list_sync_status
 from ..services.job_control import RETRYABLE_JOB_STATES
@@ -112,6 +113,7 @@ def _user_to_out(u: RegisteredUser) -> RegisteredUserOut:
         display_name=u.display_name,
         business_unit_id=u.business_unit_id,
         business_unit_name=u.business_unit.name if u.business_unit else None,
+        business_unit_version=u.business_unit_version,
         is_admin=u.is_admin,
         is_subscribed=u.is_subscribed,
         subscribed_at=u.subscribed_at.isoformat() if u.subscribed_at else None,
@@ -121,10 +123,21 @@ def _user_to_out(u: RegisteredUser) -> RegisteredUserOut:
 
 @router.get("/business-units", response_model=list[BusinessUnitOut])
 async def list_business_units(db: AsyncSession = Depends(get_db),
-                               _upn: str = Depends(current_user)):
-    """Return all available business units.  Any authenticated domain user can call this."""
-    rows = (await db.scalars(select(BusinessUnit).order_by(BusinessUnit.name))).all()
-    return [BusinessUnitOut(id=b.id, name=b.name) for b in rows]
+                               _upn: str = Depends(current_user), include_historical: bool = False):
+    if include_historical:
+        await _require_admin(_upn, db)
+    query = select(BusinessUnit) if include_historical else selectable_units()
+    rows = (await db.scalars(query.order_by(BusinessUnit.name))).all()
+    return [BusinessUnitOut(id=b.id, name=b.name, is_selectable=b.is_selectable) for b in rows]
+
+
+@router.post("/business-units", response_model=BusinessUnitOut, status_code=201)
+async def create_business_unit(body: CreateBusinessUnitIn, db: AsyncSession = Depends(get_db),
+                               _upn: str = Depends(_require_admin)):
+    unit = await create_unit(db, body.name)
+    result = BusinessUnitOut(id=unit.id, name=unit.name, is_selectable=unit.is_selectable)
+    await db.commit()
+    return result
 
 
 @router.get("/users", response_model=list[RegisteredUserOut])
@@ -335,9 +348,7 @@ async def register_user(body: RegisterUserIn, db: AsyncSession = Depends(get_db)
         raise HTTPException(409, f"{body.upn} is already registered")
 
     if body.business_unit_id is not None:
-        bu = await db.get(BusinessUnit, body.business_unit_id)
-        if not bu:
-            raise HTTPException(404, "Business unit not found")
+        await require_selectable_unit(db, body.business_unit_id)
 
     user = RegisteredUser(
         upn=body.upn,
@@ -383,23 +394,27 @@ async def update_user(upn: str, body: UpdateUserIn, db: AsyncSession = Depends(g
     """Update an existing registered user's display name, business unit, or admin flag."""
     from sqlalchemy.orm import selectinload
 
+    if "business_unit_id" in body.model_fields_set and db.bind.dialect.name == "sqlite":
+        await db.execute(text("BEGIN IMMEDIATE"))
     user = await db.scalar(
         select(RegisteredUser)
         .where(RegisteredUser.upn == upn)
+        .with_for_update()
         .options(selectinload(RegisteredUser.business_unit))
+        .execution_options(populate_existing=True)
     )
     if not user:
         raise HTTPException(404, f"{upn} is not registered")
 
-    if body.business_unit_id is not None:
-        bu = await db.get(BusinessUnit, body.business_unit_id)
-        if not bu:
-            raise HTTPException(404, "Business unit not found")
+    if "business_unit_id" in body.model_fields_set:
+        require_assignment_version(user, body.business_unit_version)
+        if body.business_unit_id is not None and body.business_unit_id != user.business_unit_id:
+            await require_selectable_unit(db, body.business_unit_id)
 
     if body.display_name is not None:
         user.display_name = body.display_name
-    if body.business_unit_id is not None:
-        user.business_unit_id = body.business_unit_id
+    if "business_unit_id" in body.model_fields_set:
+        await record_assignment(db, user, _admin_upn, body.business_unit_id)
     if body.is_admin is False and user.is_admin:
         await _ensure_not_last_admin(db, user)
     if body.is_admin is not None:
@@ -410,6 +425,7 @@ async def update_user(upn: str, body: UpdateUserIn, db: AsyncSession = Depends(g
         select(RegisteredUser)
         .where(RegisteredUser.upn == upn)
         .options(selectinload(RegisteredUser.business_unit))
+        .execution_options(populate_existing=True)
     )
     return _user_to_out(user)
 

@@ -77,6 +77,23 @@ class TestDetailTable:
 
 
 class TestBuildMeetingEmail:
+    def test_saved_decisions_appear_escaped_in_review_preview(self):
+        meeting = self._mock_meeting()
+        meeting.manual_decisions = [SimpleNamespace(decision_date=datetime(2026, 11, 9).date(), content="Decide <safely>")]
+        _, html = build_meeting_email(meeting)
+        assert "Human-entered decision" in html
+        assert "2026-11-09" in html
+        assert "Decide &lt;safely&gt;" in html
+        assert "Decide <safely>" not in html
+
+    def test_legacy_approved_email_does_not_retroactively_include_decisions(self):
+        meeting = self._mock_meeting()
+        meeting.state = "approved"
+        meeting.manual_decisions = [SimpleNamespace(decision_date=datetime(2026, 11, 9).date(), content="Later decision")]
+        assert "Later decision" not in build_meeting_email(meeting)[1]
+        meeting.extracted_json["manual_decisions_approved_in_email"] = True
+        assert "Later decision" in build_meeting_email(meeting)[1]
+
     def test_transcript_only_explains_missing_extraction_without_copying_transcript(self):
         meeting = self._mock_meeting()
         meeting.summary = None

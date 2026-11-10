@@ -4,7 +4,7 @@ import { getRecordingJobs } from "@/lib/api";
 import type { RecordingJobOut } from "@/lib/types";
 import AdminClient from "../admin-client";
 
-vi.mock("@/lib/api", () => ({ getRecordingJobs: vi.fn() }));
+vi.mock("@/lib/api", () => ({ getRecordingJobs: vi.fn(), getRegisteredUsers: vi.fn().mockResolvedValue([]), getBusinessUnits: vi.fn().mockResolvedValue([]), getAdminMeetings: vi.fn().mockResolvedValue([]), getAuditEvents: vi.fn().mockResolvedValue({items: []}) }));
 // Invoke only the existing read callback; never perform a job mutation.
 vi.mock("@/components/recording-jobs", () => ({
   recordingStatusMessage: () => "Safe failure category.",
@@ -19,24 +19,12 @@ const job: RecordingJobOut = {
   can_reprocess: false, processing_enabled: false,
 };
 
-it("invalidates the loaded statistics on a failed refresh and permits a read-only retry", async () => {
-  vi.mocked(getRecordingJobs).mockResolvedValueOnce([job]);
+it("keeps failed reads distinct from empty results and retries the unified query", async () => {
+  vi.mocked(getRecordingJobs).mockRejectedValueOnce(new Error("secret upstream transcript")).mockResolvedValueOnce([job]);
   render(<AdminClient initialRequests={[]} callerUpn="admin@example.test" accessToken="token" />);
-  fireEvent.click(screen.getByText("Processing Jobs"));
-  await screen.findByRole("region", { name: "Processing job statistics" });
-  let reject!: (error: Error) => void;
-  vi.mocked(getRecordingJobs).mockReturnValueOnce(new Promise((_, fail) => { reject = fail; }));
-  fireEvent.click(screen.getByRole("button", { name: "Reload job snapshot" }));
-  expect(screen.queryByRole("region", { name: "Processing job statistics" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("region", { name: "Failed recordings" })).not.toBeInTheDocument();
-  expect(screen.getByRole("status", { name: "Recording jobs loading" })).toBeVisible();
-  reject(new Error("secret upstream transcript"));
-  expect(await screen.findByText(/Recording jobs could not be loaded/)).toBeVisible();
-  expect(screen.queryByRole("region", { name: "Processing job statistics" })).not.toBeInTheDocument();
-  expect(screen.queryByText(/secret upstream/)).not.toBeInTheDocument();
-  vi.mocked(getRecordingJobs).mockResolvedValueOnce([]);
-  fireEvent.click(screen.getByText("Processing Jobs"));
-  fireEvent.click(screen.getByText("Processing Jobs"));
-  await screen.findByText("Failed recordings (0)");
-  expect(getRecordingJobs).toHaveBeenCalledTimes(3);
+  expect(await screen.findByText("Records could not be loaded. Please retry.")).toBeVisible();
+  expect(screen.queryByText("No matching records in the loaded range.")).toBeNull();
+  expect(screen.queryByText(/secret upstream/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", {name: "Retry"}));
+  expect(await screen.findByText("Recording")).toBeVisible();
 });

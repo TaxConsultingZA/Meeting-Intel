@@ -37,10 +37,19 @@ def safe_metadata(value):
             result[key] = item
     if type(value.get("retry_scheduled")) is bool:
         result["retry_scheduled"] = value["retry_scheduled"]
-    for key in ("parent_job_id", "subject_actor_id"):
+    for key in ("parent_job_id", "subject_actor_id", "previous_revision", "content_revision"):
         try:
             if isinstance(value.get(key), str):
                 result[key] = str(UUID(value[key]))
+        except ValueError:
+            pass
+    actor = value.get("prior_approved_by")
+    if isinstance(actor, str) and re.fullmatch(r"[^\s@]+@[^\s@]+", actor) and len(actor) <= 255:
+        result["prior_approved_by"] = actor
+    approved_at = value.get("prior_approved_at")
+    if isinstance(approved_at, str):
+        try:
+            result["prior_approved_at"] = _aware(datetime.fromisoformat(approved_at)).isoformat()
         except ValueError:
             pass
     return result

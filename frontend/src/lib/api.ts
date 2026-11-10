@@ -21,6 +21,14 @@ export function searchSavedMeetings(token: string, keyword: string, signal?: Abo
   return apiFetch(`/reviews/search?${params}`, token, { signal, cache: "no-store" });
 }
 
+export function getMeetingDecisions(id: string, token: string, signal?: AbortSignal): Promise<import("./types").MeetingDecision[]> {
+  return apiFetch(`/reviews/${encodeURIComponent(id)}/decisions`, token, { signal, cache: "no-store" });
+}
+
+export function saveMeetingDecisions(id: string, decisions: import("./types").MeetingDecisionInput[], token: string, expectedRevision: string | null) {
+  return apiFetch<import("./types").MeetingDecision[]>(`/reviews/${encodeURIComponent(id)}/decisions`, token, { method: "PUT", body: JSON.stringify({ decisions, expected_revision: expectedRevision }) });
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -147,7 +155,7 @@ export async function getAllMeetings(upn: string): Promise<MeetingOut[]> {
 
 /** Fetch a single meeting by ID. Throws if the user is not a participant. */
 export async function getMeeting(id: string, upn: string): Promise<MeetingOut> {
-  return apiFetch<MeetingOut>(`/reviews/${id}`, upn);
+  return apiFetch<MeetingOut>(`/reviews/${id}`, upn, { cache: "no-store" });
 }
 
 /** Render the exact branded email without sending it. */
@@ -166,10 +174,11 @@ export async function editActionItem(
   itemId: string,
   edit: ActionItemEdit,
   upn: string,
+  expectedRevision: string | null = null,
 ): Promise<void> {
   await apiFetch<void>(`/reviews/action-items/${itemId}`, upn, {
     method: "PATCH",
-    body: JSON.stringify(edit),
+    body: JSON.stringify({ ...edit, expected_revision: expectedRevision }),
   });
 }
 
@@ -202,10 +211,11 @@ export async function editMeetingTranscript(
   meetingId: string,
   transcript: string,
   accessToken: string,
+  expectedRevision: string | null = null,
 ): Promise<void> {
   await apiFetch(`/reviews/${meetingId}/transcript`, accessToken, {
     method: "PATCH",
-    body: JSON.stringify({ transcript }),
+    body: JSON.stringify({ transcript, expected_revision: expectedRevision }),
   });
 }
 
@@ -213,10 +223,11 @@ export async function saveSpeakerMappings(
   meetingId: string,
   mappings: Record<string, string | null>,
   accessToken: string,
+  expectedRevision: string | null = null,
 ): Promise<void> {
   await apiFetch(`/reviews/${meetingId}/speaker-mappings`, accessToken, {
     method: "PUT",
-    body: JSON.stringify({ mappings }),
+    body: JSON.stringify({ mappings, expected_revision: expectedRevision }),
   });
 }
 
@@ -331,7 +342,7 @@ export async function reprocessRecording(
 /** Check if the current user is registered on the platform. */
 export async function getMe(upn: string): Promise<RegisteredUser | null> {
   try {
-    return await apiFetch<RegisteredUser>("/users/me", upn);
+    return await apiFetch<RegisteredUser>("/users/me", upn, { cache: "no-store" });
   } catch (e: unknown) {
     if (e instanceof ApiError && e.status === 404) {
       try {
@@ -475,13 +486,21 @@ export async function unsubscribeCurrentUser(
 }
 
 /** Fetch all available business units (any authenticated domain user can call this). */
-export async function getBusinessUnits(upn: string): Promise<BusinessUnit[]> {
-  return apiFetch<BusinessUnit[]>("/admin/business-units", upn);
+export async function getBusinessUnits(upn: string, includeHistorical = false): Promise<BusinessUnit[]> {
+  return apiFetch<BusinessUnit[]>(includeHistorical ? "/admin/business-units?include_historical=true" : "/admin/business-units", upn, { cache: "no-store" });
+}
+
+export function createBusinessUnit(token: string, name: string) {
+  return apiFetch<BusinessUnit>("/admin/business-units", token, { method: "POST", body: JSON.stringify({ name }) });
+}
+
+export function chooseBusinessUnit(token: string, choice: { business_unit_id: number; business_unit_version: number }) {
+  return apiFetch<RegisteredUser>("/users/me/business-unit", token, { method: "PUT", body: JSON.stringify(choice) });
 }
 
 /** Fetch all registered platform users (admin only). */
 export async function getRegisteredUsers(upn: string): Promise<RegisteredUser[]> {
-  return apiFetch<RegisteredUser[]>("/admin/users", upn);
+  return apiFetch<RegisteredUser[]>("/admin/users", upn, { cache: "no-store" });
 }
 
 /** Fetch safe sync diagnostics for one registered user (admin only). */
@@ -507,9 +526,10 @@ export async function registerUser(
 }
 
 /** Update a registered user's details (admin only). */
+export type UpdateUserPayload = { display_name?: string; business_unit_id?: number | null; business_unit_version?: number; is_admin?: boolean };
 export async function updateUser(
   targetUpn: string,
-  payload: { display_name?: string; business_unit_id?: number; is_admin?: boolean },
+  payload: UpdateUserPayload,
   callerUpn: string,
 ): Promise<RegisteredUser> {
   return apiFetch<RegisteredUser>(`/admin/users/${encodeURIComponent(targetUpn)}`, callerUpn, {

@@ -8,6 +8,7 @@ __pycache__/
 .pytest_cache/
 frontend/
 tests/
+app/tests/
 mockup.html
 *.md
 docker-compose.yml

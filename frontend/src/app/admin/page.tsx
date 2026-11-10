@@ -2,7 +2,6 @@ import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { getMe } from "@/lib/api";
 import Nav from "@/components/nav";
-import AdminWorkbench from "./admin-workbench";
 import AdminClient from "./admin-client";
 
 export default async function AdminPage() {
@@ -19,7 +18,7 @@ export default async function AdminPage() {
   return (
     <>
       <Nav userEmail={upn} accessToken={accessToken} isAdmin={true} />
-      <AdminClient recordSearch={<AdminWorkbench accessToken={accessToken} callerUpn={upn} />} initialRequests={[]} deferInitialRequests callerUpn={upn} accessToken={accessToken} />
+      <AdminClient initialRequests={[]} deferInitialRequests callerUpn={upn} accessToken={accessToken} />
     </>
   );
 }

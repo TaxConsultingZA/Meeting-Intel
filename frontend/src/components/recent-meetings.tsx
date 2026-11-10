@@ -5,7 +5,8 @@ import LoadingSpinner from "./loading-spinner";
 import { useCallback, useEffect, useRef, useState } from "react";
 import LocalDateTime from "./local-date-time";
 import { getRecentMeetings, getProcessingRequests, requestRecordingProcessing, decideRecordingProcessing, processRecentMeeting } from "@/lib/api";
-import { parseInstant } from "@/lib/time";
+import MeetingCardDate from "./meeting-card-date";
+import { formatDateTime, parseInstant } from "@/lib/time";
 import type { MeetingOut, RecentMeeting, RecordingProcessingRequest } from "@/lib/types";
 
 const RECENT_MEETINGS_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -77,14 +78,16 @@ function normalized(value: string | null | undefined) {
 }
 
 function historicalDate(meeting: MeetingOut) {
-  return meeting.recorded_at ?? meeting.extracted_json?.meeting_time ?? null;
+  if (meeting.card_date) return meeting.card_date.value;
+  return meeting.recorded_at ?? null;
 }
 
-export default function RecentMeetings({ token, cacheIdentity = "current-user", isSubscribed, accessibleMeetings = [], historical = [], processingRequests, onRefreshProcessingRequests, onRequestHistoricalAccess, onRequestMeetingEditAccess, refreshKey = 0 }: {
+export default function RecentMeetings({ token, cacheIdentity = "current-user", isSubscribed, accessibleMeetings = [], historical = [], processingRequests, onRefreshProcessingRequests, onRequestHistoricalAccess, onRequestMeetingEditAccess, refreshKey = 0, savedMeetingsLoading = false }: {
   token: string;
   cacheIdentity?: string;
   isSubscribed: boolean;
   refreshKey?: number;
+  savedMeetingsLoading?: boolean;
   accessibleMeetings?: MeetingOut[];
   historical?: MeetingOut[];
   processingRequests?: RecordingProcessingRequest[];
@@ -190,8 +193,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
 
   // These records already passed /reviews/all access checks. Calendar cache is
   // only a discovery source and must not determine their visibility.
-  const savedDate = (meeting: MeetingOut) =>
-    appliedMonth && meeting.card_date ? meeting.card_date.value : historicalDate(meeting);
+  const savedDate = historicalDate;
   const monthStart = appliedMonth ? new Date(appliedMonth.range.start_from) : null;
   const monthEnd = appliedMonth ? new Date(appliedMonth.range.start_before) : null;
   const inMonth = (value: string | null) => {
@@ -236,6 +238,11 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
     return searchable.some((value) => normalized(value).includes(query));
   }).sort((a, b) => (b.date ? Date.parse(b.date) : 0) - (a.date ? Date.parse(a.date) : 0));
 
+  const resultsLoading = loading || savedMeetingsLoading;
+  const cardClass = "flex min-w-0 flex-col rounded-lg border border-[#dde1e8] bg-white p-4 [overflow-wrap:anywhere]";
+  const actionsClass = "mt-auto flex flex-wrap items-center gap-2 border-t border-[#e8edf2] pt-3";
+  const viewClass = "inline-flex min-h-9 items-center rounded-md bg-[#003366] px-3 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2";
+  const editClass = "inline-flex min-h-9 items-center rounded-md border border-[#bccbd9] px-3 text-sm font-semibold text-[#003366] disabled:opacity-50";
   const buttonClass = "rounded-md bg-[#003366] px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50";
   return (
     <section aria-label="Meetings">
@@ -243,7 +250,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
         <p className="text-sm text-[#6b7280]">Meetings you participated in, including available historical meetings.</p>
       </div>
       {error && <p role="alert" className="mb-4 rounded-md bg-amber-50 p-3 text-sm text-amber-900">{error}</p>}
-      {loading && rows.length === 0 && <div role="status" aria-label="Recent meetings loading" className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {resultsLoading && rows.length === 0 && <div role="status" aria-label="Recent meetings loading" className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {[0, 1, 2].map((card) => <div key={card} aria-hidden="true" className="min-h-40 space-y-4 rounded-lg border border-[#dde1e8] bg-white p-4 motion-safe:animate-pulse">
           <div className="h-4 w-3/4 rounded bg-[#e5eaf2]" />
           <div className="h-3 w-2/3 rounded bg-[#eef1f6]" />
@@ -313,36 +320,39 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
         {appliedMonth ? `Applied dates: ${monthDayLabel.format(new Date(appliedMonth.range.start_from))} – ${monthDayLabel.format(new Date(Date.parse(appliedMonth.range.start_before) - 1))} · Johannesburg time` :
           `Applied time: ${timeFilter === "7" ? "Last 7 days" : timeFilter === "30" ? "Last 30 days" : "All available history"}`}
       </p>}
-      {!loading && !error && (isSubscribed || appliedMonth) && rows.length === 0 && <p>{search.trim() ? "No meetings match this search and the selected filters." : "No meetings match these filters."}</p>}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {!resultsLoading && !refreshing && !error && rows.length === 0 && <p>{search.trim() ? "No meetings match this search and the selected filters." : "No meetings match these filters."}</p>}
+      <div aria-label="Meeting results" aria-busy={resultsLoading || refreshing} className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {rows.map((row) => row.kind === "recent" ? (() => { const event = row.event; return (
-          <article key={`recent:${event.event_id}`} className="rounded-lg border border-[#dde1e8] bg-white p-4">
+          <article key={`recent:${event.event_id}`} className={cardClass}>
             <h3 className="font-semibold text-[#003366]">{event.subject}</h3>
-            <p className="my-2 text-sm text-[#6b7280]"><LocalDateTime value={event.start} /></p>
+            <p className="my-2 text-sm text-[#6b7280]">{parseInstant(event.start) ? `${formatDateTime(event.start, johannesburg)} SAST` : "Date not available"}</p>
             <p className="mb-3 text-xs text-[#6b7280]">Organised by {event.organizer_name || event.organizer_email}</p>
             <p className="mb-3 text-xs font-semibold text-[#6b7280]">{event.action === "no_recording" ? "No Recording" : "Recording Available"}</p>
-            {event.action === "view" && event.meeting_id && <Link className="font-semibold text-[#003366] underline" href={`/meetings/${event.meeting_id}`}>View</Link>}
+            <div className={actionsClass}>
+            {event.action === "view" && event.meeting_id && <Link className={viewClass} href={`/meetings/${event.meeting_id}`}>View</Link>}
             {event.can_request_view_access && event.meeting_id && onRequestHistoricalAccess && <button type="button" disabled={busy || loading} className={buttonClass} onClick={() => void act(() => onRequestHistoricalAccess(event.meeting_id!, "view"))}>Request View</button>}
-            {event.can_request_edit_access && event.meeting_id && (event.action === "view" ? onRequestMeetingEditAccess : onRequestHistoricalAccess) && <button type="button" disabled={busy || loading} className={`${buttonClass} ml-2`} onClick={() => void act(() => event.action === "view" ? onRequestMeetingEditAccess!(event.meeting_id!) : onRequestHistoricalAccess!(event.meeting_id!, "edit"))}>Request Edit</button>}
-            {event.pending_access_type && <span className="ml-2 text-sm text-amber-800">{event.pending_access_type === "view" ? "View Pending" : "Edit Pending"}</span>}
+            {event.can_request_edit_access && event.meeting_id && (event.action === "view" ? onRequestMeetingEditAccess : onRequestHistoricalAccess) && <button type="button" disabled={busy || loading} className={editClass} onClick={() => void act(() => event.action === "view" ? onRequestMeetingEditAccess!(event.meeting_id!) : onRequestHistoricalAccess!(event.meeting_id!, "edit"))}>Request Edit</button>}
+            {event.pending_access_type && <span className="text-sm text-amber-800">{event.pending_access_type === "view" ? "View Pending" : "Edit Pending"}</span>}
             {event.action === "process" && <button type="button" disabled={busy || loading} className={buttonClass} onClick={() => void act(() => processRecentMeeting(event.event_id, token))}>Process</button>}
             {event.action === "request_processing" && <button type="button" disabled={busy || loading} className={buttonClass} onClick={() => void act(() => requestRecordingProcessing(event.event_id, token))}>Request Processing</button>}
             {event.action === "request_pending" && <span className="text-sm text-amber-800">Request Pending</span>}
             {event.action === "processing" && <span className="text-sm text-blue-800">Processing: {event.processing_status === "pending" ? "Queued" : event.processing_status || "Unavailable"}</span>}
             {event.action === "unavailable" && <span className="text-sm text-amber-800">Unavailable</span>}
+            </div>
             {event.reason && <p className="mt-2 text-xs text-[#6b7280]">{event.reason}</p>}
           </article>
         ); })() : (() => { const meeting = row.meeting; return (
-          <article key={`historical:${meeting.id}`} className="rounded-lg border border-[#dde1e8] bg-white p-4">
+          <article key={`historical:${meeting.id}`} className={cardClass}>
             <h3 className="font-semibold text-[#003366]">{meeting.title ?? "Untitled Meeting"}</h3>
-            <p className="my-2 text-sm text-[#6b7280]"><LocalDateTime value={row.date} /></p>
+            <p className="my-2 text-sm text-[#6b7280]"><MeetingCardDate meeting={meeting} /></p>
             <p className="mb-3 text-xs text-[#6b7280]">Organised by {meeting.organizer_upn || "Unknown"}</p>
             <p className="mb-3 text-xs font-semibold text-[#6b7280]">Recording Available</p>
+            <div className={actionsClass}>
             {row.kind === "accessible" ? (
               <>
-                <Link className="font-semibold text-[#003366] underline" href={`/meetings/${meeting.id}`}>View</Link>
-                {meeting.can_request_edit_access && onRequestMeetingEditAccess && <button type="button" disabled={busy || loading} className={`${buttonClass} ml-2`} onClick={() => void act(() => onRequestMeetingEditAccess(meeting.id))}>Request Edit</button>}
-                {meeting.edit_access_status === "pending" && <span className="ml-2 text-sm text-amber-800">Edit Pending</span>}
+                <Link className={viewClass} href={`/meetings/${meeting.id}`}>View</Link>
+                {meeting.can_request_edit_access && onRequestMeetingEditAccess && <button type="button" disabled={busy || loading} className={editClass} onClick={() => void act(() => onRequestMeetingEditAccess(meeting.id))}>Request Edit</button>}
+                {meeting.edit_access_status === "pending" && <span className="text-sm text-amber-800">Edit Pending</span>}
               </>
             ) : meeting.edit_access_status === "pending" ? (
               <span className="text-sm text-amber-800">
@@ -357,6 +367,7 @@ export default function RecentMeetings({ token, cacheIdentity = "current-user", 
             ) : onRequestHistoricalAccess && (
               <button type="button" disabled={busy} className={buttonClass} onClick={() => setChoosingAccessFor(meeting.id)}>Request Access</button>
             )}
+            </div>
           </article>
         ); })())}
       </div>

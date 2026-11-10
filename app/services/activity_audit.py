@@ -3,11 +3,11 @@ from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 from .audit import add_audit_event
 
 
-def add_activity(db, *, meeting_id, upn, action, target_upn=None, resource_id=None, outcome="succeeded", error_category=None, correlation_id=None):
+def add_activity(db, *, meeting_id, upn, action, target_upn=None, resource_id=None, outcome="succeeded", error_category=None, correlation_id=None, metadata=None):
     identity = uuid4()
     correlation_id = correlation_id or identity
     meeting_id = UUID(str(meeting_id))
-    metadata = {}
+    metadata = dict(metadata or {})
     if target_upn:
         metadata["subject_actor_id"] = str(uuid5(NAMESPACE_URL,
             f"meeting-intel:activity-actor:{target_upn.strip().lower()}"))

@@ -80,6 +80,7 @@ class BusinessUnit(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    is_selectable: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
 
     users: Mapped[list["RegisteredUser"]] = relationship(back_populates="business_unit")
 
@@ -101,6 +102,7 @@ class RegisteredUser(Base):
     business_unit_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("business_units.id"), nullable=True
     )
+    business_unit_version: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_subscribed: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
@@ -308,6 +310,9 @@ class Meeting(Base):
 
     action_items: Mapped[list["ActionItem"]] = relationship(
         back_populates="meeting", cascade="all, delete-orphan"
+    )
+    manual_decisions: Mapped[list["MeetingDecision"]] = relationship(
+        order_by=lambda: (MeetingDecision.decision_date.desc(), MeetingDecision.id), viewonly=True,
     )
     # Row-level access: who is allowed to see this meeting's outputs.
     participants: Mapped[list["MeetingParticipant"]] = relationship(

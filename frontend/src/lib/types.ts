@@ -42,6 +42,9 @@ export interface MeetingSearchResult {
   matched_action_items: boolean;
 }
 
+export interface MeetingDecision { id: string; meeting_id: string; content: string; decision_date: string }
+export type MeetingDecisionInput = Pick<MeetingDecision, "content" | "decision_date"> & { id?: string };
+
 /** Independent task execution status. */
 export interface TaskCompletion {
   completed_at?: string | null;
@@ -136,6 +139,10 @@ export interface MeetingOut {
   is_organizer: boolean;
   can_edit: boolean;
   can_approve?: boolean;
+  can_revise_approval?: boolean;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  email_delivery_status?: string | null;
   can_request_edit_access: boolean;
   edit_access_status: "none" | "pending" | "approved" | "denied" | "organizer";
   access_request_type?: "view" | "edit" | null;
@@ -147,6 +154,7 @@ export interface MeetingOut {
 }
 
 export interface ExtractedJson {
+  review_content_revision?: string;
   extraction_mode?: "structured" | "transcript_only";
   objective?: string;
   meeting_time?: string | null;
@@ -272,6 +280,7 @@ export interface AppNotification {
 export interface BusinessUnit {
   id: number;
   name: string;
+  is_selectable: boolean;
 }
 
 /** A user registered on the Meeting Intelligence platform. */
@@ -280,6 +289,7 @@ export interface RegisteredUser {
   display_name: string | null;
   business_unit_id: number | null;
   business_unit_name: string | null;
+  business_unit_version: number;
   is_admin: boolean;
   is_subscribed: boolean;
   subscribed_at: string | null;
@@ -354,6 +364,8 @@ export interface AdminMeetingAccess {
 }
 
 export interface AdminAccessRequest {
+  decided_at?: string | null;
+  decided_by?: string | null;
   id: string;
   meeting_id: string | null;
   meeting: string;

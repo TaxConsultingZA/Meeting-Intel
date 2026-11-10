@@ -305,3 +305,26 @@ it("publishes calendar rows while processing requests remain pending", async () 
   expect(await screen.findByRole("link", { name: "View" })).toBeVisible();
   expect(screen.queryByRole("status", { name: "Recent meetings loading" })).not.toBeInTheDocument();
 });
+
+
+it("uses verified card dates and waits for saved records before showing an empty list", async () => {
+  const onRequestMeetingEditAccess = vi.fn().mockResolvedValue(undefined);
+  const base = { token: "token", isSubscribed: false, onRequestMeetingEditAccess };
+  const view = render(<RecentMeetings {...base} savedMeetingsLoading />);
+  expect(screen.queryByText("No meetings match these filters.")).not.toBeInTheDocument();
+  const date = new Date(Date.now() - 86400000).toISOString();
+  const meeting = historicalMeeting("verified", "Verified calendar record");
+  const undated = historicalMeeting("unknown", "Filename with 10.30");
+  view.rerender(<RecentMeetings {...base} accessibleMeetings={[
+    { ...meeting, recorded_at: null, can_request_edit_access: true,
+      card_date: { source: "meeting", date_source: "meeting", value: date, reason: null } },
+    { ...undated, recorded_at: null, card_date: { source: "unavailable", date_source: "unavailable", value: null, reason: null } },
+  ]} />);
+  expect(await screen.findByText("Verified calendar record")).toBeVisible();
+  expect(screen.getByText(/SAST/)).toBeVisible();
+  expect(screen.getByRole("link", { name: "View" })).toHaveAttribute("href", "/meetings/verified");
+  fireEvent.click(screen.getByRole("button", { name: "Request Edit" }));
+  await waitFor(() => expect(onRequestMeetingEditAccess).toHaveBeenCalledWith("verified"));
+  fireEvent.change(screen.getByRole("combobox", { name: "Time" }), { target: { value: "all" } });
+  expect(screen.getByText("Date not available")).toBeVisible();
+});

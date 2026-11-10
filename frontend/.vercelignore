@@ -5,6 +5,11 @@ node_modules/
 test-results/
 playwright-report/
 coverage/
+**/__tests__/**
+**/*.test.ts
+**/*.test.tsx
+e2e/
+src/test/
 *.tsbuildinfo
 AGENTS.md
 CLAUDE.md

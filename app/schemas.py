@@ -31,6 +31,7 @@ class MeetingDecisionEdit(BaseModel):
 
 class MeetingDecisionsIn(BaseModel):
     decisions: list[MeetingDecisionEdit] = Field(max_length=50)
+    expected_revision: str | None = None
 
 
 class MeetingDecisionOut(BaseModel):
@@ -71,6 +72,11 @@ class BusinessUnitOut(BaseModel):
     """API response shape for a business unit."""
     id: int
     name: str
+    is_selectable: bool
+
+
+class CreateBusinessUnitIn(BaseModel):
+    name: str
 
 
 class RegisteredUserOut(BaseModel):
@@ -79,6 +85,7 @@ class RegisteredUserOut(BaseModel):
     display_name: str | None
     business_unit_id: int | None
     business_unit_name: str | None
+    business_unit_version: int
     is_admin: bool
     is_subscribed: bool
     subscribed_at: str | None
@@ -104,6 +111,7 @@ class UpdateUserIn(BaseModel):
     """Payload for PATCH /admin/users/{upn} — update registration details."""
     display_name: str | None = None
     business_unit_id: int | None = None
+    business_unit_version: int | None = Field(default=None, ge=0)
     is_admin: bool | None = None
 
 
@@ -197,14 +205,17 @@ class ActionItemEdit(BaseModel):
     owner: str | None = None
     deadline_iso: str | None = None
     confidence: Confidence | None = None
+    expected_revision: str | None = None
 
 
 class TranscriptEdit(BaseModel):
     transcript: str
+    expected_revision: str | None = None
 
 
 class SpeakerMappingIn(BaseModel):
     mappings: dict[str, str | None]
+    expected_revision: str | None = None
 
 
 class EditAccessDecisionIn(BaseModel):
@@ -270,6 +281,10 @@ class MeetingOut(BaseModel):
     is_organizer: bool = False
     can_edit: bool = False
     can_approve: bool = False
+    can_revise_approval: bool = False
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    email_delivery_status: str | None = None
     can_request_edit_access: bool = False
     edit_access_status: str = "none"
     access_request_type: Literal["view", "edit"] | None = None

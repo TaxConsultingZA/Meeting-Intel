@@ -22,7 +22,7 @@ from app.db import get_db
 @pytest.fixture
 def decisions_api():
     engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    tables = [models.Meeting, models.MeetingParticipant, models.ActionItem, models.AuditEvent]
+    tables = [models.Meeting, models.MeetingParticipant, models.ActionItem, models.AuditEvent, models.ProcessedItem]
     if hasattr(models, "MeetingDecision"):
         tables.append(models.MeetingDecision)
     for model in tables:
@@ -59,7 +59,7 @@ def save(client, meeting, content="Adopt the budget", date="2026-10-22", id=None
     entry = {"content": content, "decision_date": date}
     if id:
         entry["id"] = id
-    return client.put(f"/reviews/{meeting.id}/decisions", json={"decisions": [entry]})
+    return client.put(f"/reviews/{meeting.id}/decisions", json={"decisions": [entry], "expected_revision": (meeting.extracted_json or {}).get("review_content_revision")})
 
 
 def test_create_edit_preserves_old_data_and_invalidates_approval_preview(decisions_api):
@@ -144,7 +144,7 @@ def test_decision_search_only_indexes_approved_authorised_records(decisions_api)
         rows = client.get("/reviews/search?q=searchable").json()
         assert [row["id"] for row in rows] == [str(meeting.id)]
         assert rows[0]["matched_decisions"] is True
-        assert set(rows[0]) == {"id", "title", "recorded_at", "matched_summary", "matched_action_items", "matched_decisions"}
+    assert set(rows[0]) == {"id", "title", "recorded_at", "card_date", "matched_summary", "matched_action_items", "matched_decisions"}
     participant.access_type = "request_view"
     participant.edit_access_status = "denied"
     session.commit()
@@ -207,7 +207,7 @@ def test_decision_ids_and_limit_cannot_cross_meetings_and_saves_lock_parent(deci
     db.commit.assert_not_awaited()
     entry = {"content": "Budget", "decision_date": "2026-10-22"}
     assert client.put(f"/reviews/{meeting.id}/decisions", json={"decisions": [entry] * 51}).status_code == 422
-    assert client.put(f"/reviews/{meeting.id}/decisions", json={"decisions": []}).json() == []
+    assert client.put(f"/reviews/{meeting.id}/decisions", json={"decisions": [], "expected_revision": meeting.extracted_json.get("review_content_revision")}).json() == []
     assert client.get(f"/reviews/{meeting.id}/decisions").json() == []
 
 
@@ -245,7 +245,9 @@ def test_admin_decisions_reuse_review_permissions_and_state_lock(decisions_api, 
     with patch("app.api.reviews._is_admin", new=AsyncMock(return_value=True)):
         assert client.get(f"/reviews/{meeting.id}/decisions").status_code == 200
         response = save(client, meeting, "Admin revised decision")
-        assert response.status_code == (200 if state == models.ProcessingState.awaiting_review else 409)
+        assert response.status_code == 200
+        if state == models.ProcessingState.approved:
+            assert meeting.state == models.ProcessingState.awaiting_review
 
 
 def test_duplicate_decision_ids_rejected_without_changing_saved_review(decisions_api):
@@ -253,10 +255,25 @@ def test_duplicate_decision_ids_rejected_without_changing_saved_review(decisions
     row = save(client, meeting).json()[0]
     db.commit.reset_mock()
     payload = {key: row[key] for key in ("id", "content", "decision_date")}
-    assert client.put(f"/reviews/{meeting.id}/decisions", json={"decisions": [payload, payload]}).status_code == 422
+    assert client.put(f"/reviews/{meeting.id}/decisions", json={"decisions": [payload, payload], "expected_revision": meeting.extracted_json.get("review_content_revision")}).status_code == 422
     db.commit.assert_not_awaited()
     assert session.scalar(select(models.MeetingDecision.content)) == "Adopt the budget"
     assert meeting.extracted_json["objective"] == "Keep old data"
+
+
+def test_stale_decision_version_preserves_saved_content(decisions_api):
+    client, session, meeting, _, _, db = decisions_api
+    first = save(client, meeting)
+    assert first.status_code == 200
+    row = first.json()[0]
+    db.commit.reset_mock()
+    stale = client.put(f"/reviews/{meeting.id}/decisions", json={
+        "decisions": [{"id": row["id"], "content": "Stale overwrite", "decision_date": "2026-10-22"}],
+        "expected_revision": None,
+    })
+    assert stale.status_code == 409
+    db.commit.assert_not_awaited()
+    assert session.scalar(select(models.MeetingDecision.content)) == "Adopt the budget"
 
 
 def test_decisions_migration_extends_the_deployed_single_head():
@@ -264,8 +281,8 @@ def test_decisions_migration_extends_the_deployed_single_head():
     from alembic.script import ScriptDirectory
 
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert scripts.get_heads() == ["92d6a10f4e72"]
+    assert scripts.get_heads() == ["74f63b81ac20"]
     revisions = list(scripts.iterate_revisions("heads", "81c5f02a9d31"))
-    assert [revision.revision for revision in revisions] == ["92d6a10f4e72", "51d8f2a7c903"]
-    assert revisions[0].down_revision == "51d8f2a7c903"
-    assert revisions[1].down_revision == "81c5f02a9d31"
+    assert [revision.revision for revision in revisions] == ["74f63b81ac20", "68c4a7fe210d", "62e9a3b8d014", "92d6a10f4e72", "51d8f2a7c903"]
+    assert revisions[-2].down_revision == "51d8f2a7c903"
+    assert revisions[-1].down_revision == "81c5f02a9d31"

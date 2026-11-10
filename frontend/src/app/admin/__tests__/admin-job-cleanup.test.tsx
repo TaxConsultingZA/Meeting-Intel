@@ -6,8 +6,8 @@ import AdminClient from "../admin-client";
 
 vi.mock("@/lib/api", () => ({
   cleanupAdminJob: vi.fn(), decideMeetingEditAccess: vi.fn(), decideRecordingProcessing: vi.fn(),
-  getAdminMeetings: vi.fn(), getAdminUserSyncStatus: vi.fn(), getBusinessUnits: vi.fn(),
-  getRecordingJobs: vi.fn(), getRegisteredUsers: vi.fn(), registerUser: vi.fn(), removeUser: vi.fn(),
+  getAdminMeetings: vi.fn().mockResolvedValue([]), getAuditEvents: vi.fn().mockResolvedValue({items: []}), getAdminUserSyncStatus: vi.fn(), getBusinessUnits: vi.fn().mockResolvedValue([]),
+  getRecordingJobs: vi.fn(), getRegisteredUsers: vi.fn().mockResolvedValue([]), registerUser: vi.fn(), removeUser: vi.fn(),
   reprocessRecordingJob: vi.fn(), revokeAdminMeetingAccess: vi.fn(), updateUser: vi.fn(),
 }));
 vi.mock("@/components/recording-jobs", () => ({ JobControls: () => <span>Existing controls</span>, recordingStatusMessage: () => "Recording processing status" }));
@@ -33,8 +33,8 @@ it("requires confirmation and offers cleanup only for eligible jobs", async () =
   const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
   render(<AdminClient initialRequests={[]} callerUpn="admin@example.test" accessToken="token" />);
 
-  fireEvent.click(screen.getByText("Processing Jobs"));
-  expect(await screen.findAllByRole("button", { name: "Clean up" })).toHaveLength(2);
+  fireEvent.click((await screen.findByText("failed job")).closest("article")!.querySelector("button")!);
+  expect(await screen.findAllByRole("button", { name: "Clean up" })).toHaveLength(1);
   fireEvent.click(screen.getAllByRole("button", { name: "Clean up" })[0]);
   expect(cleanupAdminJob).not.toHaveBeenCalled();
   fireEvent.click(screen.getAllByRole("button", { name: "Clean up" })[0]);
@@ -42,7 +42,7 @@ it("requires confirmation and offers cleanup only for eligible jobs", async () =
   await waitFor(() => expect(cleanupAdminJob).toHaveBeenCalledWith("job-failed", "token"));
   await waitFor(() => expect(getRecordingJobs).toHaveBeenCalledTimes(2));
   expect(confirm).toHaveBeenCalledWith("Remove this failed operational job record? Saved meeting content will be kept.");
-  expect(screen.getAllByText("Existing controls")).toHaveLength(4);
+  await waitFor(() => expect(screen.queryByText("failed job")).toBeNull());
 });
 
 it("shows a clear error when cleanup is rejected", async () => {
@@ -51,7 +51,7 @@ it("shows a clear error when cleanup is rejected", async () => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
   render(<AdminClient initialRequests={[]} callerUpn="admin@example.test" accessToken="token" />);
 
-  fireEvent.click(screen.getByText("Processing Jobs"));
+  fireEvent.click((await screen.findByText("failed job")).closest("article")!.querySelector("button")!);
   fireEvent.click(await screen.findByRole("button", { name: "Clean up" }));
 
   expect(await screen.findByText("Job history linked to a processing request cannot be cleaned up")).toBeInTheDocument();

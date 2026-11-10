@@ -584,13 +584,13 @@ export default function DashboardClient({ meetings: initialMeetings, recordingJo
       {/* Upcoming Meetings */}
       {hasOpenedRecent && (
         <div hidden={tab !== "recent"}>
-          {historicalLoading && historical.length === 0 && <DashboardCardSkeleton label="Historical meetings loading" />}
           {historicalError && <p role="alert" className="mb-3 text-sm text-amber-900">{historicalError}</p>}
           <RecentMeetings
             token={accessToken}
             cacheIdentity={upn}
             isSubscribed={isSubscribed}
             accessibleMeetings={meetings}
+            savedMeetingsLoading={loading.meetings || historicalLoading}
             refreshKey={calendarRefreshKey}
             historical={historical}
             processingRequests={processingRequests}

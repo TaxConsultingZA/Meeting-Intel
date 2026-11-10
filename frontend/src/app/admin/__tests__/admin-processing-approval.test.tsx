@@ -6,8 +6,8 @@ import AdminClient from "../admin-client";
 
 vi.mock("@/lib/api", () => ({
   cleanupAdminJob: vi.fn(),
-  decideMeetingEditAccess: vi.fn(), decideRecordingProcessing: vi.fn(), getAdminMeetings: vi.fn(),
-  getAdminUserSyncStatus: vi.fn(), getBusinessUnits: vi.fn(), getRecordingJobs: vi.fn(), getRegisteredUsers: vi.fn(),
+  decideMeetingEditAccess: vi.fn(), decideRecordingProcessing: vi.fn(), getAdminMeetings: vi.fn().mockResolvedValue([]), getAuditEvents: vi.fn().mockResolvedValue({items: []}),
+  getAdminUserSyncStatus: vi.fn(), getBusinessUnits: vi.fn().mockResolvedValue([]), getRecordingJobs: vi.fn().mockResolvedValue([]), getRegisteredUsers: vi.fn().mockResolvedValue([]),
   registerUser: vi.fn(), removeUser: vi.fn(), reprocessRecordingJob: vi.fn(),
   revokeAdminMeetingAccess: vi.fn(), updateUser: vi.fn(),
 }));
@@ -28,13 +28,10 @@ function processing(overrides: Partial<AdminAccessRequest> = {}): AdminAccessReq
   };
 }
 
-it("provides an intentional Audit Logs entry within the existing Admin layout", () => {
+it("keeps record search and access requests in the unified Admin workspace", () => {
   render(<AdminClient initialRequests={[]} callerUpn="admin@example.test" accessToken="token" />);
-  const entry = screen.getByRole("link", { name: /Audit Logs/ });
-  expect(entry).toHaveAttribute("href", "/admin/audit-logs");
-  expect(entry).toHaveClass("border-l-4", "rounded-lg");
-  expect(entry).toHaveTextContent("email approvals");
-  expect(screen.getByRole("main")).toHaveClass("max-w-5xl");
+  expect(screen.getByRole("heading", {name: "Find a record"})).toBeVisible();
+  expect(screen.getByRole("heading", {name: "Access Requests"})).toBeVisible();
 });
 
 it("confirms and decides only pending processing requests", async () => {
@@ -47,13 +44,13 @@ it("confirms and decides only pending processing requests", async () => {
       processing({ id: "rejected", meeting: "Rejected request", status: "denied", can_approve: false }),
     ]} callerUpn="admin@example.test" accessToken="token" />);
 
-  expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Approve" }).filter(button => !button.hasAttribute("disabled"))).toHaveLength(1);
   expect(screen.getAllByRole("button", { name: "Reject" })).toHaveLength(2);
-  fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+  fireEvent.click(screen.getAllByRole("button", { name: "Approve" }).find(button => !button.hasAttribute("disabled"))!);
 
   expect(confirm).toHaveBeenCalledWith("Approve processing request for Project Review?");
   await waitFor(() => expect(decideRecordingProcessing).toHaveBeenCalledWith("request-1", true, "token"));
-  await waitFor(() => expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled());
   expect(screen.getAllByRole("button", { name: "Reject" })).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Reject" }));
   expect(confirm).toHaveBeenCalledWith("Reject processing request for Existing result?");

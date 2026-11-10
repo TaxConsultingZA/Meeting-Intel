@@ -17,7 +17,7 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 it("loads compact per-user sync diagnostics only when requested", async () => {
   vi.mocked(getRegisteredUsers).mockResolvedValue([{
     upn: "member@example.test", display_name: "Member", business_unit_id: null,
-    business_unit_name: null, is_admin: false, is_subscribed: true,
+    business_unit_name: null, business_unit_version: 0, is_admin: false, is_subscribed: true,
     subscribed_at: null, registered_at: "2026-09-15T00:00:00Z",
   }]);
   vi.mocked(getBusinessUnits).mockResolvedValue([]);

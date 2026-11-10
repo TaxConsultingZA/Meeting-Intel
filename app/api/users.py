@@ -2,7 +2,8 @@
 import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +12,7 @@ from ..db import get_db
 from ..email_templates import build_welcome_email
 from ..graph import client as graph
 from ..models import RegisteredUser, RecordingJob
+from ..services.business_units import record_assignment, require_assignment_version, require_selectable_unit
 from ..services.job_control import public_job_error
 from ..services.sync_state import list_sync_status
 from ..schemas import RegisteredUserOut, SubscriptionOut, SyncStateOut
@@ -27,6 +29,7 @@ def _to_out(user: RegisteredUser) -> RegisteredUserOut:
         display_name=user.display_name,
         business_unit_id=user.business_unit_id,
         business_unit_name=user.business_unit.name if user.business_unit else None,
+        business_unit_version=user.business_unit_version,
         is_admin=user.is_admin,
         is_subscribed=user.is_subscribed,
         subscribed_at=user.subscribed_at.isoformat() if user.subscribed_at else None,
@@ -152,3 +155,34 @@ async def unsubscribe(
     )
     await db.commit()
     return SubscriptionOut(is_subscribed=False, subscribed_at=None)
+
+
+class SelectBusinessUnit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    business_unit_id: int
+    business_unit_version: int = Field(ge=0)
+
+
+@router.put("/users/me/business-unit", response_model=RegisteredUserOut)
+async def select_business_unit(
+    body: SelectBusinessUnit, db: AsyncSession = Depends(get_db),
+    upn: str = Depends(current_user),
+):
+    if db.bind.dialect.name == "sqlite":
+        await db.execute(text("BEGIN IMMEDIATE"))
+    user = await db.scalar(
+        select(RegisteredUser).where(RegisteredUser.upn == upn).with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if user is None:
+        raise HTTPException(404, "Open your account before choosing a Business Unit.")
+    if user.business_unit_id is not None:
+        if body.business_unit_id != user.business_unit_id:
+            raise HTTPException(409, "Your Business Unit is already assigned. Ask an administrator to change it.")
+    else:
+        require_assignment_version(user, body.business_unit_version)
+        await require_selectable_unit(db, body.business_unit_id)
+        await record_assignment(db, user, upn, body.business_unit_id)
+        await db.commit()
+    return await get_me(db, upn)

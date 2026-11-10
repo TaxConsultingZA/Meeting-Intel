@@ -348,6 +348,25 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
       {dp_rows}
     </table>"""
 
+    # Historical approvals predate decision rendering; do not present decisions
+    # as part of an email that was approved before this capability existed.
+    include_decisions = getattr(meeting, "state", None) not in {"approved", "sent"} or data.get("manual_decisions_approved_in_email") is True
+    manual_decisions = vars(meeting).get("manual_decisions", []) if include_decisions else []
+    manual_decisions_table = ""
+    if manual_decisions:
+        rows = "".join(
+            f"<tr>{_td(decision.decision_date.isoformat(), i % 2 == 1)}"
+            f"{_td(decision.content, i % 2 == 1)}</tr>"
+            for i, decision in enumerate(manual_decisions)
+        )
+        manual_decisions_table = f"""
+        <tr><td style="padding-top:12px;padding-bottom:4px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>{_th('Date')}{_th('Human-entered decision')}</tr>
+            {rows}
+          </table>
+        </td></tr>"""
+
     # ── action items table ────────────────────────────────────────────────────
     ai_rows = ""
     if action_items:
@@ -526,6 +545,7 @@ def build_meeting_email(meeting: "Meeting") -> tuple[str, str]:
         <!-- KEY DISCUSSION POINTS -->
         {_section_heading("Key Discussion Points")}
         <tr><td style="padding-top:12px;padding-bottom:4px;">{discussion_table}</td></tr>
+        {manual_decisions_table}
 
         <!-- ACTION ITEMS -->
         {_section_heading("Action Items")}

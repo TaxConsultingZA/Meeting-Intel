@@ -1,11 +1,11 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { getAdminMeetings, getBusinessUnits, getRecordingJobs, getRegisteredUsers } from "@/lib/api";
 import AdminClient from "../admin-client";
 
 vi.mock("@/lib/api", () => ({
   cleanupAdminJob: vi.fn(),
-  decideMeetingEditAccess: vi.fn(), decideRecordingProcessing: vi.fn(), getAdminMeetings: vi.fn(),
+  decideMeetingEditAccess: vi.fn(), decideRecordingProcessing: vi.fn(), getAdminMeetings: vi.fn(), getAuditEvents: vi.fn().mockResolvedValue({items: []}),
   getAdminUserSyncStatus: vi.fn(), getBusinessUnits: vi.fn(), getRecordingJobs: vi.fn(), getRegisteredUsers: vi.fn(),
   registerUser: vi.fn(), removeUser: vi.fn(), reprocessRecordingJob: vi.fn(),
   revokeAdminMeetingAccess: vi.fn(), updateUser: vi.fn(),
@@ -14,45 +14,17 @@ vi.mock("@/components/recording-jobs", () => ({ JobControls: () => null }));
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-it("keeps access requests open and lazily loads collapsed sections once", async () => {
+it("loads the unified records workspace and loads Users without a collapse control", async () => {
   vi.mocked(getAdminMeetings).mockResolvedValue([]);
   vi.mocked(getRecordingJobs).mockResolvedValue([]);
   vi.mocked(getRegisteredUsers).mockResolvedValue([]);
   vi.mocked(getBusinessUnits).mockResolvedValue([]);
   render(<AdminClient initialRequests={[]} callerUpn="admin@example.test" accessToken="token" />);
-
-  expect(screen.getByText("No access requests.")).toBeVisible();
-  expect(getAdminMeetings).not.toHaveBeenCalled();
-  expect(getRecordingJobs).not.toHaveBeenCalled();
-  expect(getRegisteredUsers).not.toHaveBeenCalled();
-
-  fireEvent.click(screen.getByText("Meetings"));
-  await waitFor(() => expect(getAdminMeetings).toHaveBeenCalledTimes(1));
-  fireEvent.click(screen.getByText(/Meetings/));
-  fireEvent.click(screen.getByText(/Meetings/));
-  await waitFor(() => expect(getAdminMeetings).toHaveBeenCalledTimes(1));
-
-  fireEvent.click(screen.getByText("Users"));
-  await waitFor(() => {
-    expect(getRegisteredUsers).toHaveBeenCalledWith("token");
-    expect(getBusinessUnits).toHaveBeenCalledWith("token");
-  });
-});
-
-it("keeps concurrent sections loading independently and avoids duplicate in-flight reads", async () => {
-  let finish!: (rows: never[]) => void;
-  vi.mocked(getAdminMeetings).mockReturnValue(new Promise(resolve => { finish = resolve; }));
-  vi.mocked(getRecordingJobs).mockResolvedValue([]);
-  render(<AdminClient initialRequests={[]} callerUpn="admin@example.test" accessToken="token" />);
-  fireEvent.click(screen.getByText("Meetings"));
-  await screen.findByRole("status", { name: "Meetings loading" });
-  fireEvent.click(screen.getByText("Processing Jobs"));
-  await screen.findByText(/No recording jobs yet/);
-  expect(screen.getByRole("status", { name: "Meetings loading" })).toBeVisible();
-  fireEvent.click(screen.getByText("Meetings"));
-  fireEvent.click(screen.getByText("Meetings"));
-  await act(async () => {});
+  await screen.findByText("No matching records in the loaded range.");
+  expect(screen.getByRole("heading", {name: "Access Requests"})).toBeVisible();
   expect(getAdminMeetings).toHaveBeenCalledOnce();
-  await act(async () => { finish([]); });
-  expect(screen.queryByRole("status", { name: "Meetings loading" })).not.toBeInTheDocument();
+  expect(getRecordingJobs).toHaveBeenCalledOnce();
+  expect(screen.getByRole("heading", {name: /^Users/})).toBeVisible();
+  expect(screen.queryByRole("button", {name: /^Users/})).not.toBeInTheDocument();
+  await waitFor(() => expect(getRegisteredUsers).toHaveBeenCalledWith("token"));
 });

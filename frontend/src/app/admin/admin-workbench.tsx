@@ -1,10 +1,11 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { getAdminMeetings, getRecordingJobs, getAuditEvents, getMeeting } from "@/lib/api";
 import type { AdminMeetingOut, RecordingJobOut, AuditEvent, AuditFilters, MeetingOut } from "@/lib/types";
 import CalendarDateField, { calendarDateError } from "@/components/calendar-date-field";
 import { parseInstant } from "@/lib/time";
 import MeetingDetailClient from "../meetings/[id]/meeting-detail-client";
+import { AdminStatus, readable } from "./access-requests-panel";
 import AdminModal from "./admin-modal";
 import { eventTitle, outcomeDescription } from "./audit-logs/audit-display";
 import AuditEventDialog from "./audit-logs/audit-event-dialog";
@@ -13,6 +14,7 @@ const date = (value: string | null) => {
   return instant ? instant.toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg" }) : "Date not available";
 };
 const dayMs = 86400000;
+const meetingStatuses = ["queued", "downloading", "transcribing", "extracting", "awaiting_review", "approved", "sent", "failed", "cancelled"];
 function bounds({from, to}: {from: string; to: string}) {
   return {
     start: from ? new Date(`${from}T00:00:00+02:00`) : undefined,
@@ -20,31 +22,9 @@ function bounds({from, to}: {from: string; to: string}) {
   };
 }
 
-const pageSize = 200;
-
-async function collectPages<T>(read: (offset: number) => Promise<T[]>, idOf: (row: T) => string) {
-  const rows = new Map<string, T>();
-  for (let offset = 0; ; offset += pageSize) {
-    const batch = await read(offset);
-    const previousSize = rows.size;
-    for (const row of batch) rows.set(idOf(row), row);
-    if (batch.length < pageSize) return [...rows.values()];
-    if (rows.size === previousSize) throw new Error("The records API did not advance to the next page.");
-  }
-}
-
 const recordDate = (record: AdminMeetingOut) => record.card_date ? record.card_date.value : record.recorded_at;
 const input = "w-full min-w-0 rounded border p-2 text-sm";
-function readable(value: string) {
-  const text = value.replaceAll("_", " ");
-  return text.charAt(0).toUpperCase() + text.slice(1);
-}
-
-function AdminStatus({ value }: { value: string }) {
-  return <span className="admin-status">{readable(value)}</span>;
-}
-
-export default function AdminWorkbench({ accessToken, callerUpn }: { accessToken: string; callerUpn: string }) {
+export default function AdminWorkbench({ accessToken, callerUpn, renderControls, pendingRequests }: { accessToken: string; callerUpn: string; pendingRequests?: number; renderControls?: (meeting: AdminMeetingOut, jobs: RecordingJobOut[], refresh: () => Promise<void>, area: "access" | "processing") => ReactNode }) {
   const auditFiltersRef = useRef<AuditFilters>({});
   const detailFiltersRef = useRef<AuditFilters>({});
   const [detailEvents, setDetailEvents] = useState<AuditEvent[]>([]);
@@ -72,7 +52,6 @@ export default function AdminWorkbench({ accessToken, callerUpn }: { accessToken
   const [meetings, setMeetings] = useState<AdminMeetingOut[]>([]);
   const [jobs, setJobs] = useState<RecordingJobOut[]>([]);
   const [events, setEvents] = useState<AuditEvent[]>([]);
-  const [cursor, setCursor] = useState<string | undefined>();
   const [query, setQuery] = useState(""); const [actor, setActor] = useState("");
   const [appliedActor, setAppliedActor] = useState("");
   const [status, setStatus] = useState(""); const [from, setFrom] = useState(""); const [to, setTo] = useState("");
@@ -86,13 +65,11 @@ export default function AdminWorkbench({ accessToken, callerUpn }: { accessToken
   const [selected, setSelected] = useState<AdminMeetingOut | null>(null);
   const [content, setContent] = useState<MeetingOut | null>(null);
   const [detailError, setDetailError] = useState("");
-  const [windowLabel, setWindowLabel] = useState("");
-  const [event, setEvent] = useState<AuditEvent | null>(null);
   async function load(next?: string, actorValue = appliedActor, dates = appliedDates) {
     const request = ++recordRequest.current;
     const current = () => request === recordRequest.current;
     setBusy(true); setError(""); setActivityError(false);
-    if (!next) { setEvents([]); setCursor(undefined); setWindowLabel(""); }
+    if (!next) setEvents([]);
     try {
       const filters: AuditFilters = actorValue.trim() ? (actorValue.includes("@") ? { actor_upn: actorValue.trim() } : { actor_id: actorValue.trim() }) : {};
       if (!next) {
@@ -105,16 +82,24 @@ export default function AdminWorkbench({ accessToken, callerUpn }: { accessToken
         auditFiltersRef.current = filters;
       }
       try {
-        const page = await getAuditEvents(accessToken, auditFiltersRef.current, next);
+        const collected: AuditEvent[] = [];
+        const seenCursors = new Set<string>();
+        let pageCursor = next;
+        do {
+          if (pageCursor && seenCursors.has(pageCursor)) throw new Error("Repeated activity cursor");
+          if (pageCursor) seenCursors.add(pageCursor);
+          const page = await getAuditEvents(accessToken, auditFiltersRef.current, pageCursor);
+          collected.push(...page.items);
+          pageCursor = actorValue.trim() ? page.next_cursor || undefined : undefined;
+        } while (pageCursor && current());
         if (!current()) return;
-        setWindowLabel(`${date(page.window_start)} – ${date(page.window_end)}`);
-        setEvents(old => next ? [...old, ...page.items] : page.items); setCursor(page.next_cursor ?? undefined);
+        setEvents(collected);
       } catch { if (!current()) return; setActivityError(true); }
       if (!next) {
-        const [m, j] = await Promise.all([
-          collectPages(offset => getAdminMeetings(accessToken, offset), row => row.id),
-          collectPages(offset => getRecordingJobs(accessToken, undefined, pageSize, offset), row => row.job_id),
-        ]);
+        const m: AdminMeetingOut[] = []; const j: RecordingJobOut[] = [];
+        const meetingIds = new Set<string>(), jobIds = new Set<string>();
+        for (let offset = 0; ; offset += 200) { const batch = await getAdminMeetings(accessToken, offset); if (!current()) return; if (batch.some(row => meetingIds.has(row.id))) throw new Error("Repeated meeting page"); batch.forEach(row => meetingIds.add(row.id)); m.push(...batch); if (batch.length < 200) break; }
+        for (let offset = 0; ; offset += 200) { const batch = await getRecordingJobs(accessToken, undefined, 200, offset); if (!current()) return; if (batch.some(row => jobIds.has(row.job_id))) throw new Error("Repeated job page"); batch.forEach(row => jobIds.add(row.job_id)); j.push(...batch); if (batch.length < 200) break; }
         if (!current()) return;
         setMeetings(m); setJobs(j); setSelected(current => current ? m.find(row => row.id === current.id) || (j.some(job => job.job_id === current.id) ? current : null) : null);
       }
@@ -137,11 +122,15 @@ export default function AdminWorkbench({ accessToken, callerUpn }: { accessToken
   const linkedJobs = selected ? jobs.filter(job => job.meeting_id === selected.id || job.job_id === selected.id) : [];
   const linkedEvents = selected ? detailEvents.filter(entry => related(entry, selected)).sort((a, b) => b.occurred_at.localeCompare(a.occurred_at)) : [];
   const aiEvents = linkedEvents.filter(entry => entry.event_type.startsWith("ai."));
+  const latestEdit = linkedEvents.find(entry => ["review.reopened", "review.revised"].includes(entry.event_type));
+  const reopened = linkedEvents.find(entry => entry.event_type === "review.reopened");
+  const currentApproved = content?.state === "approved" || content?.state === "sent";
+  const revision = content?.extracted_json?.review_content_revision;
   const evidenceUnavailable = detailBusy ? "Activity evidence is loading." : detailActivityError ? "Activity evidence could not be loaded." : null;
   const sections = ["Meeting & recording", "Processing & AI", "Review & actions", "Access", "Activity & email"];
-  return <section className="admin-workspace space-y-4 mb-6 min-w-0 [overflow-wrap:anywhere]">
-    {!busy && !error && <div className="admin-overview"><div><strong>{jobs.filter(j => j.status === "failed" || j.is_stuck).length}</strong>Failed or stuck processing</div><div><strong>{meetings.filter(m => m.meeting_status === "awaiting_review").length}</strong>Awaiting review</div></div>}
-    <section className="admin-card"><header className="admin-card-header"><h2>Find a record</h2><span>Meetings, recordings &amp; activity</span></header><form onSubmit={e => {
+  return <section className="space-y-4 mb-6 min-w-0 [overflow-wrap:anywhere]">
+    {!busy && !error && <div className="admin-overview"><div><strong>{jobs.filter(j => j.status === "failed" || j.is_stuck).length}</strong>Failed or stuck processing</div><div><strong>{meetings.filter(m => m.meeting_status === "awaiting_review").length}</strong>Awaiting review</div>{pendingRequests !== undefined && <div><strong>{pendingRequests}</strong>Pending access requests</div>}</div>}
+    <div className="admin-record-workspace"><section><header className="admin-card-header"><h2>Find a record</h2><span>Meetings, recordings &amp; activity</span></header><form onSubmit={e => {
       e.preventDefault();
       setDateSearchAttempted(true);
       if (fromError || toError) return;
@@ -150,7 +139,7 @@ export default function AdminWorkbench({ accessToken, callerUpn }: { accessToken
       setAppliedDates(dates);
       void load(undefined, actor, dates);
     }} className="admin-filter-grid">
-      <label>Record, ID or owner<input className={input} value={query} onChange={e => setQuery(e.target.value)} /></label>
+      <label>Record, ID or owner<input autoComplete="off" name="admin-record-search" className={input} value={query} onChange={e => setQuery(e.target.value)} /></label>
       <label>Actor email or system ID<input className={input} value={actor} onChange={e => setActor(e.target.value)} /></label>
       <CalendarDateField id="admin-record-from" label="From (Johannesburg)" value={from} onChange={setFrom}
         error={dateSearchAttempted ? fromError : undefined} />
@@ -160,19 +149,17 @@ export default function AdminWorkbench({ accessToken, callerUpn }: { accessToken
         <p role="status">Applied dates: {appliedDates.from || appliedDates.to ? `${appliedDates.from || "Any earlier date"} to ${appliedDates.to || "Any later date"}` : "No date limits"} · Johannesburg time</p>
         {(from !== appliedDates.from || to !== appliedDates.to) && <p>Select Search to apply the date changes.</p>}
       </div>
-      <label>Status<select className={input} value={status} onChange={e => setStatus(e.target.value)}><option value="">All statuses</option>{Array.from(new Set(meetings.flatMap(m => [m.meeting_status, m.job_status]).filter(Boolean))).map(s => <option key={s} value={s!}>{readable(s!)}</option>)}</select></label>
+      <label>Status<select className={input} value={status} onChange={e => setStatus(e.target.value)}><option value="">All statuses</option>{meetingStatuses.map(s => <option key={s} value={s}>{readable(s)}</option>)}</select></label>
       <div className="admin-filter-actions"><button className="admin-primary" type="submit" disabled={busy}>Search</button><button type="button" onClick={() => { setQuery(""); setActor(""); setAppliedActor(""); setStatus(""); setFrom(""); setTo(""); setDateSearchAttempted(false); setAppliedDates({from: "", to: ""}); void load(undefined, "", {from: "", to: ""}); }}>Refresh default view</button><button type="button" onClick={() => { setQuery(""); setActor(""); setStatus(""); setFrom(""); setTo(""); setDateSearchAttempted(false); setAppliedActor(""); setSelected(null); setAppliedDates({from: "", to: ""}); void load(undefined, "", {from: "", to: ""}); }}>Reset</button></div>
     </form></section>
     {busy && <p role="status">Loading records…</p>}{error && <p role="alert">{error} <button onClick={() => void load()}>Retry</button></p>}
-    <section className="admin-card" aria-labelledby="admin-records"><header className="admin-card-header"><h2 id="admin-records">Meetings &amp; recordings</h2><span>{busy ? "Loading records…" : `${rows.length} results`}</span></header>
+    <section aria-labelledby="admin-records"><header className="admin-card-header"><h2 id="admin-records">Meetings &amp; recordings</h2><span>{busy ? "Loading records…" : `${rows.length} results`}</span></header>
     <div tabIndex={0} aria-label="Meeting results" onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "End" || e.key === "Home")) { e.preventDefault(); e.currentTarget.scrollTop = e.key === "End" ? e.currentTarget.scrollHeight : 0; } }} className="admin-scroll">
       <div className="admin-result-columns admin-sticky" aria-hidden="true">{["Meeting / recording","Owner","Date / source","Meeting status","Processing","Attention","Details"].map((v,i)=><span key={i}>{v}</span>)}</div>
       {rows.map(m => <article key={m.id} className="admin-result-row"><strong title={m.title || "Untitled meeting"}>{m.title || "Untitled meeting"}</strong><span className="admin-muted">{m.owner_upn || m.organizer_upn || "Owner not recorded"}</span><div><span>{date(recordDate(m))}</span><p className="admin-muted">{recordDate(m) ? (m.card_date?.source === "meeting" ? "Meeting date" : "Recording date") : "Date source unavailable"}</p></div><AdminStatus value={m.meeting_status}/><AdminStatus value={m.job_status || "Not recorded"}/><span className="admin-muted">{m.job_status === "failed" ? "Processing needs attention" : jobs.some(j => j.meeting_id===m.id && j.is_stuck) ? "Processing may be stuck" : "—"}</span><button onClick={e => { setDetailOpener(e.currentTarget); void open(m); }}>Details</button></article>)}
       {!busy && !error && !rows.length && <p className="admin-empty">No matching records in the loaded range.</p>}
-    </div><footer className="admin-card-footer"><span>{meetings.length} meetings / {jobs.length} jobs loaded · {rows.length} matching records</span><span>{busy ? "Reading API pages…" : error ? "Loading incomplete — retry above" : "All record pages loaded"} · Johannesburg time</span></footer></section>
+    </div><footer className="admin-card-footer"><span>{meetings.length} meetings / {jobs.length} jobs loaded · {rows.length} matching records</span><span>{busy ? "Reading API pages…" : error ? "Loading incomplete — retry above" : "All record pages loaded"} · Johannesburg time</span></footer></section></div>
     {activityError && <p role="alert">Activity could not be loaded. Meeting results use their own date range. <button type="button" onClick={() => void load()}>Retry activity</button></p>}
-    {appliedActor && <div tabIndex={0} className="max-h-96 overflow-y-auto"><h2>Actor activity across meetings (loaded audit pages)</h2>{events.map(e => <button className="block p-2 text-left" key={e.id} onClick={() => setEvent(e)}>{date(e.occurred_at)} · {e.event_type} · {e.outcome} · {e.meeting_id || e.resource_id}</button>)}</div>}
-    <div className="admin-card-footer"><span>{events.length} activity records loaded · {cursor ? "More available" : "No more in the queried window"}</span>{cursor && <button disabled={busy} onClick={() => void load(cursor)}>Load more activity</button>}<details><summary>Search scope</summary><p>Meeting and job search includes every API page. Activity uses a separate window: 7 days by default, up to 90 days from a selected start date. Counts refer to loaded records.</p><p>{windowLabel}</p></details></div>
     {selected && <AdminModal title={selected.title || "Meeting details"} status={<AdminStatus value={content?.state || selected.meeting_status}/>}
       onClose={() => setSelected(null)} opener={detailOpener} bodyRef={detailBody} navigation={
       <nav aria-label="Details sections" className="admin-detail-nav">
@@ -191,29 +178,32 @@ export default function AdminWorkbench({ accessToken, callerUpn }: { accessToken
           <h3 tabIndex={-1} className="admin-section-title">{sections[0]}</h3>
           <p>Organiser: {content?.organizer_upn || selected.organizer_upn || "Not recorded"}</p><p>Owner: {selected.owner_upn || "Not recorded"}</p>
           <p>Participants: {content ? content.calendar_participants.map(p => p.name).join(", ") || "No verified participant records" : detailError ? "Participant data unavailable" : "Loading participant data…"}</p>
-          <p>Meeting time: {selected.card_date?.source === "meeting" ? `${date(selected.card_date.value)} · ${selected.card_date.reason || "meeting date metadata"}` : "No verified meeting time"}</p>
-          <p>Recording time: {selected.card_date?.source === "recording" && selected.card_date.value ? `${date(selected.card_date.value)} · recording metadata` : "No separately verified recording time"}</p><p>Recording link: {selected.recording_status === "tracked" ? "Tracked" : "Not verified"}</p>
+          <p>Meeting time: {content?.card_date?.source === "meeting" ? `${date(content.card_date.value)} · ${content.card_date.reason || "meeting date metadata"}` : "No verified meeting time"}</p>
+          <p>Recording time: {content?.card_date?.source === "recording" && content.card_date.value ? `${date(content.card_date.value)} · recording metadata` : "No separately verified recording time"}</p><p>Recording link: {selected.recording_status === "tracked" ? "Tracked" : "Not verified"}</p>
           <p>{linkedJobs.length ? `${linkedJobs.length} linked processing jobs` : "No verified job link in loaded records"}</p>
-          <details><summary>Reference IDs</summary><p>Record: {selected.id}</p>{selected.card_date?.event_id && <p>Calendar event: {selected.card_date.event_id}</p>}{linkedJobs.map(job => <p key={job.job_id}>Recording: {job.drive_item_id} · Job: {job.job_id}</p>)}</details>
+          <details><summary>Reference IDs</summary><p>Record: {selected.id}</p>{content?.card_date?.event_id && <p>Calendar event: {content.card_date.event_id}</p>}{linkedJobs.map(job => <p key={job.job_id}>Recording: {job.drive_item_id} · Job: {job.job_id}</p>)}</details>
         </section>
         <section data-detail-section="1">
           <h3 tabIndex={-1} className="admin-section-title">{sections[1]}</h3>
           {!linkedJobs.length && <p>No verified processing job in loaded records.</p>}
           {linkedJobs.map(job => <div key={job.job_id}><AdminStatus value={job.status}/>{job.status === "failed" && <p>Failure: {job.failure ? `${job.failure.stage} · ${job.failure.category}` : "Reason not verified"}</p>}<details><summary>Attempt details</summary><p>{job.attempts} of {job.max_attempts} attempts. Job timestamps and retry schedule are not exposed by this response.</p></details></div>)}
+          {renderControls?.(selected, linkedJobs, () => load(), "processing")}
           <p>{content?.transcript || content?.summary ? "Saved results are available from the meeting API." : content ? "No saved transcript or summary in the meeting response." : "Saved results have not been loaded."}</p>
           <p>{aiEvents.length ? "Verified AI events and their recorded times:" : evidenceUnavailable || "No verified AI call found in the loaded activity window. Result generation time and model cannot be inferred."}</p>
           {aiEvents.map(entry => <p key={entry.id}>{eventTitle(entry.event_type)} · {date(entry.occurred_at)}</p>)}
         </section>
         <section data-detail-section="2">
           <h3 tabIndex={-1} className="admin-section-title">{sections[2]}</h3>
-          {content && <p>Review status: {readable(content.state)}</p>}
-          {detailError ? <p role="alert">{detailError} <button onClick={() => void open(selected)}>Retry content</button></p> : content ? <MeetingDetailClient meeting={content} upn={callerUpn} accessToken={accessToken}/> : <p role="status">Loading review content…</p>}
+          {content && <p>{revision ? `Version ${revision.slice(0, 8)}` : "Original review version"} · {currentApproved ? "Current content approved" : revision ? "Current content awaits reapproval" : readable(content.state)}</p>}
+          <p>{currentApproved && content?.approved_by ? `Approval recorded by ${content.approved_by} · ${content.approved_at ? date(content.approved_at) : "No reliable record"}` : evidenceUnavailable || "Current approval actor: No reliable record."}</p>
+          {reopened && <p>Previous content version approved by {String(reopened.metadata.prior_approved_by ?? "No reliable record")} · {typeof reopened.metadata.prior_approved_at === "string" ? date(reopened.metadata.prior_approved_at) : "No reliable record"}</p>}
+          <p>{latestEdit ? `Content version changed by ${latestEdit.actor_upn || latestEdit.actor_id} · ${date(latestEdit.occurred_at)}` : "Detailed edit history: No reliable record."}</p>
+          {content && <p>{content.email_delivery_status === "sent" ? "Microsoft Graph accepted the email request." : content.email_delivery_status === "sending" ? "Email submission requested. Graph acceptance is unconfirmed." : content.email_delivery_status === "failed" ? "Email submission failed." : content.email_delivery_status === "not_required" || content.state === "awaiting_review" ? "Current version: No email submitted." : "Email submission status: No reliable record."}</p>}
+          {detailError ? <p role="alert">{detailError} <button onClick={() => void open(selected)}>Retry content</button></p> : content ? <MeetingDetailClient adminView onReviewChanged={latest => { if (latest) setContent(latest); void load(); void loadDetailActivity(); }} meeting={content} upn={callerUpn} accessToken={accessToken}/> : <p role="status">Loading review content…</p>}
         </section>
         <section data-detail-section="3">
           <h3 tabIndex={-1} className="admin-section-title">{sections[3]}</h3>
-          {selected.access.length ? <ul>{selected.access.map(person => <li key={person.user_upn}>
-            {person.user_upn} · {person.is_organizer ? "Organiser" : person.edit_access ? "View and edit" : "View"}
-          </li>)}</ul> : <p>No verified access records.</p>}
+          {renderControls?.(selected, linkedJobs, () => load(), "access")}
         </section>
         <section data-detail-section="4">
           <h3 tabIndex={-1} className="admin-section-title">{sections[4]}</h3>
@@ -229,6 +219,5 @@ export default function AdminWorkbench({ accessToken, callerUpn }: { accessToken
         </section>
       </div>
     </AdminModal>}
-    {!selected && event && <div><button onClick={() => setEvent(null)}>Close activity selection</button><AuditEventDialog event={event} /></div>}
   </section>;
 }

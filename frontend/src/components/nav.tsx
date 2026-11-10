@@ -6,6 +6,7 @@ import Image from "next/image";
 import { useState } from "react";
 import { LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
+import BusinessUnitSettings from "@/components/business-unit-settings";
 import NotificationBell from "@/components/notification-bell";
 
 interface NavProps {
@@ -61,6 +62,7 @@ export default function Nav({ userEmail, accessToken, isAdmin }: NavProps) {
         <span className="text-white/60 text-[13px] hidden max-w-48 truncate xl:block">
           {userEmail}
         </span>
+        <div className="text-white"><BusinessUnitSettings token={accessToken} /></div>
         <NotificationBell upn={accessToken} />
         <div className="relative w-8 h-8 overflow-hidden rounded-full bg-[#C9A52C] flex items-center justify-center text-[#003366] font-bold text-xs">
           {showPhoto ? (

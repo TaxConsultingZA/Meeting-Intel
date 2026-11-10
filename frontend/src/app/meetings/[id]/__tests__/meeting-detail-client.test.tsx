@@ -8,7 +8,7 @@ import { ApiError, approveMeeting, editActionItem, editMeetingTranscript, getMee
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
-  return { ...actual, saveSpeakerMappings: vi.fn().mockResolvedValue(undefined),
+  return { ...actual, getMeetingDecisions: vi.fn().mockResolvedValue([]), saveSpeakerMappings: vi.fn().mockResolvedValue(undefined),
     editActionItem: vi.fn().mockResolvedValue(undefined), editMeetingTranscript: vi.fn().mockResolvedValue(undefined),
     approveMeeting: vi.fn(), getMeeting: vi.fn(), previewMeetingEmail: vi.fn(), getRecordingJobs: vi.fn().mockResolvedValue([]) };
 });
@@ -151,6 +151,7 @@ it("shows existing edit and final approval controls for an Admin projection", as
     speaker_mappings: {}, speaker_sample_labels: ["Speaker A"],
   };
 
+  vi.mocked(getMeeting).mockResolvedValue({ ...meeting, speaker_mappings: { "Speaker A": "owner@taxconsulting.co.za" } });
   const view = render(<MeetingDetailClient meeting={meeting} upn="admin@taxconsulting.co.za" accessToken="token" />);
 
   expect(screen.getByText("Discussed")).toBeInTheDocument();
@@ -167,7 +168,7 @@ it("shows existing edit and final approval controls for an Admin projection", as
   fireEvent.change(screen.getByLabelText("Name for Speaker A"), { target: { value: "owner@taxconsulting.co.za" } });
   fireEvent.click(screen.getByRole("button", { name: "Save speaker names" }));
   await waitFor(() => expect(saveSpeakerMappings).toHaveBeenCalledWith(
-    "meeting-admin", { "Speaker A": "owner@taxconsulting.co.za" }, "token",
+    "meeting-admin", { "Speaker A": "owner@taxconsulting.co.za" }, "token", null,
   ));
 
   view.rerender(<MeetingDetailClient
@@ -266,7 +267,26 @@ it.each(["queued", "failed", "cancelled"] as const)("preserves the %s screen wit
 const reviewAction = { id: "a1", task: "Send report", owner: "Alex", deadline_iso: null,
   deadline_text: null, confidence: "high" as const, source_quote: "Send report", approved: false };
 
+it("retains a transcript draft on conflict until the user refreshes and reviews", async () => {
+  const original = { ...approvalMeeting, transcript: "Original", extracted_json: { review_content_revision: "old" } };
+  const latest = { ...original, transcript: "Other administrator's edit", extracted_json: { review_content_revision: "new" } };
+  vi.mocked(editMeetingTranscript).mockRejectedValueOnce(new ApiError(409, "stale")).mockResolvedValueOnce(undefined);
+  vi.mocked(getMeeting).mockResolvedValue(latest);
+  render(<MeetingDetailClient meeting={original} upn="owner@example.com" accessToken="token" />);
+  fireEvent.click(screen.getByRole("button", {name: "Edit"}));
+  fireEvent.change(screen.getByLabelText("Meeting transcript"), {target: {value: "My unsaved draft"}});
+  fireEvent.click(screen.getByRole("button", {name: "Save transcript"}));
+  expect(await screen.findByRole("button", {name: "Refresh and review"})).toBeVisible();
+  expect(screen.getByLabelText("Meeting transcript")).toHaveValue("My unsaved draft");
+  fireEvent.click(screen.getByRole("button", {name: "Refresh and review"}));
+  await waitFor(() => expect(screen.queryByRole("button", {name: "Refresh and review"})).toBeNull());
+  expect(screen.getByLabelText("Meeting transcript")).toHaveValue("My unsaved draft");
+  fireEvent.click(screen.getByRole("button", {name: "Save transcript"}));
+  await waitFor(() => expect(editMeetingTranscript).toHaveBeenLastCalledWith(original.id, "My unsaved draft", "token", "new"));
+});
+
 it("keeps approval blocked until every action editor has been saved or cancelled", async () => {
+  vi.mocked(getMeeting).mockResolvedValue({ ...approvalMeeting, action_items: [reviewAction, { ...reviewAction, id: "a2", task: "Book final review" }] });
   render(<MeetingDetailClient meeting={{ ...approvalMeeting, action_items: [reviewAction, { ...reviewAction, id: "a2", task: "Book review" }] }} upn="owner@example.com" accessToken="token" />);
   const approve = screen.getByRole("button", { name: /Approve Meeting Notes/ });
   fireEvent.click(screen.getByRole("button", { name: "Edit action item: Send report" }));
@@ -300,6 +320,7 @@ it("blocks approval during action saves and preserves the block on save failure"
 });
 
 it("blocks transcript drafts and pending saves, retaining failed drafts for retry", async () => {
+  vi.mocked(getMeeting).mockResolvedValue({ ...approvalMeeting, transcript: "Reviewed transcript" });
   let fail!: (error: Error) => void;
   vi.mocked(editMeetingTranscript).mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
   render(<MeetingDetailClient meeting={{ ...approvalMeeting, transcript: "Original transcript" }} upn="owner@example.com" accessToken="token" />);
@@ -319,7 +340,7 @@ it("blocks transcript drafts and pending saves, retaining failed drafts for retr
   fireEvent.click(screen.getByRole("button", { name: "Save transcript" }));
   await waitFor(() => expect(approve).toBeEnabled());
   expect(screen.queryByLabelText("Meeting transcript")).not.toBeInTheDocument();
-  expect(editMeetingTranscript).toHaveBeenLastCalledWith(approvalMeeting.id, "Reviewed transcript", "token");
+  expect(editMeetingTranscript).toHaveBeenLastCalledWith(approvalMeeting.id, "Reviewed transcript", "token", null);
 });
 
 it("allows cancelling a transcript draft without saving it", () => {
@@ -333,6 +354,7 @@ it("allows cancelling a transcript draft without saving it", () => {
 });
 
 it("blocks unsaved speaker names, pending saves, and failed saves", async () => {
+  vi.mocked(getMeeting).mockResolvedValue({ ...approvalMeeting, transcript: "[Speaker A] Hello", speaker_mappings: { "Speaker A": "owner@example.com" }, speaker_candidates: [{ upn: "owner@example.com", email: "owner@example.com", display_name: "Owner" }] });
   let fail!: (error: Error) => void;
   vi.mocked(saveSpeakerMappings).mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
   render(<MeetingDetailClient meeting={{ ...approvalMeeting, transcript: "[Speaker A] Hello",

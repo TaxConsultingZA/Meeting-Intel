@@ -56,7 +56,7 @@ def is_local_test_meeting(meeting) -> bool:
 
 async def _authorize(
     db: AsyncSession, meeting_id, upn: str, *, for_update: bool = False,
-    allow_admin: bool = False,
+    allow_admin: bool = False, include_manual_decisions: bool = False,
 ) -> Meeting:
     """Row-level authorisation: load a meeting and verify the caller is a participant.
 
@@ -68,6 +68,8 @@ async def _authorize(
         .where(Meeting.id == meeting_id)
         .options(selectinload(Meeting.participants), selectinload(Meeting.action_items))
     )
+    if include_manual_decisions:
+        query = query.options(selectinload(Meeting.manual_decisions))
     if for_update:
         query = query.with_for_update()
     m = await db.scalar(query)
@@ -243,6 +245,10 @@ def _to_out(m: Meeting, upn: str | None = None, *, is_admin: bool = False) -> Me
             _is_attendee_participant(m, caller) and caller.edit_access_status == "approved"
         ),
         can_approve=is_admin or is_organizer,
+        can_revise_approval=is_admin and _can_revise_approval(m),
+        approved_by=getattr(m, "approved_by", None) if isinstance(getattr(m, "approved_by", None), str) else None,
+        approved_at=getattr(m, "approved_at", None) if isinstance(getattr(m, "approved_at", None), datetime) else None,
+        email_delivery_status=getattr(m, "email_delivery_status", None) if isinstance(getattr(m, "email_delivery_status", None), str) else None,
         can_request_edit_access=bool(
             not is_organizer
             and _is_attendee_participant(m, caller)
@@ -401,6 +407,50 @@ def _require_approved_attendee(m: Meeting, upn: str) -> MeetingParticipant:
 def _require_awaiting_review(m: Meeting) -> None:
     if m.state != ProcessingState.awaiting_review:
         raise HTTPException(409, "Meeting notes can only be changed while awaiting review")
+
+
+def _can_revise_approval(meeting: Meeting) -> bool:
+    return (meeting.state == ProcessingState.approved
+            and meeting.email_delivery_status in {None, "not_required"}
+            and not meeting.email_delivery_attempts
+            and (meeting.email_delivery_status == "not_required" or not meeting.approved_recipients))
+
+
+def _require_content_edit(meeting: Meeting, upn: str, *, is_admin: bool) -> None:
+    _require_editor(meeting, upn, is_admin=is_admin)
+    if is_admin and _can_revise_approval(meeting):
+        return
+    _require_awaiting_review(meeting)
+    if meeting.email_delivery_status in {"sending", "sent"}:
+        raise HTTPException(409, "Content cannot be changed after email submission has been claimed")
+
+
+def _check_review_revision(meeting: Meeting, expected: str | None) -> None:
+    data = meeting.extracted_json if isinstance(meeting.extracted_json, dict) else {}
+    if data.get("review_content_revision") != expected:
+        raise HTTPException(409, "Meeting notes changed. Refresh before saving your edits.")
+
+
+def _advance_review_revision(db, meeting: Meeting, upn: str) -> None:
+    data = meeting.extracted_json if isinstance(meeting.extracted_json, dict) else {}
+    revision = str(uuid4())
+    metadata = {"previous_revision": data.get("review_content_revision"), "content_revision": revision}
+    meeting.extracted_json = {**data, "review_content_revision": revision}
+    if meeting.state == ProcessingState.approved:
+        metadata.update(prior_approved_by=meeting.approved_by,
+                        prior_approved_at=meeting.approved_at.isoformat() if meeting.approved_at else None,
+                        prior_delivery_status=meeting.email_delivery_status)
+        meeting.state = ProcessingState.awaiting_review
+        meeting.approved_at = None
+        meeting.approved_by = None
+        meeting.approved_recipients = []
+        meeting.email_delivery_status = None
+        meeting.email_delivery_fingerprint = None
+        for item in meeting.action_items:
+            item.approved = False
+        add_activity(db, meeting_id=meeting.id, upn=upn, action="review.reopened", metadata=metadata)
+    else:
+        add_activity(db, meeting_id=meeting.id, upn=upn, action="review.revised", metadata=metadata)
 
 
 def _speaker_sample_window(m: Meeting, speaker_label: str) -> tuple[float, float] | None:
@@ -695,7 +745,7 @@ async def get_meeting(meeting_id: str, db: AsyncSession = Depends(get_db),
     return result
 
 
-def _email_fingerprint(meeting_id, recipients: list[str], subject: str, html: str, *, decision_revision: str | None = None) -> str:
+def _email_fingerprint(meeting_id, recipients: list[str], subject: str, html: str, *, decision_revision: str | None = None, content_revision: str | None = None) -> str:
     # The renderer's exact strings are canonical: do not strip HTML whitespace
     # or otherwise hide changes to the payload that Graph will receive.
     payload = {"meeting_id": str(meeting_id),
@@ -703,6 +753,8 @@ def _email_fingerprint(meeting_id, recipients: list[str], subject: str, html: st
          "subject": subject, "html": html}
     if isinstance(decision_revision, str) and decision_revision:
         payload["decision_revision"] = decision_revision
+    if isinstance(content_revision, str) and content_revision:
+        payload["content_revision"] = content_revision
     return hashlib.sha256(json.dumps(
         payload,
         sort_keys=True,
@@ -714,12 +766,12 @@ async def email_preview(meeting_id: str, db: AsyncSession = Depends(get_db),
                         upn: str = Depends(current_user),
                         recipients: list[str] = Query(default=[])):
     """Render the exact branded HTML that approval would send, without sending it."""
-    m = await _authorize(db, meeting_id, upn, allow_admin=await _is_admin(db, upn))
+    m = await _authorize(db, meeting_id, upn, allow_admin=await _is_admin(db, upn), include_manual_decisions=True)
     subject, html = build_meeting_email(m)
     recipients = ApproveMeetingIn(recipients=recipients).recipients
     result = EmailPreviewOut(subject=subject, html=html, recipients=sorted(recipients),
                            fingerprint=_email_fingerprint(m.id, recipients, subject, html,
-                               decision_revision=(m.extracted_json or {}).get("manual_decisions_revision")))
+                               decision_revision=(m.extracted_json or {}).get("manual_decisions_revision"), content_revision=(m.extracted_json or {}).get("review_content_revision")))
     add_activity(db, meeting_id=m.id, upn=upn, action="email.previewed")
     await db.commit()
     return result
@@ -742,8 +794,8 @@ async def save_meeting_decisions(meeting_id: UUID, body: MeetingDecisionsIn, res
     response.headers["Cache-Control"] = "no-store"
     is_admin = await _is_admin(db, upn)
     meeting = await _authorize(db, meeting_id, upn, for_update=True, allow_admin=is_admin)
-    _require_editor(meeting, upn, is_admin=is_admin)
-    _require_awaiting_review(meeting)
+    _require_content_edit(meeting, upn, is_admin=is_admin)
+    _check_review_revision(meeting, body.expected_revision)
     if meeting.email_delivery_status in {"sending", "sent"}:
         raise HTTPException(409, "Decisions cannot be changed after email delivery has been claimed")
     existing = {row.id: row for row in (await db.scalars(
@@ -751,6 +803,11 @@ async def save_meeting_decisions(meeting_id: UUID, body: MeetingDecisionsIn, res
     ids = [entry.id for entry in body.decisions if entry.id is not None]
     if len(set(ids)) != len(ids) or any(id not in existing for id in ids):
         raise HTTPException(422, "Decision IDs must be unique and belong to this meeting")
+    if len(ids) == len(existing) == len(body.decisions) and all(
+        existing[entry.id].content == entry.content and existing[entry.id].decision_date == entry.decision_date
+        for entry in body.decisions
+    ):
+        return [MeetingDecisionOut.model_validate(existing[entry.id]) for entry in body.decisions]
     rows = []
     for entry in body.decisions:
         row = existing.get(entry.id) if entry.id else None
@@ -764,6 +821,7 @@ async def save_meeting_decisions(meeting_id: UUID, body: MeetingDecisionsIn, res
             await db.delete(row)
     # Parent lock serializes with approval; stale previews must not approve unseen edits.
     meeting.extracted_json = {**(meeting.extracted_json or {}), "manual_decisions_revision": str(uuid4())}
+    _advance_review_revision(db, meeting, upn)
     result = [MeetingDecisionOut.model_validate(row) for row in rows]
     add_activity(db, meeting_id=meeting.id, upn=upn, action="meeting.decisions_saved")
     await db.commit()
@@ -779,12 +837,16 @@ async def edit_item(item_id: str, edit: ActionItemEdit,
     is_admin = await _is_admin(db, upn)
     # Use the approval lock so an edit cannot race the rendered send payload.
     meeting = await _authorize(db, item.meeting_id, upn, for_update=True, allow_admin=is_admin)
-    _require_editor(meeting, upn, is_admin=is_admin)
-    _require_awaiting_review(meeting)
+    _require_content_edit(meeting, upn, is_admin=is_admin)
+    _check_review_revision(meeting, edit.expected_revision)
     if meeting.email_delivery_status in {"sending", "sent"}:
         raise HTTPException(409, "Action items cannot be changed after email delivery has been claimed")
-    for field, val in edit.model_dump(exclude_unset=True).items():
+    changes = {field: val for field, val in edit.model_dump(exclude_unset=True, exclude={"expected_revision"}).items() if getattr(item, field) != val}
+    if not changes:
+        return {"ok": True}
+    for field, val in changes.items():
         setattr(item, field, val)
+    _advance_review_revision(db, meeting, upn)
     item.edited_by = upn
     add_activity(db, meeting_id=meeting.id, upn=upn, action="meeting.action_item_edited")
     await db.commit()
@@ -795,10 +857,13 @@ async def edit_item(item_id: str, edit: ActionItemEdit,
 async def edit_transcript(meeting_id: str, body: TranscriptEdit,
                           db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
     is_admin = await _is_admin(db, upn)
-    meeting = await _authorize(db, meeting_id, upn, allow_admin=is_admin)
-    _require_editor(meeting, upn, is_admin=is_admin)
-    _require_awaiting_review(meeting)
+    meeting = await _authorize(db, meeting_id, upn, for_update=True, allow_admin=is_admin)
+    _require_content_edit(meeting, upn, is_admin=is_admin)
+    _check_review_revision(meeting, body.expected_revision)
+    if meeting.transcript == body.transcript:
+        return {"ok": True}
     meeting.transcript = body.transcript
+    _advance_review_revision(db, meeting, upn)
     add_activity(db, meeting_id=meeting.id, upn=upn, action="meeting.transcript_edited")
     await db.commit()
     return {"ok": True}
@@ -808,9 +873,9 @@ async def edit_transcript(meeting_id: str, body: TranscriptEdit,
 async def save_speaker_mappings(meeting_id: str, body: SpeakerMappingIn,
                                 db: AsyncSession = Depends(get_db), upn: str = Depends(current_user)):
     is_admin = await _is_admin(db, upn)
-    meeting = await _authorize(db, meeting_id, upn, allow_admin=is_admin)
-    _require_editor(meeting, upn, is_admin=is_admin)
-    _require_awaiting_review(meeting)
+    meeting = await _authorize(db, meeting_id, upn, for_update=True, allow_admin=is_admin)
+    _require_content_edit(meeting, upn, is_admin=is_admin)
+    _check_review_revision(meeting, body.expected_revision)
     allowed = set(normalize_upns(meeting.attendees_raw))
     allowed.update(normalize_upn(p.user_upn) for p in meeting.participants)
     actual_labels = _speaker_labels(meeting)
@@ -834,9 +899,12 @@ async def save_speaker_mappings(meeting_id: str, body: SpeakerMappingIn,
         mappings[canonical_label] = clean_candidate
         if clean_candidate:
             assigned_candidates.add(clean_candidate)
+    if mappings == (meeting.extracted_json or {}).get("speaker_mappings", {}):
+        return {"ok": True, "speaker_mappings": mappings}
     extracted = dict(meeting.extracted_json or {})
     extracted["speaker_mappings"] = mappings
     meeting.extracted_json = extracted
+    _advance_review_revision(db, meeting, upn)
     add_activity(db, meeting_id=meeting.id, upn=upn, action="meeting.speakers_edited")
     await db.commit()
     return {"ok": True, "speaker_mappings": mappings}
@@ -958,7 +1026,7 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
     # Serialize concurrent approvals. Without this lock, two browser requests
     # can both observe awaiting_review and send the same email twice.
     is_admin = await _is_admin(db, upn)
-    m = await _authorize(db, meeting_id, upn, for_update=True, allow_admin=is_admin)
+    m = await _authorize(db, meeting_id, upn, for_update=True, allow_admin=is_admin, include_manual_decisions=True)
     _require_organizer(m, upn, is_admin=is_admin)
 
     known_recipients = set(normalize_upns(m.attendees_raw))
@@ -975,7 +1043,7 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
     recipients = sorted(set(body.recipients))
     subject, email_body = build_meeting_email(m)
     fingerprint = _email_fingerprint(m.id, recipients, subject, email_body,
-        decision_revision=(m.extracted_json or {}).get("manual_decisions_revision"))
+        decision_revision=(m.extracted_json or {}).get("manual_decisions_revision"), content_revision=(m.extracted_json or {}).get("review_content_revision"))
     if not body.expected_fingerprint or body.expected_fingerprint != fingerprint:
         raise HTTPException(409, "Email preview is missing or has changed. Review a fresh preview before approving.")
 
@@ -1044,6 +1112,7 @@ async def approve(meeting_id: str, db: AsyncSession = Depends(get_db),
 
     for a in m.action_items:
         a.approved = True
+    m.extracted_json = {**(m.extracted_json or {}), "manual_decisions_approved_in_email": bool(vars(m).get("manual_decisions", []))}
     m.state = ProcessingState.sent if sent else ProcessingState.approved
     m.approved_recipients = recipients
     m.approved_by = upn
@@ -1060,7 +1129,7 @@ async def send_copy_to_self(meeting_id: str, body: SendMeetingCopyIn,
                             db: AsyncSession = Depends(get_db),
                             upn: str = Depends(current_user)):
     """Send approved notes to an approved attendee's own verified company UPN."""
-    meeting = await _authorize(db, meeting_id, upn)
+    meeting = await _authorize(db, meeting_id, upn, include_manual_decisions=True)
     _require_approved_attendee(meeting, upn)
     if body.recipient_upn != upn:
         raise HTTPException(403, "Approved attendees may only send a copy to themselves")

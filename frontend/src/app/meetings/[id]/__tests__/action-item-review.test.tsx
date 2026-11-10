@@ -1,10 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import ActionItemReview from "../action-item-review";
-import { editActionItem } from "@/lib/api";
+import { ApiError, editActionItem } from "@/lib/api";
 import type { ActionItemOut } from "@/lib/types";
 
-vi.mock("@/lib/api", () => ({ editActionItem: vi.fn() }));
+vi.mock("@/lib/api", () => ({ editActionItem: vi.fn(), ApiError: class ApiError extends Error { constructor(public status: number) { super(String(status)); } } }));
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 const item: ActionItemOut = { id: "a1", task: "Send report", owner: "Alice", deadline_iso: "2026-10-12", deadline_text: "Monday", confidence: "high", source_quote: "Send report", approved: false };
 function setup(action = item, canEdit = true, transcript: string | null = "[Speaker A] Please Send report tomorrow.") {
@@ -42,7 +42,7 @@ it("saves all four fields through the existing partial update contract", async (
   fireEvent.change(screen.getByLabelText("Confidence"), { target: { value: "medium" } });
   fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
   await waitFor(() => expect(updated).toHaveBeenCalledWith({ ...item, task: "Send final report", owner: "Bob", deadline_iso: "2026-10-15", confidence: "medium" }));
-  expect(editActionItem).toHaveBeenCalledWith("a1", { task: "Send final report", owner: "Bob", deadline_iso: "2026-10-15", confidence: "medium" }, "token");
+  expect(editActionItem).toHaveBeenCalledWith("a1", { task: "Send final report", owner: "Bob", deadline_iso: "2026-10-15", confidence: "medium" }, "token", null);
 });
 
 it("rejects blank tasks and accidental clearing of populated fields", () => {
@@ -59,7 +59,7 @@ it("allows absent optional values to remain absent and sends only changed fields
   setup({ ...item, owner: null, deadline_iso: null }); edit();
   fireEvent.change(screen.getByLabelText("Task (required)"), { target: { value: "Check report" } });
   fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-  await waitFor(() => expect(editActionItem).toHaveBeenCalledWith("a1", { task: "Check report" }, "token"));
+  await waitFor(() => expect(editActionItem).toHaveBeenCalledWith("a1", { task: "Check report" }, "token", null));
 });
 
 it("cancel discards drafts and reopening starts with saved values", () => {
@@ -82,6 +82,22 @@ it("retains drafts on failure, disables cancellation during save, and prevents d
   reject(new Error("provider secret"));
   expect(await screen.findByRole("alert")).toHaveTextContent("Your edits are kept");
   expect(screen.getByLabelText("Owner")).toHaveValue("Bob");
+});
+
+it("keeps a conflicting draft until the user refreshes and reviews it", async () => {
+  vi.mocked(editActionItem).mockRejectedValueOnce(new ApiError(409, "stale")).mockResolvedValueOnce(undefined);
+  const onRefresh = vi.fn().mockResolvedValue("new-revision");
+  render(<ActionItemReview items={[item]} accessToken="token" canEdit revision="old-revision" onUpdate={vi.fn()} onRefresh={onRefresh} />);
+  edit();
+  fireEvent.change(screen.getByLabelText("Owner"), {target: {value: "Draft owner"}});
+  fireEvent.click(screen.getByRole("button", {name: "Save changes"}));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Your draft is kept");
+  expect(screen.getByLabelText("Owner")).toHaveValue("Draft owner");
+  fireEvent.click(screen.getByRole("button", {name: "Refresh and review"}));
+  await waitFor(() => expect(onRefresh).toHaveBeenCalledOnce());
+  expect(screen.getByLabelText("Owner")).toHaveValue("Draft owner");
+  fireEvent.click(screen.getByRole("button", {name: "Save changes"}));
+  await waitFor(() => expect(editActionItem).toHaveBeenLastCalledWith("a1", {owner: "Draft owner"}, "token", "new-revision"));
 });
 
 it("exposes source quote and matching transcript context", () => {

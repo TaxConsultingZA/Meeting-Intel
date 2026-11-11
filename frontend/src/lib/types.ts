@@ -296,6 +296,10 @@ export interface RegisteredUser {
   registered_at: string;
 }
 
+export interface UsageMetricGroup { key: string; name: string; is_selectable: boolean; }
+export type UsageMetricKind = "action_items" | "meetings";
+export interface UsageMetrics { timezone: "Africa/Johannesburg"; metric: UsageMetricKind; groups: UsageMetricGroup[]; days: { date: string; counts: Record<string, number> }[]; }
+
 export interface SyncState {
   source: "calendar" | "onedrive" | string;
   status: "never" | "success" | "failed" | string;

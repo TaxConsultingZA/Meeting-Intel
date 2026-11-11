@@ -47,6 +47,11 @@ export function getAuditEvents(token: string, filters: AuditFilters = {}, cursor
   return apiFetch(`/admin/audit-events?${params}`, token, { signal, cache: "no-store" });
 }
 
+export function getUsageMetrics(token: string, from: string, to: string, metric: import("./types").UsageMetricKind, signal?: AbortSignal): Promise<import("./types").UsageMetrics> {
+  const params = new URLSearchParams({ from, to, metric });
+  return apiFetch(`/admin/usage-metrics?${params}`, token, { signal, cache: "no-store" });
+}
+
 function safeErrorMessage(status: number, body: string): string {
   if (status === 401) return "Your session has expired. Please sign in again.";
   if (status === 403) return "You do not have permission to perform this action.";

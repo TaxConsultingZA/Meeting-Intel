@@ -6,7 +6,7 @@ import AdminWorkbench from "./admin-workbench";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import LoadingSpinner from "@/components/loading-spinner";
 import Link from "next/link";
-import { UserPlus, Trash2, Shield, Pencil, ChevronDown, Loader2, History, ArrowRight } from "lucide-react";
+import { UserPlus, Trash2, Shield, Pencil, ChevronDown, Loader2, History, ArrowRight, BarChart3 } from "lucide-react";
 import { createBusinessUnit, getAdminAccessRequests, cleanupAdminJob, decideMeetingEditAccess, decideRecordingProcessing, getAdminUserSyncStatus, getBusinessUnits, getRecordingJobs, getRegisteredUsers, registerUser, removeUser, reprocessRecordingJob, revokeAdminMeetingAccess, updateUser } from "@/lib/api";
 import type { UpdateUserPayload } from "@/lib/api";
 import type { RegisteredUser, BusinessUnit, RecordingJobOut, AdminAccessRequest, AdminMeetingOut, SyncState } from "@/lib/types";
@@ -260,6 +260,7 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
     try {
       const unit = await createBusinessUnit(accessToken, unitName);
       setCatalog(current => [...current, unit].sort((a, b) => a.name.localeCompare(b.name)));
+      window.dispatchEvent(new Event("business-unit-updated"));
       setUnitName("");
       setUnitSaved(`Added ${unit.name}.`);
     } catch (failure) {
@@ -297,14 +298,14 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
 
   return (
     <main className="admin-workspace max-w-6xl mx-auto px-4 sm:px-6 py-5">
-      <div className="mb-6">
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-[22px] font-bold text-[#003366]">Admin workspace</h1>
           <p className="text-[#6b7280] text-[13.5px] mt-0.5">
             Manage meetings, processing, access, and registered users.
           </p>
-
         </div>
+        <Link href="/admin/usage-metrics" className="admin-metrics-link"><BarChart3 size={16} aria-hidden="true" /> Usage Metrics</Link>
       </div>
 
       <AdminWorkbench pendingRequests={!requestsLoading && !requestsError ? requests.filter(r => r.status === "pending").length : undefined} accessToken={accessToken} callerUpn={callerUpn} renderControls={(meeting, linkedJobs, refresh, area) => <div tabIndex={0} aria-label="Access and processing controls" className="space-y-3 max-h-[28rem] overflow-y-auto">
@@ -318,7 +319,6 @@ export default function AdminClient({ initialRequests, callerUpn, accessToken, d
         </div>)}</>}
       </div>} />
       <AccessRequestsPanel requests={requests} loading={requestsLoading} error={requestsError || requestActionError} retry={() => { setRequestActionError(""); void refreshRequests(); }} disabled={false} decide={(r,approved) => r.request_type === "processing" ? handleProcessingDecision(r,approved) : handleAccessDecision(r,approved)} />
-
       {error && !editUser && (
         <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-[13px] px-4 py-3 rounded-lg">
           {error}

@@ -3,12 +3,12 @@
 All endpoints require the caller to be a registered admin (``is_admin=True``).
 The first admin is bootstrapped via the ``ADMIN_UPNS`` env var at application startup.
 """
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import AwareDatetime
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import cast, func, or_, select, text, update, Date
 from ..services.business_units import create_unit, record_assignment, require_assignment_version, require_selectable_unit, selectable_units
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,7 +17,8 @@ from ..config import get_settings
 from ..db import get_db
 from ..email_templates import build_welcome_email
 from ..graph import client as graph
-from ..models import BusinessUnit, Meeting, MeetingParticipant, ProcessedItem, ProcessingState, RecordingJob, RecordingProcessingRequest, RegisteredUser
+from ..models import ActionItem, BusinessUnit, Meeting, MeetingParticipant, ProcessedItem, ProcessingState, RecordingJob, RecordingProcessingRequest, RegisteredUser
+from ..services.usage_metrics import validate_date_range
 from ..schemas import AdminRevokeAccessIn, BusinessUnitOut, CreateBusinessUnitIn, RegisteredUserOut, RegisterUserIn, SyncStateOut, UpdateUserIn
 from ..services.meeting_dates import card_date
 from ..services.sync_state import list_sync_status
@@ -129,6 +130,50 @@ async def list_business_units(db: AsyncSession = Depends(get_db),
     query = select(BusinessUnit) if include_historical else selectable_units()
     rows = (await db.scalars(query.order_by(BusinessUnit.name))).all()
     return [BusinessUnitOut(id=b.id, name=b.name, is_selectable=b.is_selectable) for b in rows]
+
+
+@router.get("/usage-metrics")
+async def usage_metrics(
+    start: date = Query(alias="from"), end: date = Query(alias="to"),
+    metric: Literal["action_items", "meetings"] = "action_items",
+    db: AsyncSession = Depends(get_db), _upn: str = Depends(_require_admin),
+):
+    """A durable, row-counted metric attributed to its actor's current BU.
+
+    The catalog is returned independently so zero-value selectable and historical
+    BUs remain visible after an administrator changes the catalog.
+    """
+    try:
+        validate_date_range(start, end)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    units = (await db.scalars(select(BusinessUnit).order_by(BusinessUnit.name))).all()
+    groups = [{"key": str(unit.id), "name": unit.name, "is_selectable": unit.is_selectable} for unit in units]
+    groups.append({"key": "unassigned", "name": "Unassigned", "is_selectable": False})
+    if metric == "action_items":
+        local_day = cast(func.timezone("Africa/Johannesburg", ActionItem.completed_at), Date)
+        statement = (
+            select(local_day, RegisteredUser.business_unit_id, func.count(ActionItem.id))
+            .select_from(ActionItem).outerjoin(RegisteredUser, ActionItem.completed_by_id == RegisteredUser.id)
+            .where(ActionItem.completed_at.is_not(None), local_day >= start, local_day <= end)
+            .group_by(local_day, RegisteredUser.business_unit_id).order_by(local_day)
+        )
+    elif metric == "meetings":
+        local_day = cast(func.timezone("Africa/Johannesburg", Meeting.created_at), Date)
+        statement = (
+            select(local_day, RegisteredUser.business_unit_id, func.count(Meeting.id))
+            .select_from(Meeting).outerjoin(RegisteredUser, Meeting.organizer_upn == RegisteredUser.upn)
+            .where(local_day >= start, local_day <= end)
+            .group_by(local_day, RegisteredUser.business_unit_id).order_by(local_day)
+        )
+    rows = (await db.execute(statement)).all()
+    by_day: dict[str, dict[str, int]] = {}
+    for completed_day, unit_id, count in rows:
+        day = completed_day.isoformat()
+        by_day.setdefault(day, {})[str(unit_id) if unit_id is not None else "unassigned"] = int(count)
+    days = [{"date": day.isoformat(), "counts": by_day.get(day.isoformat(), {})}
+            for day in (start + timedelta(days=i) for i in range((end - start).days + 1))]
+    return {"timezone": "Africa/Johannesburg", "metric": metric, "groups": groups, "days": days}
 
 
 @router.post("/business-units", response_model=BusinessUnitOut, status_code=201)
